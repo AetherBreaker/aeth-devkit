@@ -18,7 +18,7 @@ class TaskCollection:
     self,
     task_name: str,
     task_config: dict[str, Any],
-    tags: Collection[str] = ...,
+    tags: Collection[str] = (),
   ) -> TaskCollection: ...
   def remove(
     self,

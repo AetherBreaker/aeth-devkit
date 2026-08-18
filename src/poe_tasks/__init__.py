@@ -111,3 +111,24 @@ tasks.add(
     ],
   },
 )
+
+
+tasks.add(
+  task_name="clean",
+  task_config={
+    "script": """
+          poethepoet.scripts:rm(
+            ".coverage",
+            ".ruff_cache",
+            ".mypy_cache",
+            ".pytest_cache",
+            "./**/__pycache__",
+            "dist",
+            "htmlcov",
+            verbosity=environ.get('POE_VERBOSITY'),
+            dry_run=_dry_run
+          )
+        """,
+    "help": "Remove generated files",
+  },
+)
