@@ -1,6 +1,6 @@
 [project]
   name            = "poe-tasks"
-  version         = "4.3.6"
+  version         = "4.4.0"
   description     = "Shared poe tasks for SFT projects"
   readme          = "README.md"
   requires-python = ">=3.14"
