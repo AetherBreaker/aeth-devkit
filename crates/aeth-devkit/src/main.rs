@@ -1,0 +1,36 @@
+//! `devkit` — project maintenance commands. Each subcommand lives in its own crate; this
+//! binary only parses and dispatches.
+
+use std::process::ExitCode;
+
+use clap::{Parser, Subcommand};
+
+#[derive(Parser, Debug)]
+#[command(name = "devkit", version, about = "Project maintenance commands")]
+struct Cli {
+  #[command(subcommand)]
+  command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+  /// Standardize the project's configuration from the shipped templates.
+  SetupProject(aeth_devkit_setup::cli::Args),
+  /// Bump the aeth-devkit pin, run `uv sync`, and commit uv.lock.
+  Lock(aeth_devkit_lock::Args),
+}
+
+fn main() -> ExitCode {
+  let cli = Cli::parse();
+  let result = match &cli.command {
+    Command::SetupProject(args) => aeth_devkit_setup::cli::run(args),
+    Command::Lock(args) => aeth_devkit_lock::run_real(args),
+  };
+  match result {
+    Ok(code) => code,
+    Err(e) => {
+      eprintln!("error: {e:#}");
+      ExitCode::from(2)
+    }
+  }
+}

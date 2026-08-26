@@ -2,6 +2,7 @@
 //! with `aeth-devkit`. See docs/specs/2026-08-26-setup-project-design.md.
 
 pub mod changes;
+pub mod cli;
 pub mod context;
 pub mod git;
 pub mod json_merge;
