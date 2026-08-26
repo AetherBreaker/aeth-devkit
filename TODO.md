@@ -1,11 +1,11 @@
 # TODO
 
-Item tracking for `poe_tasks` / `sft-setup`. Keep entries short; link the spec when a
+Item tracking for `aeth-devkit`. Keep entries short; link the spec when a
 design exists. Check items off in place; delete them once released.
 
 ## setup-project
 
-- [ ] **Docker scaffolding flags** — add opt-in flags to `sft-setup` (exposed through
+- [ ] **Docker scaffolding flags** — add opt-in flags to `devkit setup-project` (exposed through
       `poe setup-project`) that copy the now-generic Docker files from `aeth_ext` into a
       project as templates:
   - `--docker` → `docker/Dockerfile`, `docker/compose.yaml`, `docker/entrypoint.sh`,
@@ -35,9 +35,8 @@ design exists. Check items off in place; delete them once released.
 
 ## Release / packaging
 
-- [ ] Release 6.0.1 with the `template.env` wheel fix (`!python/poe_tasks/templates/**`
-      in `.gitignore`), then `poe lock` in downstream projects.
-- [ ] Linux wheel (`maturin build --target x86_64-unknown-linux-musl --zig`) if `poe-tasks`
+- [ ] Release 7.0.0 (`aeth-devkit`), then migrate downstream projects per README.
+- [ ] Linux wheel (`maturin build --target x86_64-unknown-linux-musl --zig`) if `aeth-devkit`
       is ever installed outside Windows dev machines.
 - [ ] Fix system-level `init.defaultBranch = master` in
       `C:\Program Files\Git\etc\gitconfig` (needs an elevated shell; user config already
@@ -45,16 +44,17 @@ design exists. Check items off in place; delete them once released.
 
 ## Script migration to Rust
 
-Planned order once `sft-setup` has been used across the workspace:
+Planned order (each command is its own crate under `crates/`; the `devkit` binary
+dispatches):
 
-- [ ] `lock.sh` → `sft-setup lock` (or a sibling `sft-lock` bin)
+- [x] `lock.sh` → `devkit lock` (7.0.0)
 - [ ] `docker-pin-latest.sh`
 - [ ] `release.sh`
 - [ ] `rescind-release.sh`
 
 ## Housekeeping
 
-- [ ] `uv run ruff format python` — `python/poe_tasks/__init__.py` has pre-existing
+- [ ] `uv run ruff format python` — `python/aeth_devkit/__init__.py` has pre-existing
       formatting drift now visible with the inlined ruff config.
 - [ ] IMAPReportCollector: `tool.coverage.run.source_pkgs` still lists
       `scheduled_invoice_processor` (copy-paste leftover); remove after `setup-project`
