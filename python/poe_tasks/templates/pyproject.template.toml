@@ -1,3 +1,4 @@
+#:schema https://json.schemastore.org/pyproject.json
 # setup-project template — merged into each project's pyproject.toml by `sft-setup`.
 # Scalars here replace the project's values; arrays are unioned (additions are commented
 # on the merged line); keys absent here are never touched. See docs/specs.
@@ -9,6 +10,26 @@
     "poethepoet>=0.46.0",
     "pyright>=1.1.411",
   ]
+
+[tool.coverage.run]
+  data_file   = ".cache/.coverage"
+  source_pkgs = ["{package}"]
+
+[tool.coverage.report]
+  show_missing = true
+
+[tool.coverage.html]
+  directory = ".cache/htmlcov"
+
+[tool.coverage.xml]
+  output = ".cache/coverage.xml"
+
+[tool.coverage.lcov]
+  output = ".cache/coverage.lcov"
+
+# setup-project: if-dep mypy
+[tool.mypy]
+  cache_dir = ".cache/mypy"
 
 [tool.poe]
   include_script = [{ script = "poe_tasks:tasks", executor = { type = "uv", frozen = true } }]
@@ -44,6 +65,19 @@
   reportImplicitOverride              = true
 
   executionEnvironments = [{ root = "src", extraPaths = ["src"] }]
+
+[tool.pytest.ini_options]
+  addopts      = [
+    "--cov",
+    "--cov-report=term-missing",
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+  ]
+  cache_dir    = ".cache/pytest"
+  testpaths    = ["tests"]
+  xfail_strict = true
+  asyncio_mode = "auto"
 
 [tool.ruff]
   cache-dir = ".cache/ruff"
@@ -155,36 +189,3 @@
     indent-table-key-value-pairs    = true
     key-value-equals-sign-alignment = true
     trailing-comment-alignment      = true
-
-[tool.pytest.ini_options]
-  addopts      = [
-    "--cov",
-    "--cov-report=term-missing",
-    "--strict-markers",
-    "--strict-config",
-    "-ra",
-  ]
-  cache_dir    = ".cache/pytest"
-  testpaths    = ["tests"]
-  xfail_strict = true
-  asyncio_mode = "auto"
-
-[tool.coverage.run]
-  data_file   = ".cache/.coverage"
-  source_pkgs = ["{package}"]
-
-[tool.coverage.report]
-  show_missing = true
-
-[tool.coverage.html]
-  directory = ".cache/htmlcov"
-
-[tool.coverage.xml]
-  output = ".cache/coverage.xml"
-
-[tool.coverage.lcov]
-  output = ".cache/coverage.lcov"
-
-# setup-project: if-dep mypy
-[tool.mypy]
-  cache_dir = ".cache/mypy"
