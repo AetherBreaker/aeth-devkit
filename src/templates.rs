@@ -15,9 +15,14 @@ pub enum Escape {
   Json,
 }
 
-/// Read a template and substitute `{project_root}` / `{package}`.
+/// Suffix carried by every template file so editors and tools never treat them as real
+/// config (e.g. `pyproject.toml.tmpl`).
+pub const TEMPLATE_SUFFIX: &str = ".tmpl";
+
+/// Read a template (by its target name, e.g. `pyproject.toml`) and substitute
+/// `{project_root}` / `{package}`.
 pub fn load(templates_dir: &Path, name: &str, ctx: &ProjectContext, escape: Escape) -> Result<String> {
-  let path = templates_dir.join(name);
+  let path = templates_dir.join(format!("{name}{TEMPLATE_SUFFIX}"));
   let text = std::fs::read_to_string(&path).with_context(|| format!("reading template {}", path.display()))?;
   Ok(substitute(&text, ctx, escape))
 }
