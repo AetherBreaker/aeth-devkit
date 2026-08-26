@@ -181,10 +181,27 @@ fn not_a_git_repo_skips_commit() {
 }
 
 #[test]
-fn range_specifier_is_left_alone_but_sync_runs() {
+fn one_major_range_is_bumped_to_the_next_major() {
   let dir = project(true);
   let root = dir.path();
   let ranged = PYPROJECT.replace("\"aeth-devkit>=6.0.2\"", "\"aeth-devkit>=6.0.2,<7\"");
+  std::fs::write(root.join("pyproject.toml"), &ranged).unwrap();
+  git::commit_paths(root, &["pyproject.toml".into()], "range").unwrap();
+  let index = StubIndexClient {
+    versions: vec!["7.1.0".into()],
+  };
+  let runner = RecordingRunner::new(0);
+  let code = run(&args(root), &index, &runner).unwrap();
+  assert_eq!(code, ExitCode::SUCCESS);
+  assert!(read(root, "pyproject.toml").contains("\"aeth-devkit>=7.1.0,<8\","));
+  assert_eq!(last_subject(root), COMMIT_SUBJECT);
+}
+
+#[test]
+fn unsupported_range_is_left_alone_but_sync_runs() {
+  let dir = project(true);
+  let root = dir.path();
+  let ranged = PYPROJECT.replace("\"aeth-devkit>=6.0.2\"", "\"aeth-devkit>=6.0.2,<6.5\"");
   std::fs::write(root.join("pyproject.toml"), &ranged).unwrap();
   git::commit_paths(root, &["pyproject.toml".into()], "range").unwrap();
   let index = StubIndexClient {

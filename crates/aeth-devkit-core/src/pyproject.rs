@@ -92,24 +92,98 @@ pub fn find_requirement(doc: &DocumentMut, name: &str) -> Option<Requirement> {
   None
 }
 
-static PIN_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
-  // name, optional extras, whitespace, a *pin* operator (>=, ==, ===, ~=), whitespace, then
-  // the version, then either end of string or a marker (`;`). Exclusions (`!=`), upper
-  // bounds (`<`, `<=`, `>`), wildcards (`1.*`), and multi-clause ranges (`>=1,<2`) are
-  // deliberately not matched: bumping their version would change what they mean.
-  Regex::new(
-    r"^(?P<head>[A-Za-z0-9][A-Za-z0-9._-]*(?:\s*\[[^\]]*\])?\s*(?:===|==|~=|>=)\s*)(?P<ver>[0-9][0-9A-Za-z.+!-]*)(?P<tail>\s*(?:;.*)?)$",
-  )
-  .unwrap()
+/// `name[extras]` followed by everything else (specifiers, then an optional `; marker`).
+static REQ_HEAD: LazyLock<Regex> =
+  LazyLock::new(|| Regex::new(r"^(?P<head>[A-Za-z0-9][A-Za-z0-9._-]*(?:\s*\[[^\]]*\])?)(?P<rest>.*)$").unwrap());
+
+/// One version clause: surrounding whitespace, operator, whitespace, version.
+static CLAUSE: LazyLock<Regex> = LazyLock::new(|| {
+  Regex::new(r"^(?P<pre>\s*)(?P<op>===|==|~=|!=|<=|>=|<|>)(?P<mid>\s*)(?P<ver>[0-9][0-9A-Za-z.+!-]*)(?P<post>\s*)$").unwrap()
 });
 
-/// Rewrite the version of a simple pin (`name[extras] OP version [; marker]` with `OP` one
-/// of `>=`, `==`, `===`, `~=`), keeping name, extras, operator, whitespace, and marker.
-/// Returns `None` for anything else — no version, an exclusion or upper bound, a wildcard,
-/// or a multi-clause range — since a bump there would change the requirement's meaning.
+struct Clause<'a> {
+  pre: &'a str,
+  op: &'a str,
+  mid: &'a str,
+  ver: &'a str,
+  post: &'a str,
+}
+
+impl Clause<'_> {
+  fn render(&self, ver: &str) -> String {
+    format!("{}{}{}{}{}", self.pre, self.op, self.mid, ver, self.post)
+  }
+}
+
+fn parse_clause(s: &str) -> Option<Clause<'_>> {
+  let c = CLAUSE.captures(s)?;
+  Some(Clause {
+    pre: c.name("pre")?.as_str(),
+    op: c.name("op")?.as_str(),
+    mid: c.name("mid")?.as_str(),
+    ver: c.name("ver")?.as_str(),
+    post: c.name("post")?.as_str(),
+  })
+}
+
+/// Numeric release segments of a version string (`7.0.0` → `[7, 0, 0]`); `None` if it
+/// contains anything but dot-separated integers.
+fn release_parts(ver: &str) -> Option<Vec<u64>> {
+  ver.split('.').map(|p| p.parse().ok()).collect()
+}
+
+/// Rewrite the version(s) of a requirement so it targets `version`, keeping name, extras,
+/// operators, whitespace, clause order, and marker. Supported shapes:
+///
+/// - a single pin `OP version` with `OP` one of `>=`, `==`, `===`, `~=` → the version is
+///   replaced;
+/// - a range of exactly one major version, `>=A, <B` (either order) where `B` is a bare
+///   major boundary (`7`, `7.0`, `7.0.0`) equal to `A`'s major plus one → the lower bound
+///   becomes `version` and the upper bound becomes `version`'s major plus one, keeping
+///   the same number of components.
+///
+/// Returns `None` for anything else — no version, exclusions, other bounds, wildcards,
+/// or other ranges — since a bump there would change the requirement's meaning.
 pub fn set_requirement_version(spec: &str, version: &str) -> Option<String> {
-  let caps = PIN_TOKEN.captures(spec)?;
-  Some(format!("{}{}{}", &caps["head"], version, &caps["tail"]))
+  let caps = REQ_HEAD.captures(spec)?;
+  let head = &caps["head"];
+  let rest = &caps["rest"];
+  let (specifiers, marker) = match rest.find(';') {
+    Some(i) => (&rest[..i], &rest[i..]),
+    None => (rest, ""),
+  };
+  let clauses: Vec<Clause> = specifiers.split(',').map(parse_clause).collect::<Option<_>>()?;
+
+  let rewritten = match clauses.as_slice() {
+    [pin] if matches!(pin.op, ">=" | "==" | "===" | "~=") => pin.render(version),
+    [a, b] => {
+      let lower_first = match (a.op, b.op) {
+        (">=", "<") => true,
+        ("<", ">=") => false,
+        _ => return None,
+      };
+      let (lower, upper) = if lower_first { (a, b) } else { (b, a) };
+      let lower_major = *release_parts(lower.ver)?.first()?;
+      let upper_parts = release_parts(upper.ver)?;
+      let is_major_boundary = upper_parts.iter().skip(1).all(|&p| p == 0);
+      if !is_major_boundary || upper_parts[0] != lower_major + 1 {
+        return None;
+      }
+      let new_major = *release_parts(version)?.first()?;
+      let new_upper = std::iter::once((new_major + 1).to_string())
+        .chain(upper_parts.iter().skip(1).map(|_| "0".to_string()))
+        .collect::<Vec<_>>()
+        .join(".");
+      let (new_lower, new_upper) = (lower.render(version), upper.render(&new_upper));
+      if lower_first {
+        format!("{new_lower},{new_upper}")
+      } else {
+        format!("{new_upper},{new_lower}")
+      }
+    }
+    _ => return None,
+  };
+  Some(format!("{head}{rewritten}{marker}"))
 }
 
 /// Overwrite the spec at `req` with `new_spec`, keeping the element's surrounding whitespace.
@@ -232,11 +306,35 @@ mod tests {
     assert!(set_requirement_version("pkg<2", "3.0").is_none());
     assert!(set_requirement_version("pkg<=2", "3.0").is_none());
     assert!(set_requirement_version("pkg>1", "3.0").is_none());
-    // Bumping only the lower bound of a range can make it unsatisfiable.
-    assert!(set_requirement_version("pkg>=1,<2", "3.0").is_none());
+    // Ranges that are not "one whole major version" cannot be bumped safely.
     assert!(set_requirement_version("pkg >= 1, != 1.5", "3.0").is_none());
+    assert!(set_requirement_version("pkg>=1,<=2", "3.0").is_none());
+    assert!(
+      set_requirement_version("pkg>=6,<6.5", "7.0").is_none(),
+      "upper bound is not a major boundary"
+    );
+    assert!(set_requirement_version("pkg>=6,<8", "7.0").is_none(), "spans two majors");
+    assert!(set_requirement_version("pkg>=6,<7,!=6.1", "7.0").is_none());
     // Wildcards are ranges too.
     assert!(set_requirement_version("pkg==1.*", "3.0").is_none());
+  }
+
+  #[test]
+  fn bumps_a_range_that_covers_one_major_version() {
+    assert_eq!(set_requirement_version("pkg>=6.0.2,<7", "7.1.0").unwrap(), "pkg>=7.1.0,<8");
+    // Upper bound keeps its component count; whitespace and clause order are preserved.
+    assert_eq!(
+      set_requirement_version("pkg >= 6.0.2, < 7.0", "7.1.0").unwrap(),
+      "pkg >= 7.1.0, < 8.0"
+    );
+    assert_eq!(set_requirement_version("pkg<7.0.0,>=6", "7.1.0").unwrap(), "pkg<8.0.0,>=7.1.0");
+    // Same major: only the lower bound moves.
+    assert_eq!(set_requirement_version("pkg>=6.0.2,<7", "6.3.0").unwrap(), "pkg>=6.3.0,<7");
+    // Extras and markers survive.
+    assert_eq!(
+      set_requirement_version("pkg[x]>=6.0.2,<7 ; sys_platform == 'win32'", "7.1.0").unwrap(),
+      "pkg[x]>=7.1.0,<8 ; sys_platform == 'win32'"
+    );
   }
 
   #[test]
