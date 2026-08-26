@@ -1,0 +1,3 @@
+SECRET="abc"
+PYTHONPYCACHEPREFIX="D:\old\__pycache__"
+OTHER=1

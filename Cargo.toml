@@ -4,12 +4,28 @@ version = "5.0.0"
 edition = "2024"
 publish = false
 
+[lib]
+name = "sft_setup"
+path = "rust/src/lib.rs"
+
 [[bin]]
 name = "sft-setup"
 path = "rust/src/main.rs"
 
 [dependencies]
+anyhow = "1.0.104"
 clap = { version = "4", features = ["derive"] }
+regex = "1.13.1"
+serde = "1.0.229"
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+toml_edit = "0.25.13"
 
 [profile.release]
 strip = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[[test]]
+name = "apply"
+path = "rust/tests/apply.rs"

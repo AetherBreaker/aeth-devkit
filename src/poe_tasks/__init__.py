@@ -163,3 +163,17 @@ tasks.add(
     ],
   },
 )
+
+
+tasks.add(
+  task_name="setup-project",
+  task_config={
+    "help": (
+      "Standardize this project's configuration from the templates shipped with poe_tasks "
+      "(cache dirs under .cache/, PYTHONPYCACHEPREFIX in .env and VS Code, inlined ruff/pyright "
+      "config, .gitignore/.gitattributes/.dockerignore). Idempotent. "
+      "Extra args are passed to sft-setup: --dry-run, --check, --templates-dir PATH."
+    ),
+    "cmd": "sft-setup",
+  },
+)

@@ -1,0 +1,110 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache",
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONSAFEPATH": "1"
+            }
+        },
+        {
+            "name": "Current File (as module)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/.vscode/debug_as_module.py",
+            "args": ["${file}"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/testing.env",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache",
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONSAFEPATH": "1"
+            }
+        },
+        {
+            "name": "Log Server",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/aeth_ext/central_log_server",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src",
+                "PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache",
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONSAFEPATH": "1"
+            }
+        },
+        {
+            "name": "Attach Debugger to Textual",
+            "type": "debugpy",
+            "request": "attach",
+            "justMyCode": false,
+            "listen": {
+                "host": "127.0.0.1",
+                "port": 5678
+            },
+            "suppressMultipleSessionWarning": true
+        },
+        {
+            "name": "Launch Textual in WT",
+            "type": "PowerShell",
+            "request": "launch",
+            "script": "ping",
+            "preLaunchTask": "Textual Debug WT: Launch All",
+            "internalConsoleOptions": "neverOpen",
+            "postDebugTask": "Close Windows Terminal Windows",
+            "presentation": {
+                "hidden": true
+            }
+        },
+        {
+            "name": "Launch Textual in Browser",
+            "type": "PowerShell",
+            "request": "launch",
+            "script": "ping",
+            "preLaunchTask": "Textual Debug Browser: Launch All",
+            "internalConsoleOptions": "neverOpen",
+            "postDebugTask": "Close Windows Terminal Windows",
+            "presentation": {
+                "hidden": true
+            }
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Debug Textual",
+            "configurations": [
+                "Attach Debugger to Textual",
+                "Launch Textual in WT"
+            ],
+            "stopAll": true
+        },
+        {
+            "name": "Debug Textual Browser",
+            "configurations": [
+                "Attach Debugger to Textual",
+                "Launch Textual in Browser"
+            ],
+            "stopAll": true
+        }
+    ]
+}

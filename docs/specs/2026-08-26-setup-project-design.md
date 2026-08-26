@@ -34,7 +34,7 @@ deployment files, moving `dist/`, or deleting `.cache/`.
 ## Invocation
 
 ```
-poe setup-project [--check] [--dry-run]
+poe setup-project [--check] [--dry-run] [--root PATH] [--templates-dir PATH]
 ```
 
 - Implemented in **Rust** as a standalone CLI binary (`sft-setup`) that lives in this repo

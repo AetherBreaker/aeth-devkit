@@ -1,0 +1,90 @@
+[project]
+  name            = "imap-report-collector"
+  version         = "3.0.1"
+  requires-python = ">=3.14"
+  dependencies    = [
+    "aeth-ext[sftp, async]>=8.0.2",
+    "aiologic>=0.16.0",
+    "heartrate>=0.2.2",
+    "imap-tools>=1.11.1",
+    "pydantic-settings>=2.14.1",
+    "rich>=15.0.0",
+    "tzdata>=2026.1",
+  ]
+
+  [project.scripts]
+    run-app-imap-report-collector = "imap_report_collector.__main__:run_app"
+
+[dependency-groups]
+  dev = [
+    "poe-tasks>=4.0.0",
+    "poethepoet>=0.46.0",
+    "pyright>=1.1.411",
+  ]
+
+[build-system]
+  requires      = ["uv_build>=0.11.2,<0.12.0"]
+  build-backend = "uv_build"
+
+[tool.coverage.run]
+  data_file   = ".cache/.coverage"
+  source_pkgs = ["scheduled_invoice_processor"]
+
+[tool.coverage.report]
+  show_missing = true
+
+[tool.docker]
+  # Paths relative to /app that the entrypoint will chown to nonroot:nonroot.
+  # Typically these are directories that will be bind-mounted as Docker volumes.
+  chown_paths = [
+    "persisted_data",
+  ]
+  mkdirs      = [""]
+
+[tool.poe]
+  include_script = [{ script = "poe_tasks:tasks", executor = { type = "uv", frozen = true } }]
+
+[tool.pyright]
+  extends = "../pyproject.toml"
+
+[tool.pytest.ini_options]
+  addopts      = [
+    "--cov",
+    "--cov-report=term-missing",
+    "--strict-markers",
+    "--strict-config",
+    "-ra"
+  ]
+  cache_dir    = ".cache/pytest"
+  testpaths    = ["tests"]
+  xfail_strict = true
+  asyncio_mode = "auto"
+
+[tool.ruff]
+  extend    = "../pyproject.toml"
+  cache-dir = ".cache/ruff"
+
+  src = ["./src"]
+
+[tool.uv]
+  environments = [
+    "sys_platform == 'linux'",
+    "sys_platform == 'win32'",
+  ]
+
+  [tool.uv.sources]
+    aeth-ext  = [
+      { index = "SFTPyPI", marker = "sys_platform == 'linux'" },
+      { path = "../aeth_ext", editable = true, marker = "sys_platform == 'win32'" },
+    ]
+    poe-tasks = [
+      { index = "SFTPyPI" },
+      # , marker = "sys_platform == 'linux'"
+      # { path = "../poe_tasks", editable = true, marker = "sys_platform == 'win32'" },
+    ]
+
+  [[tool.uv.index]]
+    name        = "SFTPyPI"
+    url         = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple"
+    publish-url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/"
+    explicit    = true

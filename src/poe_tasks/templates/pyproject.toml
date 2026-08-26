@@ -1,0 +1,190 @@
+# setup-project template — merged into each project's pyproject.toml by `sft-setup`.
+# Scalars here replace the project's values; arrays are unioned (additions are commented
+# on the merged line); keys absent here are never touched. See docs/specs.
+#
+# Placeholders: {package} → the project's import name.
+
+[dependency-groups]
+  dev = [
+    "poethepoet>=0.46.0",
+    "pyright>=1.1.411",
+  ]
+
+[tool.poe]
+  include_script = [{ script = "poe_tasks:tasks", executor = { type = "uv", frozen = true } }]
+
+[tool.pyright]
+  verboseOutput          = true
+  useLibraryCodeForTypes = true
+
+  enableReachabilityAnalysis  = true
+  analyzeUnannotatedFunctions = true
+  deprecateTypingAliases      = true
+
+  typeCheckingMode = "standard"
+
+  reportPropertyTypeMismatch          = true
+  reportMissingTypeStubs              = true
+  reportImportCycles                  = true
+  reportUntypedFunctionDecorator      = true
+  reportUntypedClassDecorator         = true
+  reportUntypedNamedTuple             = true
+  reportPrivateUsage                  = true
+  reportDeprecated                    = true
+  reportUninitializedInstanceVariable = true
+  reportMissingParameterType          = true
+  reportUnnecessaryIsInstance         = true
+  reportUnnecessaryCast               = true
+  reportUnnecessaryComparison         = true
+  reportUnnecessaryContains           = true
+  reportInvalidStubStatement          = true
+  reportUnnecessaryTypeIgnoreComment  = true
+  reportMatchNotExhaustive            = true
+  reportUnreachable                   = true
+  reportImplicitOverride              = true
+
+  executionEnvironments = [{ root = "src", extraPaths = ["src"] }]
+
+[tool.ruff]
+  cache-dir = ".cache/ruff"
+  src       = ["./src"]
+
+  exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "dist",
+    "node_modules",
+    "venv",
+  ]
+
+  fix = true
+
+  indent-width = 2
+  line-length  = 135
+
+  [tool.ruff.format]
+    docstring-code-format = true
+
+  [tool.ruff.lint]
+    extend-select = [
+      "A",
+      "ANN001",
+      "ASYNC",
+      "B",
+      "C4",
+      "C90",
+      "DTZ",
+      "FBT003",
+      "LOG",
+      "N",
+      "NPY",
+      "PD",
+      "PERF",
+      "PL",
+      "PYI",
+      "RUF",
+      "T10",
+      "TC",
+      "UP",
+    ]
+    ignore        = [
+      "A004",
+      "PD008",
+      "PD009",
+      "PLC0415",
+      "PLR0913",
+      "PLW0603",
+      "PIE790",
+    ]
+
+    [tool.ruff.lint.isort]
+      combine-as-imports = true
+      known-first-party  = ["{package}"]
+
+      [tool.ruff.lint.isort.import-heading]
+        first-party      = "First party imports"
+        future           = "Future imports"
+        local-folder     = "Local folder imports"
+        standard-library = "Standard library imports"
+        third-party      = "Third party imports"
+
+[tool.tombi]
+  toml-version = "v1.1.0"
+
+  [tool.tombi.files]
+    exclude = [
+      ".bzr",
+      ".direnv",
+      ".eggs",
+      ".git",
+      ".git-rewrite",
+      ".hg",
+      ".mypy_cache",
+      ".nox",
+      ".pants.d",
+      ".pytype",
+      ".ruff_cache",
+      ".svn",
+      ".tox",
+      ".venv",
+      "__pypackages__",
+      "_build",
+      "buck-out",
+      "dist",
+      "node_modules",
+      "venv",
+    ]
+
+  [tool.tombi.format.rules]
+    indent-sub-tables               = true
+    indent-table-key-value-pairs    = true
+    key-value-equals-sign-alignment = true
+    trailing-comment-alignment      = true
+
+[tool.pytest.ini_options]
+  addopts      = [
+    "--cov",
+    "--cov-report=term-missing",
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+  ]
+  cache_dir    = ".cache/pytest"
+  testpaths    = ["tests"]
+  xfail_strict = true
+  asyncio_mode = "auto"
+
+[tool.coverage.run]
+  data_file   = ".cache/.coverage"
+  source_pkgs = ["{package}"]
+
+[tool.coverage.report]
+  show_missing = true
+
+[tool.coverage.html]
+  directory = ".cache/htmlcov"
+
+[tool.coverage.xml]
+  output = ".cache/coverage.xml"
+
+[tool.coverage.lcov]
+  output = ".cache/coverage.lcov"
+
+# setup-project: if-dep mypy
+[tool.mypy]
+  cache_dir = ".cache/mypy"

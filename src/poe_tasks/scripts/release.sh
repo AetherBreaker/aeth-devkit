@@ -245,8 +245,14 @@ if ((${#BUMP_TYPES[@]} > 0)); then
   # Extract package name (normalising underscores to dashes) and the new version
   # from uv's output in a single awk pass instead of two separate pipelines.
   read -r PACKAGE_NAME NEW_VERSION < <(awk '{gsub(/_/, "-", $1); print $1, $NF}' <<<"${UV_VERSION_OUTPUT}")
+  # Projects that also ship a Rust binary (maturin) keep Cargo.toml's version in step
+  if [ -f Cargo.toml ]; then
+    sed -i -E "0,/^version = \"[^\"]+\"/s//version = \"${NEW_VERSION}\"/" Cargo.toml
+    [ -f Cargo.lock ] && cargo update -q --workspace 2>/dev/null || true
+  fi
   uv sync
   git add pyproject.toml uv.lock
+  [ -f Cargo.toml ] && git add Cargo.toml Cargo.lock 2>/dev/null
   git commit -m "Bump version to ${NEW_VERSION}"
   COMMITTED=true
   git tag -a "v${NEW_VERSION}" -m "Version ${NEW_VERSION}"
