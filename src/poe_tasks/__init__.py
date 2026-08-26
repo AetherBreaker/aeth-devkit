@@ -132,3 +132,20 @@ tasks.add(
     "help": "Remove generated files",
   },
 )
+
+
+tasks.add(
+  task_name="lock",
+  task_config={
+    "help": (
+      "Update uv.lock and commit it with a standardized message. "
+      "Skips the commit if the lockfile is unchanged."
+    ),
+    "shell": (
+      "uv lock && "
+      "if git diff --quiet -- uv.lock; then echo 'uv.lock is up to date; nothing to commit'; "
+      'else git add uv.lock && git commit -m "Update uv.lock"; fi'
+    ),
+    "interpreter": "bash",
+  },
+)
