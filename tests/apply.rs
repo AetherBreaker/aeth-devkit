@@ -29,7 +29,7 @@ fn make_project() -> tempfile::TempDir {
   let dir = tempfile::tempdir().unwrap();
   let root = dir.path();
   let fx = fixtures();
-  fs::copy(fx.join("pyproject.toml"), root.join("pyproject.toml")).unwrap();
+  fs::copy(fx.join("pyproject.fixture.toml"), root.join("pyproject.toml")).unwrap();
   for f in ["launch.json", "tasks.json", "settings.json"] {
     write(
       root,
