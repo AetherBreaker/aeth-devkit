@@ -15,6 +15,19 @@ of **templates shipped inside `poe_tasks`**. Two goals:
 
 Run once per project; re-run only when something drifts or a template changes.
 
+## Intended new-project workflow
+
+1. `uv init --lib`
+2. Manually add the SFTPyPI index + `tool.uv.sources.poe-tasks` and add `poe-tasks` to the
+   `dev` dependency group.
+3. `uv sync --upgrade --all-extras`
+4. `poe setup-project`
+
+Anything steps 1–3 already produce is **out of scope** for the script: `[project]`
+metadata, `requires-python`, `[build-system]`, `src/<pkg>/` layout, `py.typed`,
+`README.md`, `.python-version`, the SFTPyPI index/source blocks, and the `poe-tasks` dev
+dependency (its pin is maintained by `poe lock`).
+
 Explicitly **not** responsible for: cleaning existing stragglers (`poe clean`), Docker or
 deployment files, moving `dist/`, or deleting `.cache/`.
 
@@ -24,7 +37,10 @@ deployment files, moving `dist/`, or deleting `.cache/`.
 poe setup-project [--check] [--dry-run]
 ```
 
-- Implemented as `src/poe_tasks/scripts/setup_project.py` (Python, stdlib + `tomlkit`).
+- Implemented in **Python** (`src/poe_tasks/scripts/setup_project.py`, stdlib + `tomlkit`),
+  not bash: the merge logic needs real TOML/JSONC parsing and tests, and Python ships
+  inside the `poe_tasks` wheel with no extra toolchain (Rust would need its own
+  build/distribution path just to edit config files).
 - Runs against cwd (must contain `pyproject.toml`).
 - `--dry-run`: print changes, write nothing. `--check`: dry-run + exit 1 if anything would change.
 - Prints one line per changed file; silent for unchanged files. Second run = no output.
@@ -39,7 +55,7 @@ Live in `src/poe_tasks/templates/` and ship with the wheel:
 | `vscode/settings.json`     | `.vscode/settings.json`      | JSON deep-merge |
 | `vscode/launch.json`       | `.vscode/launch.json`        | create-if-missing + per-config env patch |
 | `vscode/extensions.json`   | `.vscode/extensions.json`    | JSON deep-merge (`recommendations` list-union) |
-| `gitignore`                | `.gitignore`                 | line-union |
+| `gitignore`                | `.gitignore`                 | replace-or-prepend (see below) |
 | `dockerignore`             | `.dockerignore`              | line-union, only if `docker/` or `Dockerfile*` exists |
 | `gitattributes`            | `.gitattributes`             | line-union |
 | `env`                      | `.env` + other referenced env files | key upsert |
@@ -50,7 +66,6 @@ Templates may use `{placeholders}` resolved at runtime:
 | -------------------- | ----- |
 | `{project_root}`     | absolute path, native separators |
 | `{package}`          | import name: sole directory under `src/` if unambiguous, else `project.name` with `-`→`_` |
-| `{latest_poe_tasks}` | latest stable `poe-tasks` on SFTPyPI (same lookup as `lock.sh`) |
 
 ### Merge modes
 
@@ -71,10 +86,9 @@ keys absent from the template are left untouched (project name, version, deps,
   never written by the script.
 - `tool.ruff.extend` and `tool.pyright.extends` are **removed** from the project once the
   template has inlined the full config (that is the whole point).
-- Array-of-tables `[[tool.uv.index]]`: ensure an entry with `name = "SFTPyPI"` exists and
-  matches the template; other index entries untouched.
 - `dependency-groups.dev`: ensure an entry for each template dep by package name; a
   matching existing entry (any specifier) is replaced with the template's specifier.
+  (`poe-tasks` itself is not in the template — see workflow above.)
 
 **JSON deep-merge** (`settings.json`, `extensions.json`): same as TOML; objects merge,
 leaves overwrite, lists replace unless flagged union. JSONC input tolerated (comments and
@@ -89,7 +103,16 @@ configs and compounds are untouched. `tasks.json` is likewise patched
 (`options.env.PYTHONPYCACHEPREFIX` on every task) but never created — tasks are
 project-specific.
 
-**line-union** (`.gitignore`, `.dockerignore`, `.gitattributes`): create from template if
+**gitignore replace-or-prepend**: the template is a vendored copy of
+<https://github.com/github/gitignore/blob/main/Python.gitignore> (plus a short SFT block:
+`.cache/`, `*.env`, `persisted_data/`). If the existing `.gitignore` contains no lines
+outside the template (ignoring blanks/whitespace; `.cache` ≡ `.cache/`) — which is what
+`uv init` leaves behind — it is **replaced** by the template. Otherwise the template is
+**prepended** and every line of the original that already appears in the template is
+dropped from the remainder, so the project-specific tail survives once, without
+duplicates. Vendored copy is refreshed by hand when GitHub updates it.
+
+**line-union** (`.dockerignore`, `.gitattributes`): create from template if
 absent; otherwise append each template line not already present (comparison ignores
 surrounding whitespace and treats `.cache` ≡ `.cache/`). Never removes or reorders.
 
@@ -101,9 +124,8 @@ file created if missing. Applied to `.env` and to every distinct `envFile` refer
 ## Template contents (v1)
 
 ### `pyproject.toml`
-- `[dependency-groups].dev`: `poe-tasks>={latest_poe_tasks}`, `poethepoet>=0.46.0`, `pyright>=1.1.411`
+- `[dependency-groups].dev`: `poethepoet>=0.46.0`, `pyright>=1.1.411`
 - `[tool.poe].include_script = [{ script = "poe_tasks:tasks", executor = { type = "uv", frozen = true } }]`
-- `[[tool.uv.index]]` SFTPyPI block; `[tool.uv.sources].poe-tasks = [{ index = "SFTPyPI" }]`
 - `[tool.pyright]`: full block currently in the grandparent `pyproject.toml` (no `extends`);
   `executionEnvironments = [{ root = "src", extraPaths = ["src"] }]`
 - `[tool.ruff]`: full block from grandparent (`exclude`, `fix`, `indent-width`, `line-length`,
@@ -147,7 +169,7 @@ One `Current File` debugpy config: `program=${file}`, `console=integratedTermina
 both poethepoet's and VS Code's env parsers — verified).
 
 ### `gitignore` / `dockerignore` / `gitattributes`
-- gitignore: standard GitHub Python template + `.cache/`, `.env`, `*.env`, `persisted_data/`.
+- gitignore: vendored GitHub `Python.gitignore` + SFT block (`.cache/`, `*.env`, `persisted_data/`).
 - dockerignore: `.cache/`, `.venv/`, `**/__pycache__`, `.git`, `.vscode`, `*.env`, `dist/`.
 - gitattributes: `* text=auto eol=lf`, `*.sh text eol=lf`.
 
@@ -161,8 +183,9 @@ Bytecode cache dir is `.cache/pycache` everywhere (existing `.cache/__pycache__`
 
 ## Decided / out of scope (2026-08-26)
 No `poe clean` changes; no `dist/` move; no Docker/compose edits; no straggler or
-git-tracked-file reports; no `.python-version` or README scaffolding; no
-`requires-python`/build-system enforcement.
+git-tracked-file reports; nothing `uv init --lib` or the manual index step already
+produces (`.python-version`, README, `requires-python`, build-system, SFTPyPI index/source,
+`poe-tasks` dev dep).
 
 ## Resolved (2026-08-26)
 
@@ -174,7 +197,5 @@ git-tracked-file reports; no `.python-version` or README scaffolding; no
 
 - `tomlkit` is added as a runtime dependency of `poe_tasks`; templates are package data
   under `src/poe_tasks/templates/` and located via `importlib.resources`.
-- The `{latest_poe_tasks}` lookup reuses the SFTPyPI query from `lock.sh` (extracted into
-  a small shared Python helper so both callers agree).
 - Tests (pytest, in `tests/`) cover each merge mode against fixture files copied from the
   current projects, plus an idempotency test (apply twice → second diff empty).
