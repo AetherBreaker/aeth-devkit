@@ -129,7 +129,10 @@ fn bump_pin(doc: &mut DocumentMut, pkg: &str, index: &dyn IndexClient) -> Result
   let latest = version::latest_stable(versions.iter().map(String::as_str))
     .with_context(|| format!("No stable release versions found for {pkg} on {simple_url}"))?;
   let Some(new_spec) = pyproject::set_requirement_version(&req.spec, &latest) else {
-    println!("{pkg} requirement \"{}\" has no version to update; skipping", req.spec);
+    println!(
+      "{pkg} requirement \"{}\" is not a simple >=/==/~= pin; skipping pin update (latest is {latest})",
+      req.spec
+    );
     return Ok(());
   };
   if new_spec == req.spec {

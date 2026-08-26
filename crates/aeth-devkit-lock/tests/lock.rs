@@ -181,6 +181,24 @@ fn not_a_git_repo_skips_commit() {
 }
 
 #[test]
+fn range_specifier_is_left_alone_but_sync_runs() {
+  let dir = project(true);
+  let root = dir.path();
+  let ranged = PYPROJECT.replace("\"aeth-devkit>=6.0.2\"", "\"aeth-devkit>=6.0.2,<7\"");
+  std::fs::write(root.join("pyproject.toml"), &ranged).unwrap();
+  git::commit_paths(root, &["pyproject.toml".into()], "range").unwrap();
+  let index = StubIndexClient {
+    versions: vec!["7.1.0".into()],
+  };
+  let runner = RecordingRunner::new(0);
+  let code = run(&args(root), &index, &runner).unwrap();
+  assert_eq!(code, ExitCode::SUCCESS);
+  assert_eq!(read(root, "pyproject.toml"), ranged, "range pin must not be rewritten");
+  assert_eq!(runner.calls.borrow().len(), 1);
+  assert_eq!(last_subject(root), "range");
+}
+
+#[test]
 fn no_stable_version_is_an_error() {
   let dir = project(true);
   let root = dir.path();

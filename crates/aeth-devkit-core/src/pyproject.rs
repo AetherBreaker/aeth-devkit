@@ -92,19 +92,24 @@ pub fn find_requirement(doc: &DocumentMut, name: &str) -> Option<Requirement> {
   None
 }
 
-static VERSION_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
-  // name, optional extras, optional whitespace, operator, optional whitespace, then the version.
-  Regex::new(r"^(?P<head>[A-Za-z0-9][A-Za-z0-9._-]*(?:\s*\[[^\]]*\])?\s*(?:===|==|~=|!=|<=|>=|<|>)\s*)(?P<ver>[0-9][0-9A-Za-z.+!*-]*)")
-    .unwrap()
+static PIN_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
+  // name, optional extras, whitespace, a *pin* operator (>=, ==, ===, ~=), whitespace, then
+  // the version, then either end of string or a marker (`;`). Exclusions (`!=`), upper
+  // bounds (`<`, `<=`, `>`), wildcards (`1.*`), and multi-clause ranges (`>=1,<2`) are
+  // deliberately not matched: bumping their version would change what they mean.
+  Regex::new(
+    r"^(?P<head>[A-Za-z0-9][A-Za-z0-9._-]*(?:\s*\[[^\]]*\])?\s*(?:===|==|~=|>=)\s*)(?P<ver>[0-9][0-9A-Za-z.+!-]*)(?P<tail>\s*(?:;.*)?)$",
+  )
+  .unwrap()
 });
 
-/// Replace the version token that directly follows the first comparison operator, keeping
-/// the name, extras, operator, whitespace, and anything after (markers, further clauses).
-/// Returns `None` when the spec has no version to replace.
+/// Rewrite the version of a simple pin (`name[extras] OP version [; marker]` with `OP` one
+/// of `>=`, `==`, `===`, `~=`), keeping name, extras, operator, whitespace, and marker.
+/// Returns `None` for anything else — no version, an exclusion or upper bound, a wildcard,
+/// or a multi-clause range — since a bump there would change the requirement's meaning.
 pub fn set_requirement_version(spec: &str, version: &str) -> Option<String> {
-  let caps = VERSION_TOKEN.captures(spec)?;
-  let whole = caps.get(0)?;
-  Some(format!("{}{}{}", &caps["head"], version, &spec[whole.end()..]))
+  let caps = PIN_TOKEN.captures(spec)?;
+  Some(format!("{}{}{}", &caps["head"], version, &caps["tail"]))
 }
 
 /// Overwrite the spec at `req` with `new_spec`, keeping the element's surrounding whitespace.
@@ -216,7 +221,22 @@ mod tests {
       "aeth-ext[sftp]>=9.0.0 ; sys_platform == 'win32'"
     );
     assert_eq!(set_requirement_version("x~=1.2", "1.3").unwrap(), "x~=1.3");
+    assert_eq!(set_requirement_version("x===1.2", "1.3").unwrap(), "x===1.3");
     assert!(set_requirement_version("numpy", "2.0").is_none());
+  }
+
+  #[test]
+  fn refuses_specifiers_where_a_bump_would_change_meaning() {
+    // Exclusions and upper bounds are not pins.
+    assert!(set_requirement_version("pkg!=1.0", "3.0").is_none());
+    assert!(set_requirement_version("pkg<2", "3.0").is_none());
+    assert!(set_requirement_version("pkg<=2", "3.0").is_none());
+    assert!(set_requirement_version("pkg>1", "3.0").is_none());
+    // Bumping only the lower bound of a range can make it unsatisfiable.
+    assert!(set_requirement_version("pkg>=1,<2", "3.0").is_none());
+    assert!(set_requirement_version("pkg >= 1, != 1.5", "3.0").is_none());
+    // Wildcards are ranges too.
+    assert!(set_requirement_version("pkg==1.*", "3.0").is_none());
   }
 
   #[test]
