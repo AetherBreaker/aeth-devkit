@@ -47,7 +47,7 @@ poe setup-project [--check] [--dry-run] [--root PATH] [--templates-dir PATH]
 
 ## Templates
 
-Live in `src/poe_tasks/templates/` and ship with the wheel:
+Live in `python/poe_tasks/templates/` and ship with the wheel:
 
 | Template                   | Target                       | Merge mode |
 | -------------------------- | ---------------------------- | ---------- |
@@ -208,8 +208,9 @@ Layout:
 poe_tasks/
 ├── pyproject.toml        # build-backend = "maturin", [tool.maturin] bindings = "bin"
 ├── Cargo.toml            # [[bin]] name = "sft-setup"
-├── rust/src/main.rs      # CLI (clap), merge logic, tests
-├── src/poe_tasks/        # unchanged Python: __init__.py, scripts/, templates/
+├── src/                  # Rust: lib.rs, main.rs, merge modules
+├── tests/                # cargo integration tests + fixtures
+├── python/poe_tasks/     # Python: __init__.py, scripts/, templates/
 └── uv.lock
 ```
 
@@ -238,7 +239,7 @@ via `uv tool`, VS Code `rust-analyzer` + `vadimcn.vscode-lldb`. Shared
 
 - Crates: `clap` (CLI), `toml_edit` (pyproject), `serde_json` + a small JSONC
   comment/trailing-comma stripper (VS Code files), `anyhow` (errors). No `tomlkit`.
-- Templates are package data under `src/poe_tasks/templates/`.
+- Templates are package data under `python/poe_tasks/templates/`.
 - Tests: Rust unit/integration tests (`cargo test`) cover each merge mode against fixture
   files copied from the current projects, plus an idempotency test (apply twice → second
   diff empty). A single pytest smoke test confirms the installed wheel exposes a working

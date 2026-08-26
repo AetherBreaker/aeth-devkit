@@ -4,12 +4,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn fixtures() -> PathBuf {
-  Path::new(env!("CARGO_MANIFEST_DIR")).join("rust").join("tests").join("fixtures")
+  Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures")
 }
 
 fn templates() -> PathBuf {
   Path::new(env!("CARGO_MANIFEST_DIR"))
-    .join("src")
+    .join("python")
     .join("poe_tasks")
     .join("templates")
 }

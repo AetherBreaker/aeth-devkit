@@ -46,7 +46,7 @@ pub fn locate(explicit: Option<&Path>) -> Result<PathBuf> {
     return Ok(p);
   }
   let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
-    .join("src")
+    .join("python")
     .join("poe_tasks")
     .join("templates");
   if dev.is_dir() {
