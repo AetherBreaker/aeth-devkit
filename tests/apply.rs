@@ -227,3 +227,50 @@ fn plain_python_project_gets_no_rust_overlays() {
   assert!(!read(root, ".vscode/extensions.json").contains("rust-analyzer"));
   assert!(!read(root, ".vscode/settings.json").contains("[rust]"));
 }
+
+#[test]
+fn commits_only_changed_trackable_files_in_a_git_repo() {
+  let dir = make_project();
+  let root = dir.path();
+  let git = |args: &[&str]| {
+    let out = std::process::Command::new("git").current_dir(root).args(args).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+  };
+  git(&["init", "-q"]);
+  git(&["config", "user.email", "t@t"]);
+  git(&["config", "user.name", "t"]);
+  git(&["add", "-A"]);
+  git(&["commit", "-q", "-m", "init"]);
+  // Something the user staged but that sft-setup must not sweep into its commit.
+  write(root, "unrelated.txt", "x\n");
+  git(&["add", "unrelated.txt"]);
+
+  let changes = sft_setup::run(root, &templates(), false).unwrap();
+  assert!(sft_setup::git::is_git_tracked(root));
+  let hash = sft_setup::git::commit_changes(root, &changes).unwrap();
+  assert!(hash.is_some());
+
+  let subject = git(&["log", "-1", "--format=%s"]);
+  assert_eq!(subject, sft_setup::git::COMMIT_SUBJECT);
+  let committed = git(&["show", "--name-only", "--format=", "HEAD"]);
+  assert!(committed.contains("pyproject.toml"), "{committed}");
+  assert!(committed.contains(".vscode/settings.json"), "{committed}");
+  assert!(
+    !committed.contains(".env"),
+    ".env is gitignored and must not be committed: {committed}"
+  );
+  assert!(
+    !committed.contains("unrelated.txt"),
+    "pre-staged user file must be left alone: {committed}"
+  );
+  assert_eq!(
+    git(&["diff", "--cached", "--name-only"]),
+    "unrelated.txt",
+    "user's staged file must remain staged"
+  );
+
+  // Nothing to commit on a second run.
+  let again = sft_setup::run(root, &templates(), false).unwrap();
+  assert!(sft_setup::git::commit_changes(root, &again).unwrap().is_none());
+}

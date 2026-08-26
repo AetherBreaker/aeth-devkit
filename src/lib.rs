@@ -3,6 +3,7 @@
 
 pub mod changes;
 pub mod context;
+pub mod git;
 pub mod json_merge;
 pub mod lines;
 pub mod templates;

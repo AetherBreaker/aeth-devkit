@@ -22,6 +22,11 @@ struct Cli {
   /// Like --dry-run, but exit non-zero if anything would change.
   #[arg(long)]
   check: bool,
+
+  /// Do not commit the changes (by default they are committed when the project is
+  /// inside a git work tree; only the files sft-setup changed are staged).
+  #[arg(long)]
+  no_commit: bool,
 }
 
 fn main() -> ExitCode {
@@ -38,7 +43,20 @@ fn main() -> ExitCode {
       }
       let header = if dry_run { "Would change:" } else { "Changed:" };
       println!("{header}\n{}", changes.report(&root));
-      if cli.check { ExitCode::from(1) } else { ExitCode::SUCCESS }
+      if cli.check {
+        return ExitCode::from(1);
+      }
+      if !dry_run && !cli.no_commit && sft_setup::git::is_git_tracked(&root) {
+        match sft_setup::git::commit_changes(&root, &changes) {
+          Ok(Some(hash)) => println!("Committed as {hash}."),
+          Ok(None) => println!("Nothing to commit (only gitignored or env files changed)."),
+          Err(e) => {
+            eprintln!("warning: changes applied but not committed: {e:#}");
+            return ExitCode::from(3);
+          }
+        }
+      }
+      ExitCode::SUCCESS
     }
     Err(e) => {
       eprintln!("error: {e:#}");
