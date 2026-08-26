@@ -1,0 +1,23 @@
+[package]
+  name    = "aeth-devkit-setup"
+  version.workspace = true
+  edition.workspace = true
+  publish.workspace = true
+
+[lib]
+  name = "aeth_devkit_setup"
+
+[[bin]]
+  name = "devkit-setup"
+  path = "src/main.rs"
+
+[dependencies]
+  anyhow     = { workspace = true }
+  clap       = { workspace = true }
+  regex      = { workspace = true }
+  serde      = { workspace = true }
+  serde_json = { workspace = true }
+  toml_edit  = { workspace = true }
+
+[dev-dependencies]
+  tempfile = { workspace = true }

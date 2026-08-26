@@ -1,25 +1,27 @@
-[package]
-  name    = "sft-setup"
-  version = "5.0.0"
+[workspace]
+  resolver = "3"
+  members  = ["crates/*"]
+
+[workspace.package]
+  version = "7.0.0"
   edition = "2024"
   publish = false
 
-[lib]
-  name = "sft_setup"
-
-[[bin]]
-  name = "sft-setup"
-
-[dependencies]
+[workspace.dependencies]
   anyhow     = "1.0.104"
   clap       = { version = "4", features = ["derive"] }
+  pep440_rs  = "0.7.3"
   regex      = "1.13.1"
   serde      = "1.0.229"
   serde_json = { version = "1.0.151", features = ["preserve_order"] }
+  tempfile   = "3.27.0"
   toml_edit  = "0.25.13"
+  ureq       = { version = "3.4.0", features = ["json"] }
 
-[dev-dependencies]
-  tempfile = "3.27.0"
+  aeth-devkit-core  = { path = "crates/aeth-devkit-core" }
+  aeth-devkit-setup = { path = "crates/aeth-devkit-setup" }
+  aeth-devkit-lock  = { path = "crates/aeth-devkit-lock" }
 
 [profile.release]
-  strip = true
+  strip       = true
+  incremental = true

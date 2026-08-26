@@ -9,6 +9,8 @@ fn fixtures() -> PathBuf {
 
 fn templates() -> PathBuf {
   Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("..")
+    .join("..")
     .join("python")
     .join("poe_tasks")
     .join("templates")
@@ -49,7 +51,7 @@ fn applies_and_is_idempotent() {
   let dir = make_project();
   let root = dir.path();
 
-  let changes = sft_setup::run(root, &templates(), false).unwrap();
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
   let changed: Vec<String> = changes
     .files
     .iter()
@@ -143,7 +145,7 @@ fn applies_and_is_idempotent() {
   assert!(read(root, ".dockerignore").contains(".cache/"));
 
   // Second run: nothing changes.
-  let again = sft_setup::run(root, &templates(), false).unwrap();
+  let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
   assert!(again.is_empty(), "second run should be a no-op, got:\n{}", again.report(root));
 }
 
@@ -152,7 +154,7 @@ fn dry_run_writes_nothing() {
   let dir = make_project();
   let root = dir.path();
   let before = read(root, "pyproject.toml");
-  let changes = sft_setup::run(root, &templates(), true).unwrap();
+  let changes = aeth_devkit_setup::run(root, &templates(), true).unwrap();
   assert!(!changes.is_empty());
   assert_eq!(read(root, "pyproject.toml"), before);
   assert!(!root.join(".vscode/extensions.json").exists());
@@ -168,7 +170,7 @@ fn uv_init_gitignore_is_replaced_and_mypy_is_conditional() {
     "[project]\n  name = \"demo-app\"\n  version = \"0.1.0\"\n  dependencies = []\n\n[dependency-groups]\n  dev = [\"mypy>=1\"]\n",
   );
   write(root, ".gitignore", &fs::read_to_string(fixtures().join("gitignore-uv")).unwrap());
-  let changes = sft_setup::run(root, &templates(), false).unwrap();
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
   let gi = read(root, ".gitignore");
   assert!(!gi.contains("project-specific"), "{gi}");
   assert!(gi.starts_with("# Byte-compiled"));
@@ -178,7 +180,7 @@ fn uv_init_gitignore_is_replaced_and_mypy_is_conditional() {
   assert!(root.join(".vscode/launch.json").is_file());
   assert!(!root.join(".dockerignore").exists(), "no docker setup → no .dockerignore");
   assert!(!changes.is_empty());
-  assert!(sft_setup::run(root, &templates(), false).unwrap().is_empty());
+  assert!(aeth_devkit_setup::run(root, &templates(), false).unwrap().is_empty());
 }
 
 #[test]
@@ -194,7 +196,7 @@ fn mixed_rust_python_project_uses_python_dir_and_rust_overlays() {
   write(root, "src/main.rs", "fn main() {}\n");
   write(root, "python/mixed_tool/__init__.py", "");
   write(root, ".gitignore", "# custom\nsecrets/\n");
-  sft_setup::run(root, &templates(), false).unwrap();
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
 
   let py = read(root, "pyproject.toml");
   assert!(py.contains("src       = [\"./python\"]"), "{py}");
@@ -209,7 +211,7 @@ fn mixed_rust_python_project_uses_python_dir_and_rust_overlays() {
   let gi = read(root, ".gitignore");
   assert!(gi.contains("*.pdb"), "rust overlay must be merged: {gi}");
   assert!(gi.contains("secrets/"), "{gi}");
-  assert!(sft_setup::run(root, &templates(), false).unwrap().is_empty());
+  assert!(aeth_devkit_setup::run(root, &templates(), false).unwrap().is_empty());
 }
 
 #[test]
@@ -222,7 +224,7 @@ fn plain_python_project_gets_no_rust_overlays() {
     "[project]\n  name = \"plain\"\n  version = \"0.1.0\"\n  dependencies = []\n",
   );
   write(root, "src/plain/__init__.py", "");
-  sft_setup::run(root, &templates(), false).unwrap();
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
   assert!(read(root, "pyproject.toml").contains("src       = [\"./src\"]"));
   assert!(!read(root, ".vscode/extensions.json").contains("rust-analyzer"));
   assert!(!read(root, ".vscode/settings.json").contains("[rust]"));
@@ -246,13 +248,13 @@ fn commits_only_changed_trackable_files_in_a_git_repo() {
   write(root, "unrelated.txt", "x\n");
   git(&["add", "unrelated.txt"]);
 
-  let changes = sft_setup::run(root, &templates(), false).unwrap();
-  assert!(sft_setup::git::is_git_tracked(root));
-  let hash = sft_setup::git::commit_changes(root, &changes).unwrap();
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  assert!(aeth_devkit_setup::git::is_git_tracked(root));
+  let hash = aeth_devkit_setup::git::commit_changes(root, &changes).unwrap();
   assert!(hash.is_some());
 
   let subject = git(&["log", "-1", "--format=%s"]);
-  assert_eq!(subject, sft_setup::git::COMMIT_SUBJECT);
+  assert_eq!(subject, aeth_devkit_setup::git::COMMIT_SUBJECT);
   let committed = git(&["show", "--name-only", "--format=", "HEAD"]);
   assert!(committed.contains("pyproject.toml"), "{committed}");
   assert!(committed.contains(".vscode/settings.json"), "{committed}");
@@ -271,6 +273,6 @@ fn commits_only_changed_trackable_files_in_a_git_repo() {
   );
 
   // Nothing to commit on a second run.
-  let again = sft_setup::run(root, &templates(), false).unwrap();
-  assert!(sft_setup::git::commit_changes(root, &again).unwrap().is_none());
+  let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  assert!(aeth_devkit_setup::git::commit_changes(root, &again).unwrap().is_none());
 }

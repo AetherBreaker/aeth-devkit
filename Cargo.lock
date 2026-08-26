@@ -3,6 +3,19 @@
 version = 4
 
 [[package]]
+name = "aeth-devkit-setup"
+version = "7.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml_edit",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -329,19 +342,6 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
-]
-
-[[package]]
-name = "sft-setup"
-version = "5.0.0"
-dependencies = [
- "anyhow",
- "clap",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "toml_edit",
 ]
 
 [[package]]
