@@ -1,5 +1,5 @@
 #:schema https://json.schemastore.org/pyproject.json
-# setup-project template — merged into each project's pyproject.toml by `sft-setup`.
+# setup-project template — merged into each project's pyproject.toml by `devkit setup-project`.
 # Scalars here replace the project's values; arrays are unioned (additions are commented
 # on the merged line); keys absent here are never touched. See docs/specs.
 #
@@ -44,7 +44,7 @@
   cache_dir = ".cache/mypy"
 
 [tool.poe]
-  include_script = [{ script = "poe_tasks:tasks", executor = { type = "uv", frozen = true } }]
+  include_script = [{ script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }]
 
 [tool.pyright]
   typeCheckingMode = "standard"

@@ -12,7 +12,7 @@ fn templates() -> PathBuf {
     .join("..")
     .join("..")
     .join("python")
-    .join("poe_tasks")
+    .join("aeth_devkit")
     .join("templates")
 }
 
@@ -244,7 +244,7 @@ fn commits_only_changed_trackable_files_in_a_git_repo() {
   git(&["config", "user.name", "t"]);
   git(&["add", "-A"]);
   git(&["commit", "-q", "-m", "init"]);
-  // Something the user staged but that sft-setup must not sweep into its commit.
+  // Something the user staged but that setup-project must not sweep into its commit.
   write(root, "unrelated.txt", "x\n");
   git(&["add", "unrelated.txt"]);
 
@@ -275,4 +275,20 @@ fn commits_only_changed_trackable_files_in_a_git_repo() {
   // Nothing to commit on a second run.
   let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
   assert!(aeth_devkit_setup::git::commit_changes(root, &again).unwrap().is_none());
+}
+
+#[test]
+fn replaces_legacy_poe_tasks_include_script() {
+  let dir = make_project();
+  let root = dir.path();
+  let py = read(root, "pyproject.toml").replace("aeth_devkit:tasks", "poe_tasks:tasks");
+  assert!(py.contains("poe_tasks:tasks"), "fixture should start with the legacy include");
+  write(root, "pyproject.toml", &py);
+
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let out = read(root, "pyproject.toml");
+  assert!(!out.contains("poe_tasks:tasks"), "{out}");
+  let code: String = out.lines().map(|l| l.split('#').next().unwrap_or("")).collect();
+  assert_eq!(code.matches("aeth_devkit:tasks").count(), 1, "{out}");
+  assert!(out.contains("include_script = [{ script"), "no stray space after '[': {out}");
 }

@@ -118,6 +118,12 @@ impl Merger<'_> {
         self.log.push(format!("added {path}"));
       }
       Some(Item::Value(Value::Array(existing))) if tval.is_array() => {
+        if path == "tool.poe.include_script" {
+          let removed = remove_legacy_include_scripts(existing);
+          if removed > 0 {
+            self.log.push(format!("{path}: removed {removed} legacy poe_tasks include"));
+          }
+        }
         let added = if path.starts_with("dependency-groups.") || path == "project.dependencies" {
           union_dependencies(existing, tval.as_array().unwrap())
         } else {
@@ -194,6 +200,22 @@ fn strip_decor(v: &mut Value) {
   }
 }
 
+/// Drop `include_script` entries that point at the pre-rename `poe_tasks:tasks` module so
+/// the template's `aeth_devkit:tasks` entry replaces rather than joins them.
+fn remove_legacy_include_scripts(existing: &mut Array) -> usize {
+  let legacy = |v: &Value| -> bool {
+    let script = match v {
+      Value::InlineTable(t) => t.get("script").and_then(Value::as_str),
+      Value::String(s) => Some(s.value().as_str()),
+      _ => None,
+    };
+    script.is_some_and(|s| s == "poe_tasks:tasks")
+  };
+  let before = existing.len();
+  existing.retain(|v| !legacy(v));
+  before - existing.len()
+}
+
 /// Append template elements missing from `existing`; returns their rendered forms.
 fn union_array(existing: &mut Array, template: &Array) -> Vec<String> {
   let have: Vec<String> = existing.iter().map(canonical).collect();
@@ -241,9 +263,11 @@ fn push_like_last(arr: &mut Array, mut v: Value) {
     .last()
     .and_then(|l| l.decor().prefix().and_then(|p| p.as_str()).map(str::to_string));
   // Multi-line arrays carry a "\n    " prefix on each element; single-line ones carry
-  // nothing (the first element) or " ". Either way a new element wants at least one space.
+  // nothing (the first element) or " ". A new element wants at least one space, except
+  // as the first element of an (emptied) array.
   let prefix = match prefix {
     Some(p) if !p.trim_matches(' ').is_empty() => p,
+    _ if arr.is_empty() => String::new(),
     _ => " ".to_string(),
   };
   v.decor_mut().set_prefix(prefix);

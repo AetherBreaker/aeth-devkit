@@ -69,8 +69,8 @@ pub fn locate(explicit: Option<&Path>) -> Result<PathBuf> {
   if let Some(p) = explicit {
     return existing_dir(p.to_path_buf(), "--templates-dir");
   }
-  if let Ok(p) = std::env::var("SFT_SETUP_TEMPLATES") {
-    return existing_dir(PathBuf::from(p), "SFT_SETUP_TEMPLATES");
+  if let Ok(p) = std::env::var("DEVKIT_TEMPLATES") {
+    return existing_dir(PathBuf::from(p), "DEVKIT_TEMPLATES");
   }
   if let Some(p) = from_python() {
     return Ok(p);
@@ -79,12 +79,12 @@ pub fn locate(explicit: Option<&Path>) -> Result<PathBuf> {
     .join("..")
     .join("..")
     .join("python")
-    .join("poe_tasks")
+    .join("aeth_devkit")
     .join("templates");
   if dev.is_dir() {
     return Ok(dev);
   }
-  bail!("could not locate poe_tasks templates; pass --templates-dir or set SFT_SETUP_TEMPLATES")
+  bail!("could not locate aeth_devkit templates; pass --templates-dir or set DEVKIT_TEMPLATES")
 }
 
 fn existing_dir(p: PathBuf, what: &str) -> Result<PathBuf> {
@@ -96,7 +96,7 @@ fn existing_dir(p: PathBuf, what: &str) -> Result<PathBuf> {
 }
 
 /// Ask the Python interpreter that lives alongside this binary (the venv's `Scripts/`)
-/// where `poe_tasks` is installed.
+/// where `aeth_devkit` is installed.
 fn from_python() -> Option<PathBuf> {
   let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
   let candidates = [exe_dir.join("python.exe"), exe_dir.join("python"), PathBuf::from("python")];
@@ -104,7 +104,7 @@ fn from_python() -> Option<PathBuf> {
     let out = Command::new(&py)
       .args([
         "-c",
-        "import poe_tasks, os; print(os.path.join(os.path.dirname(poe_tasks.__file__), 'templates'))",
+        "import aeth_devkit, os; print(os.path.join(os.path.dirname(aeth_devkit.__file__), 'templates'))",
       ])
       .output()
       .ok()?;
