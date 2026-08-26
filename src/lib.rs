@@ -139,3 +139,16 @@ fn load_with_rust_overlay(templates_dir: &Path, name: &str, ctx: &ProjectContext
   }
   Ok(template)
 }
+
+fn read_optional(path: &Path) -> Result<Option<String>> {
+  match std::fs::read_to_string(path) {
+    Ok(s) => Ok(Some(s)),
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+    Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+  }
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+  let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
+  norm(a) == norm(b)
+}
