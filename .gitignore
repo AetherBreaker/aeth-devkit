@@ -249,3 +249,6 @@ rustc-ice-*.txt
 # ---- SFT additions ----
 *.env
 persisted_data/
+
+# Templates shipped in the wheel must never be ignored (template.env matches *.env above)
+!python/poe_tasks/templates/**
