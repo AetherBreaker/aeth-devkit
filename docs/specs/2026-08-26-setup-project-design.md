@@ -47,9 +47,10 @@ poe setup-project [--check] [--dry-run] [--root PATH] [--templates-dir PATH]
 
 ## Templates
 
-Live in `python/poe_tasks/templates/` and ship with the wheel. Every file carries a
-`.tmpl` suffix (`pyproject.toml.tmpl`, `vscode/settings.json.tmpl`, …) so editors, formatters
-and tools never mistake them for live configuration; the table below lists them by target name:
+Live in `python/poe_tasks/templates/` and ship with the wheel. Template files keep a real
+extension (for editor support) but never the exact filename a tool keys on:
+`pyproject.template.toml`, `vscode/settings.template.jsonc` (jsonc so comments are valid),
+`template.gitignore`, `template.env`, …. The table below lists them by target name:
 
 | Template                   | Target                       | Merge mode |
 | -------------------------- | ---------------------------- | ---------- |

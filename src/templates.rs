@@ -15,14 +15,26 @@ pub enum Escape {
   Json,
 }
 
-/// Suffix carried by every template file so editors and tools never treat them as real
-/// config (e.g. `pyproject.toml.tmpl`).
-pub const TEMPLATE_SUFFIX: &str = ".tmpl";
+/// Map a target file name to its template file name. Templates keep a real extension so
+/// editors provide highlighting, but never use the exact name a tool would key on:
+/// `pyproject.toml` → `pyproject.template.toml`, `vscode/settings.json` →
+/// `vscode/settings.template.jsonc` (comments allowed), `gitignore` → `template.gitignore`.
+pub fn template_file_name(target: &str) -> String {
+  let (dir, file) = match target.rsplit_once('/') {
+    Some((d, f)) => (format!("{d}/"), f),
+    None => (String::new(), target),
+  };
+  match file.rsplit_once('.') {
+    Some((stem, "json")) => format!("{dir}{stem}.template.jsonc"),
+    Some((stem, ext)) => format!("{dir}{stem}.template.{ext}"),
+    None => format!("{dir}template.{file}"),
+  }
+}
 
 /// Read a template (by its target name, e.g. `pyproject.toml`) and substitute
 /// `{project_root}` / `{package}`.
 pub fn load(templates_dir: &Path, name: &str, ctx: &ProjectContext, escape: Escape) -> Result<String> {
-  let path = templates_dir.join(format!("{name}{TEMPLATE_SUFFIX}"));
+  let path = templates_dir.join(template_file_name(name));
   let text = std::fs::read_to_string(&path).with_context(|| format!("reading template {}", path.display()))?;
   Ok(substitute(&text, ctx, escape))
 }
@@ -89,4 +101,17 @@ fn from_python() -> Option<PathBuf> {
     }
   }
   None
+}
+
+#[cfg(test)]
+mod tests {
+  use super::template_file_name;
+
+  #[test]
+  fn template_names() {
+    assert_eq!(template_file_name("pyproject.toml"), "pyproject.template.toml");
+    assert_eq!(template_file_name("vscode/settings.json"), "vscode/settings.template.jsonc");
+    assert_eq!(template_file_name("gitignore"), "template.gitignore");
+    assert_eq!(template_file_name("env"), "template.env");
+  }
 }
