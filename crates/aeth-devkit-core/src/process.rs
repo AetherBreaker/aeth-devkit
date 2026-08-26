@@ -79,8 +79,19 @@ mod tests {
   }
 
   #[test]
-  fn system_runner_runs_git_version() {
-    let code = SystemRunner.run_inherit("git", &["--version".into()], Path::new(".")).unwrap();
+  fn system_runner_runs_a_real_process() {
+    // `CARGO` is set by cargo for every test run, so this needs nothing beyond the toolchain.
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let code = SystemRunner.run_inherit(&cargo, &["--version".into()], Path::new(".")).unwrap();
     assert_eq!(code, Some(0));
+  }
+
+  #[test]
+  fn system_runner_reports_nonzero_exit() {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let code = SystemRunner
+      .run_inherit(&cargo, &["--definitely-not-a-flag".into()], Path::new("."))
+      .unwrap();
+    assert_ne!(code, Some(0));
   }
 }
