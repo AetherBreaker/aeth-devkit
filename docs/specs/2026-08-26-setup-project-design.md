@@ -34,7 +34,7 @@ deployment files, moving `dist/`, or deleting `.cache/`.
 ## Invocation
 
 ```
-poe setup-project [--check] [--dry-run] [--root PATH] [--templates-dir PATH]
+poe setup-project [--check] [--dry-run] [--no-commit] [--root PATH] [--templates-dir PATH]
 ```
 
 - Implemented in **Rust** as a standalone CLI binary (`sft-setup`) that lives in this repo
@@ -44,6 +44,9 @@ poe setup-project [--check] [--dry-run] [--root PATH] [--templates-dir PATH]
 - Runs against cwd (must contain `pyproject.toml`).
 - `--dry-run`: print changes, write nothing. `--check`: dry-run + exit 1 if anything would change.
 - Prints one line per changed file; silent for unchanged files. Second run = no output.
+- When the project is git-tracked, the changed files are committed automatically
+  (`git commit -- <files>` so pre-staged user changes are untouched; env files and
+  gitignored files are never committed). `--no-commit` opts out.
 
 ## Templates
 

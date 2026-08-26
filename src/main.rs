@@ -23,8 +23,8 @@ struct Cli {
   #[arg(long)]
   check: bool,
 
-  /// Do not commit the changes (by default they are committed when the project is
-  /// inside a git work tree; only the files sft-setup changed are staged).
+  /// Do not commit the changes. By default, when the project is git-tracked, sft-setup
+  /// commits exactly the files it changed (never env files) with a standard message.
   #[arg(long)]
   no_commit: bool,
 }
