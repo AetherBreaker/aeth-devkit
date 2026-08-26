@@ -101,13 +101,16 @@ fn from_python() -> Option<PathBuf> {
   let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
   let candidates = [exe_dir.join("python.exe"), exe_dir.join("python"), PathBuf::from("python")];
   for py in candidates {
-    let out = Command::new(&py)
+    // A candidate that cannot be spawned (e.g. `python.exe` on Unix) must not end the search.
+    let Ok(out) = Command::new(&py)
       .args([
         "-c",
         "import aeth_devkit, os; print(os.path.join(os.path.dirname(aeth_devkit.__file__), 'templates'))",
       ])
       .output()
-      .ok()?;
+    else {
+      continue;
+    };
     if out.status.success() {
       let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
       if p.is_dir() {
