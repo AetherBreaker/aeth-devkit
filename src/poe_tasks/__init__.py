@@ -138,14 +138,29 @@ tasks.add(
   task_name="lock",
   task_config={
     "help": (
-      "Update uv.lock and commit it with a standardized message. "
-      "Skips the commit if the lockfile is unchanged."
+      "Run uv sync (updating uv.lock) and commit the lockfile with a standardized message. "
+      "Skips the commit if the lockfile is unchanged. "
+      "Pass --upgrade / --all-extras to forward the same flags to uv sync."
     ),
     "shell": (
-      "uv lock && "
+      "uv sync ${upgrade:+--upgrade} ${all_extras:+--all-extras} && "
       "if git diff --quiet -- uv.lock; then echo 'uv.lock is up to date; nothing to commit'; "
       'else git add uv.lock && git commit -m "Update uv.lock"; fi'
     ),
     "interpreter": "bash",
+    "args": [
+      {
+        "name": "upgrade",
+        "options": ["--upgrade", "-U"],
+        "type": "boolean",
+        "help": "Allow package upgrades, ignoring pinned versions in uv.lock (uv sync --upgrade)",
+      },
+      {
+        "name": "all_extras",
+        "options": ["--all-extras"],
+        "type": "boolean",
+        "help": "Include all optional dependencies (uv sync --all-extras)",
+      },
+    ],
   },
 )
