@@ -15,10 +15,14 @@
   ]
 
 [build-system]
-  requires      = [
-    "uv_build>=0.11.2,<0.12.0",
-  ]
-  build-backend = "uv_build"
+  requires      = ["maturin>=1.7,<2"]
+  build-backend = "maturin"
+
+[tool.maturin]
+  bindings      = "bin"
+  module-name   = "poe_tasks"
+  python-source = "src"
+  manifest-path = "Cargo.toml"
 
 [tool.poe]
   include_script = [{ script = "poe_tasks:tasks", executor = { type = "uv", frozen = true } }]

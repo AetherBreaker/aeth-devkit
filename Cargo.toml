@@ -1,0 +1,15 @@
+[package]
+name    = "sft-setup"
+version = "5.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "sft-setup"
+path = "rust/src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+strip = true
