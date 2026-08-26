@@ -1,5 +1,5 @@
-//! `sft-setup` — standardize an SFT project's configuration from the templates shipped
-//! with `poe_tasks`. See docs/specs/2026-08-26-setup-project-design.md.
+//! `devkit setup-project` — standardize a project's configuration from the templates shipped
+//! with `aeth-devkit`. See docs/specs/2026-08-26-setup-project-design.md.
 
 pub mod changes;
 pub mod context;
