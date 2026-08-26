@@ -1,0 +1,4 @@
+# ---- SFT additions ----
+.cache/
+*.env
+persisted_data/

@@ -118,31 +118,27 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
   Ok(changes)
 }
 
-/// A line-based template (`gitignore`, `dockerignore`) with the `rust.<name>` overlay
-/// appended when the project contains a crate.
+/// Assemble a line-based template (`gitignore`, `dockerignore`) from its layers, in order:
+/// the vendored base, the `rust.<name>` overlay (only when the project contains a crate),
+/// then the `sft.<name>` additions — so project-specific rules always come last.
 fn load_with_rust_overlay(templates_dir: &Path, name: &str, ctx: &ProjectContext) -> Result<String> {
   let mut template = templates::load(templates_dir, name, ctx, templates::Escape::None)?;
-  if ctx.has_rust
-    && let Some(overlay) = templates::load_optional(templates_dir, &format!("rust.{name}"), ctx, templates::Escape::None)?
-  {
-    if !template.ends_with('\n') {
-      template.push('\n');
+  let mut layers = Vec::new();
+  if ctx.has_rust {
+    layers.push(format!("rust.{name}"));
+  }
+  layers.push(format!("sft.{name}"));
+  for layer in layers {
+    if let Some(overlay) = templates::load_optional(templates_dir, &layer, ctx, templates::Escape::None)? {
+      if !template.ends_with('
+') {
+        template.push('
+');
+      }
+      template.push('
+');
+      template.push_str(&overlay);
     }
-    template.push('\n');
-    template.push_str(&overlay);
   }
   Ok(template)
-}
-
-fn read_optional(path: &Path) -> Result<Option<String>> {
-  match std::fs::read_to_string(path) {
-    Ok(s) => Ok(Some(s)),
-    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-    Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-  }
-}
-
-fn same_path(a: &Path, b: &Path) -> bool {
-  let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
-  norm(a) == norm(b)
 }

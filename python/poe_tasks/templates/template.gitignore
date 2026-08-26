@@ -218,8 +218,3 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-
-# ---- SFT additions ----
-.cache/
-*.env
-persisted_data/
