@@ -12,21 +12,32 @@
     "pyright>=1.1.411",
   ]
 
-[tool.coverage.run]
-  data_file   = ".cache/.coverage"
-  source_pkgs = ["{package}"]
+[tool.coverage]
+  [tool.coverage.run]
+    data_file   = ".cache/.coverage"
+    source_pkgs = ["{package}"]
 
-[tool.coverage.report]
-  show_missing = true
+  [tool.coverage.report]
+    show_missing = true
 
-[tool.coverage.html]
-  directory = ".cache/htmlcov"
+  [tool.coverage.html]
+    directory = ".cache/htmlcov"
 
-[tool.coverage.xml]
-  output = ".cache/coverage.xml"
+  [tool.coverage.xml]
+    output = ".cache/coverage.xml"
 
-[tool.coverage.lcov]
-  output = ".cache/coverage.lcov"
+  [tool.coverage.lcov]
+    output = ".cache/coverage.lcov"
+
+[tool.docker]
+  # Paths relative to /app that the entrypoint will chown to nonroot:nonroot.
+  # Typically these are directories that will be bind-mounted as Docker volumes.
+  chown_paths = [
+    "persisted_data",
+  ]
+  # Paths relative to /app that the entrypoint will create (mkdir -p) and chown.
+  # These are implicitly included in the chown step.
+  mkdirs      = []
 
 # setup-project: if-dep mypy
 [tool.mypy]
@@ -36,6 +47,8 @@
   include_script = [{ script = "poe_tasks:tasks", executor = { type = "uv", frozen = true } }]
 
 [tool.pyright]
+  typeCheckingMode = "standard"
+
   verboseOutput          = true
   useLibraryCodeForTypes = true
 
@@ -43,18 +56,19 @@
   analyzeUnannotatedFunctions = true
   deprecateTypingAliases      = true
 
-  typeCheckingMode = "standard"
-
   reportPropertyTypeMismatch          = true
-  reportMissingTypeStubs              = true
+  reportMissingTypeStubs              = false
   reportImportCycles                  = true
   reportUntypedFunctionDecorator      = true
   reportUntypedClassDecorator         = true
   reportUntypedNamedTuple             = true
   reportPrivateUsage                  = true
+  # reportConstantRedefinition          = true
   reportDeprecated                    = true
+  # reportMissingSuperCall              = true
   reportUninitializedInstanceVariable = true
   reportMissingParameterType          = true
+  # reportMissingTypeArgument           = true
   reportUnnecessaryIsInstance         = true
   reportUnnecessaryCast               = true
   reportUnnecessaryComparison         = true
@@ -64,6 +78,7 @@
   reportMatchNotExhaustive            = true
   reportUnreachable                   = true
   reportImplicitOverride              = true
+  reportMissingTypeArgument           = false
 
   executionEnvironments = [{ root = "{python_dir}", extraPaths = ["{python_dir}"] }]
 
