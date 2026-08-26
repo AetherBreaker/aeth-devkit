@@ -17,7 +17,7 @@ tasks.add(
   task_name="release",
   task_config={
     "help": (
-      "Bump version, commit, tag, build, and publish to GitHub and SFTPyPI. "
+      "Bump version, commit, tag, build, and publish to GitHub and the package index. "
       "Pass one or more bump types as free positional args; "
       "valid values: major, minor, patch, stable, alpha, beta, rc, post, dev. "
       "To include release notes, append a multi-word string as the final arg "
@@ -48,7 +48,7 @@ tasks.add(
   task_config={
     "help": (
       "Auto-detect the docker compose file in the project root, resolve the version to pin "
-      "(--version or latest stable from SFTPyPI), and update PACKAGE_VERSION in place."
+      "(--version or latest stable release), and update PACKAGE_VERSION in place."
     ),
     "cmd": f'bash "{_script_path("docker-pin-latest.sh")}" "${{version}}"',
     "args": [
@@ -58,7 +58,7 @@ tasks.add(
         "default": "",
         "help": (
           "Pin to this exact version (supports pre-release versions such as 1.2.0a1). "
-          "If omitted, the latest stable release is fetched from SFTPyPI."
+          "If omitted, the latest stable release is fetched from the package index."
         ),
       },
     ],
@@ -69,7 +69,7 @@ tasks.add(
   task_name="release-and-pin",
   task_config={
     "help": (
-      "Bump version, commit, tag, build, and publish to GitHub and SFTPyPI, "
+      "Bump version, commit, tag, build, and publish to GitHub and the package index, "
       "then pin the docker-compose package version. "
       "Pass one or more bump types as free positional args; "
       "valid values: major, minor, patch, stable, alpha, beta, rc, post, dev. "
@@ -93,7 +93,7 @@ tasks.add(
   task_name="rescind-release",
   task_config={
     "help": (
-      "Fully rescind a release: removes the package from SFTPyPI, deletes the GitHub release, "
+      "Fully rescind a release: removes the package from the package index, deletes the GitHub release, "
       "and removes the Git tag (local and remote). Defaults to the most recent release; "
       "when defaulting, also rewinds the local branch to the previous release commit "
       "(all changes from the release are kept in the working tree). "
@@ -138,16 +138,35 @@ tasks.add(
   task_name="lock",
   task_config={
     "help": (
-      "Update the poe-tasks pin in pyproject.toml to the latest stable release on SFTPyPI, "
+      "Update the aeth-devkit pin in pyproject.toml to the latest stable release on its index, "
       "run uv sync (updating uv.lock), and commit the lockfile and pin change with a "
       "standardized message. Skips the commit if nothing changed. "
       "Pass --upgrade / --all-extras to forward the same flags to uv sync."
     ),
     "shell": (
-      f'bash "{_script_path("lock.sh")}" ${{upgrade:+--upgrade}} ${{all_extras:+--all-extras}}'
+      'devkit lock ${dry_run:+--dry-run} ${no_commit:+--no-commit} ${package:+--package "$package"}'
+      " -- ${upgrade:+--upgrade} ${all_extras:+--all-extras}"
     ),
     "interpreter": "bash",
     "args": [
+      {
+        "name": "package",
+        "options": ["--package", "-p"],
+        "default": "",
+        "help": "Dependency pin to bump instead of aeth-devkit",
+      },
+      {
+        "name": "dry_run",
+        "options": ["--dry-run"],
+        "type": "boolean",
+        "help": "Report what would change without writing, syncing, or committing",
+      },
+      {
+        "name": "no_commit",
+        "options": ["--no-commit"],
+        "type": "boolean",
+        "help": "Do not commit uv.lock / pyproject.toml after syncing",
+      },
       {
         "name": "upgrade",
         "options": ["--upgrade", "-U"],
@@ -169,11 +188,11 @@ tasks.add(
   task_name="setup-project",
   task_config={
     "help": (
-      "Standardize this project's configuration from the templates shipped with poe_tasks "
+      "Standardize this project's configuration from the templates shipped with aeth-devkit "
       "(cache dirs under .cache/, PYTHONPYCACHEPREFIX in .env and VS Code, inlined ruff/pyright "
       "config, .gitignore/.gitattributes/.dockerignore). Idempotent. "
-      "Extra args are passed to sft-setup: --dry-run, --check, --templates-dir PATH."
+      "Extra args are passed to devkit setup-project: --dry-run, --check, --no-commit, --templates-dir PATH."
     ),
-    "cmd": "sft-setup",
+    "cmd": "devkit setup-project",
   },
 )

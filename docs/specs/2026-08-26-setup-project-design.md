@@ -5,7 +5,7 @@ Status: READY FOR IMPLEMENTATION (v2, template-driven)
 ## Purpose
 
 A one-and-done, idempotent script that standardizes a project's configuration from a set
-of **templates shipped inside `poe_tasks`**. Two goals:
+of **templates shipped inside `aeth_devkit`**. Two goals:
 
 1. All generated clutter lands in `<project_root>/.cache/`.
 2. Tool/editor/repo configuration travels *with* each repository (no more `extends`
@@ -18,14 +18,14 @@ Run once per project; re-run only when something drifts or a template changes.
 ## Intended new-project workflow
 
 1. `uv init --lib`
-2. Manually add the SFTPyPI index + `tool.uv.sources.poe-tasks` and add `poe-tasks` to the
+2. Manually add the SFTPyPI index + `tool.uv.sources.aeth-devkit` and add `aeth-devkit` to the
    `dev` dependency group.
 3. `uv sync --upgrade --all-extras`
 4. `poe setup-project`
 
 Anything steps 1–3 already produce is **out of scope** for the script: `[project]`
 metadata, `requires-python`, `[build-system]`, `src/<pkg>/` layout, `py.typed`,
-`README.md`, `.python-version`, the SFTPyPI index/source blocks, and the `poe-tasks` dev
+`README.md`, `.python-version`, the SFTPyPI index/source blocks, and the `aeth-devkit` dev
 dependency (its pin is maintained by `poe lock`).
 
 Explicitly **not** responsible for: cleaning existing stragglers (`poe clean`), Docker or
@@ -37,9 +37,9 @@ deployment files, moving `dist/`, or deleting `.cache/`.
 poe setup-project [--check] [--dry-run] [--no-commit] [--root PATH] [--templates-dir PATH]
 ```
 
-- Implemented in **Rust** as a standalone CLI binary (`sft-setup`) that lives in this repo
-  and is packaged into the `poe_tasks` wheel by **maturin (`bindings = "bin"`)** — no pyo3,
-  no Python ABI coupling. The poe task is simply `cmd = "sft-setup ..."`, the same
+- Implemented in **Rust** as a standalone CLI binary (`devkit setup-project`) that lives in this repo
+  and is packaged into the `aeth_devkit` wheel by **maturin (`bindings = "bin"`)** — no pyo3,
+  no Python ABI coupling. The poe task is simply `cmd = "devkit setup-project ..."`, the same
   pattern as the existing shell scripts. See "Rust / packaging" below.
 - Runs against cwd (must contain `pyproject.toml`).
 - `--dry-run`: print changes, write nothing. `--check`: dry-run + exit 1 if anything would change.
@@ -50,7 +50,7 @@ poe setup-project [--check] [--dry-run] [--no-commit] [--root PATH] [--templates
 
 ## Templates
 
-Live in `python/poe_tasks/templates/` and ship with the wheel. Template files keep a real
+Live in `python/aeth_devkit/templates/` and ship with the wheel. Template files keep a real
 extension (for editor support) but never the exact filename a tool keys on:
 `pyproject.template.toml`, `vscode/settings.template.jsonc` (jsonc so comments are valid),
 `template.gitignore`, `template.env`, …. The table below lists them by target name:
@@ -94,7 +94,7 @@ keys absent from the template are left untouched (project name, version, deps,
   template has inlined the full config (that is the whole point).
 - `dependency-groups.dev`: ensure an entry for each template dep by package name; a
   matching existing entry (any specifier) is replaced with the template's specifier.
-  (`poe-tasks` itself is not in the template — see workflow above.)
+  (`aeth-devkit` itself is not in the template — see workflow above.)
 
 **JSON deep-merge** (`settings.json`, `extensions.json`): same as TOML; objects merge,
 leaves overwrite, lists replace unless flagged union. JSONC input tolerated (comments and
@@ -131,7 +131,7 @@ file created if missing. Applied to `.env` and to every distinct `envFile` refer
 
 ### `pyproject.toml`
 - `[dependency-groups].dev`: `poethepoet>=0.46.0`, `pyright>=1.1.411`
-- `[tool.poe].include_script = [{ script = "poe_tasks:tasks", executor = { type = "uv", frozen = true } }]`
+- `[tool.poe].include_script = [{ script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }]`
 - `[tool.pyright]`: full block currently in the grandparent `pyproject.toml` (no `extends`);
   `executionEnvironments = [{ root = "src", extraPaths = ["src"] }]`
 - `[tool.ruff]`: full block from grandparent (`exclude`, `fix`, `indent-width`, `line-length`,
@@ -191,7 +191,7 @@ Bytecode cache dir is `.cache/pycache` everywhere (existing `.cache/__pycache__`
 No `poe clean` changes; no `dist/` move; no Docker/compose edits; no straggler or
 git-tracked-file reports; nothing `uv init --lib` or the manual index step already
 produces (`.python-version`, README, `requires-python`, build-system, SFTPyPI index/source,
-`poe-tasks` dev dep).
+`aeth-devkit` dev dep).
 
 ## Resolved (2026-08-26)
 
@@ -211,30 +211,30 @@ migrate to the same binary later once this path is proven.
 Layout:
 
 ```text
-poe_tasks/
+aeth_devkit/
 ├── pyproject.toml        # build-backend = "maturin", [tool.maturin] bindings = "bin"
-├── Cargo.toml            # [[bin]] name = "sft-setup"
+├── Cargo.toml            # [[bin]] name = "devkit setup-project"
 ├── src/                  # Rust: lib.rs, main.rs, merge modules
 ├── tests/                # cargo integration tests + fixtures
-├── python/poe_tasks/     # Python: __init__.py, scripts/, templates/
+├── python/aeth_devkit/     # Python: __init__.py, scripts/, templates/
 └── uv.lock
 ```
 
 Build / release contract:
 
 - `uv build` runs `cargo build --release` via maturin and produces a
-  `py3-none-win_amd64` wheel containing `sft-setup.exe` as a console script plus the
+  `py3-none-win_amd64` wheel containing `devkit setup-project.exe` as a console script plus the
   Python package and templates. Downstream `uv sync` installs the wheel — no Rust
   toolchain needed downstream.
 - `[project].version` in `pyproject.toml` stays the single version; `release.sh` is
   unchanged apart from keeping `Cargo.toml`'s version in step.
-- Wheels are platform-specific. Windows-only is sufficient today because `poe-tasks` is a
+- Wheels are platform-specific. Windows-only is sufficient today because `aeth-devkit` is a
   `dev`-group dependency and never installed in Docker images. Linux wheels, if ever
   needed, come from `maturin build --target x86_64-unknown-linux-musl --zig`.
-- An editable `../poe_tasks` source in a downstream project triggers `maturin develop`
+- An editable `../aeth_devkit` source in a downstream project triggers `maturin develop`
   (a compile) on `uv sync`; only machines doing that need the toolchain.
 - Templates are read at runtime from the installed Python package
-  (`sft-setup` locates them via `python -c "import poe_tasks.templates"` or an explicit
+  (`devkit setup-project` locates them via `python -c "import aeth_devkit.templates"` or an explicit
   `--templates-dir`), so editing a template never requires a rebuild.
 
 Toolchain (dev machines): MSVC Build Tools (C++ workload), `rustup` stable, `maturin`
@@ -245,11 +245,11 @@ via `uv tool`, VS Code `rust-analyzer` + `vadimcn.vscode-lldb`. Shared
 
 - Crates: `clap` (CLI), `toml_edit` (pyproject), `serde_json` + a small JSONC
   comment/trailing-comma stripper (VS Code files), `anyhow` (errors). No `tomlkit`.
-- Templates are package data under `python/poe_tasks/templates/`.
+- Templates are package data under `python/aeth_devkit/templates/`.
 - Tests: Rust unit/integration tests (`cargo test`) cover each merge mode against fixture
   files copied from the current projects, plus an idempotency test (apply twice → second
   diff empty). A single pytest smoke test confirms the installed wheel exposes a working
-  `sft-setup --version`.
-- Sequence: (1) toolchain + hello-world build, (2) maturin skeleton in `poe_tasks` with a
-  stub binary, verify `uv build` → install → `sft-setup --version` works end-to-end,
+  `devkit setup-project --version`.
+- Sequence: (1) toolchain + hello-world build, (2) maturin skeleton in `aeth_devkit` with a
+  stub binary, verify `uv build` → install → `devkit setup-project --version` works end-to-end,
   (3) merge logic per the spec.

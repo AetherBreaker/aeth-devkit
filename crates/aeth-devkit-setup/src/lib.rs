@@ -122,14 +122,14 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
 
 /// Assemble a line-based template (`gitignore`, `dockerignore`) from its layers, in order:
 /// the vendored base, the `rust.<name>` overlay (only when the project contains a crate),
-/// then the `sft.<name>` additions — so project-specific rules always come last.
+/// then the `devkit.<name>` additions — so project-specific rules always come last.
 fn load_with_rust_overlay(templates_dir: &Path, name: &str, ctx: &ProjectContext) -> Result<String> {
   let mut template = templates::load(templates_dir, name, ctx, templates::Escape::None)?;
   let mut layers = Vec::new();
   if ctx.has_rust {
     layers.push(format!("rust.{name}"));
   }
-  layers.push(format!("sft.{name}"));
+  layers.push(format!("devkit.{name}"));
   for layer in layers {
     if let Some(overlay) = templates::load_optional(templates_dir, &layer, ctx, templates::Escape::None)? {
       if !template.ends_with('\n') {

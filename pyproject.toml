@@ -1,7 +1,7 @@
 [project]
-  name            = "poe-tasks"
-  version         = "6.0.2"
-  description     = "Shared poe tasks for SFT projects"
+  name            = "aeth-devkit"
+  version         = "7.0.0"
+  description     = "Personal project-maintenance toolkit: poe tasks plus the devkit CLI"
   readme          = "README.md"
   requires-python = ">=3.14"
   dependencies    = [
@@ -21,12 +21,12 @@
 
 [tool.maturin]
   bindings      = "bin"
-  manifest-path = "Cargo.toml"
-  module-name   = "poe_tasks"
+  manifest-path = "crates/aeth-devkit/Cargo.toml"
+  module-name   = "aeth_devkit"
   python-source = "python"
 
 [tool.poe]
-  include_script = [{ script = "poe_tasks:tasks", executor = { type = "uv", frozen = true } }]
+  include_script = [{ script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }]
 
 [tool.pyright]
   verboseOutput          = true
@@ -130,7 +130,7 @@
 
     [tool.ruff.lint.isort]
       combine-as-imports = true
-      known-first-party  = ["poe_tasks"]
+      known-first-party  = ["aeth_devkit"]
 
       [tool.ruff.lint.isort.import-heading]
         first-party      = "First party imports"
@@ -147,7 +147,7 @@
 
 [tool.coverage.run]
   data_file   = ".cache/.coverage"
-  source_pkgs = ["poe_tasks"]
+  source_pkgs = ["aeth_devkit"]
 
 [tool.coverage.report]
   show_missing = true
