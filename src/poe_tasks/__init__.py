@@ -138,14 +138,13 @@ tasks.add(
   task_name="lock",
   task_config={
     "help": (
-      "Run uv sync (updating uv.lock) and commit the lockfile with a standardized message. "
-      "Skips the commit if the lockfile is unchanged. "
+      "Update the poe-tasks pin in pyproject.toml to the latest stable release on SFTPyPI, "
+      "run uv sync (updating uv.lock), and commit the lockfile and pin change with a "
+      "standardized message. Skips the commit if nothing changed. "
       "Pass --upgrade / --all-extras to forward the same flags to uv sync."
     ),
     "shell": (
-      "uv sync ${upgrade:+--upgrade} ${all_extras:+--all-extras} && "
-      "if git diff --quiet -- uv.lock; then echo 'uv.lock is up to date; nothing to commit'; "
-      'else git add uv.lock && git commit -m "Update uv.lock"; fi'
+      f'bash "{_script_path("lock.sh")}" ${{upgrade:+--upgrade}} ${{all_extras:+--all-extras}}'
     ),
     "interpreter": "bash",
     "args": [
