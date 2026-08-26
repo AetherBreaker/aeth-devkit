@@ -1,6 +1,6 @@
 # `poe setup-project` — design spec
 
-Status: DRAFT v2 (template-driven). Open questions at the bottom.
+Status: READY FOR IMPLEMENTATION (v2, template-driven)
 
 ## Purpose
 
@@ -59,7 +59,16 @@ every leaf (scalar *or* array) present in the template **overwrites** the projec
 keys absent from the template are left untouched (project name, version, deps,
 `tool.docker`, `tool.uv.sources` for other packages, …). Comments/formatting preserved via
 `tomlkit`. Special rules:
-- Arrays flagged *union* (see open Q1) are unioned, not replaced.
+- **Arrays are unioned**, never replaced: template entries missing from the project array
+  are appended (order preserved, existing entries untouched). Whenever entries are added
+  to an existing array, a trailing line comment is attached listing exactly what was
+  added, e.g. `# setup-project added: "PERF", "RUF"`, so local tweaking is easy. A
+  re-run that adds nothing leaves the comment as-is; a re-run that adds more replaces
+  the comment with the new additions only.
+- **Scalars are replaced** when present; added when absent.
+- **Opt-out**: `[tool.setup-project].keep = ["tool.pyright.reportMissingTypeStubs", ...]`
+  lists dotted keys the merge must never touch (scalar or array). The table itself is
+  never written by the script.
 - `tool.ruff.extend` and `tool.pyright.extends` are **removed** from the project once the
   template has inlined the full config (that is the whole point).
 - Array-of-tables `[[tool.uv.index]]`: ensure an entry with `name = "SFTPyPI"` exists and
@@ -155,9 +164,17 @@ No `poe clean` changes; no `dist/` move; no Docker/compose edits; no straggler o
 git-tracked-file reports; no `.python-version` or README scaffolding; no
 `requires-python`/build-system enforcement.
 
-## Open questions
-1. Array merge policy for `pytest.addopts`, `ruff.lint.extend-select`, `ruff.lint.ignore`,
-   `ruff.exclude`: replace from template, or union with project values?
-2. Per-project opt-out: honour a `[tool.setup-project].keep = ["tool.pyright.reportMissingTypeStubs", ...]`
-   list of dotted keys the merge must not overwrite (aeth_ext currently flips two pyright
-   flags), or is "template always wins, edit the project after" acceptable?
+## Resolved (2026-08-26)
+
+1. Arrays union with an `# setup-project added: …` comment; scalars replace.
+2. `[tool.setup-project].keep` opt-out list is honoured.
+3. `extends` / `extend` lines pointing at `../pyproject.toml` are removed.
+
+## Implementation notes
+
+- `tomlkit` is added as a runtime dependency of `poe_tasks`; templates are package data
+  under `src/poe_tasks/templates/` and located via `importlib.resources`.
+- The `{latest_poe_tasks}` lookup reuses the SFTPyPI query from `lock.sh` (extracted into
+  a small shared Python helper so both callers agree).
+- Tests (pytest, in `tests/`) cover each merge mode against fixture files copied from the
+  current projects, plus an idempotency test (apply twice → second diff empty).
