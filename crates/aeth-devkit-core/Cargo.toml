@@ -1,25 +1,22 @@
 [package]
-  name    = "aeth-devkit-setup"
+  name    = "aeth-devkit-core"
   version.workspace = true
   edition.workspace = true
   publish.workspace = true
 
 [lib]
-  name = "aeth_devkit_setup"
+  name = "aeth_devkit_core"
 
-[[bin]]
-  name = "devkit-setup"
-  path = "src/main.rs"
+[features]
+  test-util = []
 
 [dependencies]
-  aeth-devkit-core = { workspace = true }
   anyhow     = { workspace = true }
-  clap       = { workspace = true }
+  pep440_rs  = { workspace = true }
   regex      = { workspace = true }
-  serde      = { workspace = true }
   serde_json = { workspace = true }
   toml_edit  = { workspace = true }
+  ureq       = { workspace = true }
 
 [dev-dependencies]
-  aeth-devkit-core = { workspace = true, features = ["test-util"] }
   tempfile = { workspace = true }
