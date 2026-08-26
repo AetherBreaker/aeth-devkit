@@ -22,6 +22,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aeth-devkit-lock"
+version = "7.0.0"
+dependencies = [
+ "aeth-devkit-core",
+ "anyhow",
+ "clap",
+ "tempfile",
+ "toml_edit",
+]
+
+[[package]]
 name = "aeth-devkit-setup"
 version = "7.0.0"
 dependencies = [
