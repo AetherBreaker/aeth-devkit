@@ -130,13 +130,10 @@ fn load_with_rust_overlay(templates_dir: &Path, name: &str, ctx: &ProjectContext
   layers.push(format!("sft.{name}"));
   for layer in layers {
     if let Some(overlay) = templates::load_optional(templates_dir, &layer, ctx, templates::Escape::None)? {
-      if !template.ends_with('
-') {
-        template.push('
-');
+      if !template.ends_with('\n') {
+        template.push('\n');
       }
-      template.push('
-');
+      template.push('\n');
       template.push_str(&overlay);
     }
   }
