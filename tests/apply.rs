@@ -180,3 +180,50 @@ fn uv_init_gitignore_is_replaced_and_mypy_is_conditional() {
   assert!(!changes.is_empty());
   assert!(sft_setup::run(root, &templates(), false).unwrap().is_empty());
 }
+
+#[test]
+fn mixed_rust_python_project_uses_python_dir_and_rust_overlays() {
+  let dir = tempfile::tempdir().unwrap();
+  let root = dir.path();
+  write(
+    root,
+    "pyproject.toml",
+    "[project]\n  name = \"mixed-tool\"\n  version = \"0.1.0\"\n  dependencies = []\n",
+  );
+  write(root, "Cargo.toml", "[package]\nname = \"mixed-tool\"\nversion = \"0.1.0\"\n");
+  write(root, "src/main.rs", "fn main() {}\n");
+  write(root, "python/mixed_tool/__init__.py", "");
+  write(root, ".gitignore", "# custom\nsecrets/\n");
+  sft_setup::run(root, &templates(), false).unwrap();
+
+  let py = read(root, "pyproject.toml");
+  assert!(py.contains("src       = [\"./python\"]"), "{py}");
+  assert!(py.contains("root = \"python\", extraPaths = [\"python\"]"), "{py}");
+  assert!(py.contains("source_pkgs = [\"mixed_tool\"]"), "{py}");
+  let launch = read(root, ".vscode/launch.json");
+  assert!(launch.contains("\"PYTHONPATH\": \"${workspaceFolder}/python\""), "{launch}");
+  let ext = read(root, ".vscode/extensions.json");
+  assert!(ext.contains("rust-lang.rust-analyzer"), "{ext}");
+  let settings = read(root, ".vscode/settings.json");
+  assert!(settings.contains("\"[rust]\""), "{settings}");
+  let gi = read(root, ".gitignore");
+  assert!(gi.contains("target/"), "{gi}");
+  assert!(gi.contains("secrets/"), "{gi}");
+  assert!(sft_setup::run(root, &templates(), false).unwrap().is_empty());
+}
+
+#[test]
+fn plain_python_project_gets_no_rust_overlays() {
+  let dir = tempfile::tempdir().unwrap();
+  let root = dir.path();
+  write(
+    root,
+    "pyproject.toml",
+    "[project]\n  name = \"plain\"\n  version = \"0.1.0\"\n  dependencies = []\n",
+  );
+  write(root, "src/plain/__init__.py", "");
+  sft_setup::run(root, &templates(), false).unwrap();
+  assert!(read(root, "pyproject.toml").contains("src       = [\"./src\"]"));
+  assert!(!read(root, ".vscode/extensions.json").contains("rust-analyzer"));
+  assert!(!read(root, ".vscode/settings.json").contains("[rust]"));
+}

@@ -12,7 +12,8 @@
 [dependency-groups]
   dev = [
     "pyright>=1.1.411",
-  ]
+    "poethepoet>=0.46.0",
+  ] # setup-project added: "poethepoet>=0.46.0"
 
 [build-system]
   requires      = ["maturin>=1.7,<2"]
@@ -20,27 +21,188 @@
 
 [tool.maturin]
   bindings      = "bin"
+  manifest-path = "Cargo.toml"
   module-name   = "poe_tasks"
   python-source = "python"
-  manifest-path = "Cargo.toml"
 
 [tool.poe]
   include_script = [{ script = "poe_tasks:tasks", executor = { type = "uv", frozen = true } }]
 
 [tool.pyright]
-  extends = "../pyproject.toml"
+  verboseOutput          = true
+  useLibraryCodeForTypes = true
 
-[tool.setup-project]
-  # This repo is Rust-first (src/ is Rust, python/ is the package); keep ruff pointed at python/.
-  keep = ["tool.ruff.src"]
+  enableReachabilityAnalysis  = true
+  analyzeUnannotatedFunctions = true
+  deprecateTypingAliases      = true
+
+  typeCheckingMode = "standard"
+
+  reportPropertyTypeMismatch          = true
+  reportMissingTypeStubs              = true
+  reportImportCycles                  = true
+  reportUntypedFunctionDecorator      = true
+  reportUntypedClassDecorator         = true
+  reportUntypedNamedTuple             = true
+  reportPrivateUsage                  = true
+  reportDeprecated                    = true
+  reportUninitializedInstanceVariable = true
+  reportMissingParameterType          = true
+  reportUnnecessaryIsInstance         = true
+  reportUnnecessaryCast               = true
+  reportUnnecessaryComparison         = true
+  reportUnnecessaryContains           = true
+  reportInvalidStubStatement          = true
+  reportUnnecessaryTypeIgnoreComment  = true
+  reportMatchNotExhaustive            = true
+  reportUnreachable                   = true
+  reportImplicitOverride              = true
+
+  executionEnvironments = [{ root = "python", extraPaths = ["python"] }]
 
 [tool.ruff]
-  extend = "../pyproject.toml"
 
   src = ["./python"]
+  cache-dir = ".cache/ruff"
+
+  exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "dist",
+    "node_modules",
+    "venv",
+  ]
+
+  fix = true
+
+  indent-width = 2
+  line-length  = 135
+
+  [tool.ruff.format]
+    docstring-code-format = true
+
+  [tool.ruff.lint]
+    extend-select = [
+      "A",
+      "ANN001",
+      "ASYNC",
+      "B",
+      "C4",
+      "C90",
+      "DTZ",
+      "FBT003",
+      "LOG",
+      "N",
+      "NPY",
+      "PD",
+      "PERF",
+      "PL",
+      "PYI",
+      "RUF",
+      "T10",
+      "TC",
+      "UP",
+    ]
+    ignore        = [
+      "A004",
+      "PD008",
+      "PD009",
+      "PLC0415",
+      "PLR0913",
+      "PLW0603",
+      "PIE790",
+    ]
+
+    [tool.ruff.lint.isort]
+      combine-as-imports = true
+      known-first-party  = ["poe_tasks"]
+
+      [tool.ruff.lint.isort.import-heading]
+        first-party      = "First party imports"
+        future           = "Future imports"
+        local-folder     = "Local folder imports"
+        standard-library = "Standard library imports"
+        third-party      = "Third party imports"
 
 [[tool.uv.index]]
   name        = "SFTPyPI"
   url         = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple"
   publish-url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/"
   explicit    = true
+
+[tool.coverage.run]
+  data_file   = ".cache/.coverage"
+  source_pkgs = ["poe_tasks"]
+
+[tool.coverage.report]
+  show_missing = true
+
+[tool.coverage.html]
+  directory = ".cache/htmlcov"
+
+[tool.coverage.xml]
+  output = ".cache/coverage.xml"
+
+[tool.coverage.lcov]
+  output = ".cache/coverage.lcov"
+
+[tool.pytest.ini_options]
+  addopts      = [
+    "--cov",
+    "--cov-report=term-missing",
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+  ]
+  cache_dir    = ".cache/pytest"
+  testpaths    = ["tests"]
+  xfail_strict = true
+  asyncio_mode = "auto"
+
+[tool.tombi]
+  toml-version = "v1.1.0"
+
+  [tool.tombi.files]
+    exclude = [
+      ".bzr",
+      ".direnv",
+      ".eggs",
+      ".git",
+      ".git-rewrite",
+      ".hg",
+      ".mypy_cache",
+      ".nox",
+      ".pants.d",
+      ".pytype",
+      ".ruff_cache",
+      ".svn",
+      ".tox",
+      ".venv",
+      "__pypackages__",
+      "_build",
+      "buck-out",
+      "dist",
+      "node_modules",
+      "venv",
+    ]
+
+  [tool.tombi.format.rules]
+    indent-sub-tables               = true
+    indent-table-key-value-pairs    = true
+    key-value-equals-sign-alignment = true
+    trailing-comment-alignment      = true

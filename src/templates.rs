@@ -39,6 +39,16 @@ pub fn load(templates_dir: &Path, name: &str, ctx: &ProjectContext, escape: Esca
   Ok(substitute(&text, ctx, escape))
 }
 
+/// Like [`load`], but returns `None` when the template file does not exist (used for
+/// optional overlays such as `vscode/extensions.rust.json`).
+pub fn load_optional(templates_dir: &Path, name: &str, ctx: &ProjectContext, escape: Escape) -> Result<Option<String>> {
+  let path = templates_dir.join(template_file_name(name));
+  if !path.is_file() {
+    return Ok(None);
+  }
+  load(templates_dir, name, ctx, escape).map(Some)
+}
+
 pub fn substitute(text: &str, ctx: &ProjectContext, escape: Escape) -> String {
   let root = ctx.root.to_string_lossy();
   let esc = |s: &str| -> String {
@@ -47,7 +57,10 @@ pub fn substitute(text: &str, ctx: &ProjectContext, escape: Escape) -> String {
       Escape::Toml | Escape::Json => s.replace('\\', "\\\\").replace('"', "\\\""),
     }
   };
-  text.replace("{project_root}", &esc(&root)).replace("{package}", &esc(&ctx.package))
+  text
+    .replace("{project_root}", &esc(&root))
+    .replace("{package}", &esc(&ctx.package))
+    .replace("{python_dir}", &esc(&ctx.python_dir))
 }
 
 /// Resolve the templates directory: explicit flag, env var, the Python package next to

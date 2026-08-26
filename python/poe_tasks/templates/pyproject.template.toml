@@ -3,7 +3,8 @@
 # Scalars here replace the project's values; arrays are unioned (additions are commented
 # on the merged line); keys absent here are never touched. See docs/specs.
 #
-# Placeholders: {package} → the project's import name.
+# Placeholders: {package} → the project's import name; {python_dir} → "src", or "python"
+# for mixed Rust/Python projects where src/ belongs to cargo.
 
 [dependency-groups]
   dev = [
@@ -64,7 +65,7 @@
   reportUnreachable                   = true
   reportImplicitOverride              = true
 
-  executionEnvironments = [{ root = "src", extraPaths = ["src"] }]
+  executionEnvironments = [{ root = "{python_dir}", extraPaths = ["{python_dir}"] }]
 
 [tool.pytest.ini_options]
   addopts      = [
@@ -81,7 +82,7 @@
 
 [tool.ruff]
   cache-dir = ".cache/ruff"
-  src       = ["./src"]
+  src       = ["./{python_dir}"]
 
   exclude = [
     ".bzr",

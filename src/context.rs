@@ -14,6 +14,11 @@ pub struct ProjectContext {
   pub dependencies: HashSet<String>,
   /// Whether the project has a Docker setup (`docker/` dir or `Dockerfile*`).
   pub has_docker: bool,
+  /// Directory holding the Python package: `python` for mixed Rust/Python projects
+  /// (where `src/` is Rust), otherwise `src`.
+  pub python_dir: String,
+  /// Whether the project also contains a Rust crate (`Cargo.toml` at the root).
+  pub has_rust: bool,
 }
 
 impl ProjectContext {
@@ -34,7 +39,14 @@ impl ProjectContext {
       .map(str::to_string)
       .unwrap_or_else(|| root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
 
-    let package = find_src_package(&root).unwrap_or_else(|| normalize_import_name(&project_name));
+    let has_rust = root.join("Cargo.toml").is_file();
+    let python_dir = if find_package_in(&root.join("python")).is_some() {
+      "python"
+    } else {
+      "src"
+    }
+    .to_string();
+    let package = find_package_in(&root.join(&python_dir)).unwrap_or_else(|| normalize_import_name(&project_name));
 
     let mut dependencies = HashSet::new();
     let mut collect = |item: Option<&toml_edit::Item>| {
@@ -72,6 +84,8 @@ impl ProjectContext {
       package,
       dependencies,
       has_docker,
+      python_dir,
+      has_rust,
     })
   }
 
@@ -95,9 +109,9 @@ pub fn strip_verbatim(p: PathBuf) -> PathBuf {
   }
 }
 
-/// The sole package directory under `src/` (has `__init__.py`), if unambiguous.
-fn find_src_package(root: &Path) -> Option<String> {
-  let entries = std::fs::read_dir(root.join("src")).ok()?;
+/// The sole package directory under `dir` (has `__init__.py`), if unambiguous.
+fn find_package_in(dir: &Path) -> Option<String> {
+  let entries = std::fs::read_dir(dir).ok()?;
   let mut pkgs: Vec<String> = entries
     .flatten()
     .filter(|e| e.path().is_dir() && e.path().join("__init__.py").is_file())

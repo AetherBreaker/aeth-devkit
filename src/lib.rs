@@ -31,13 +31,21 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
     changes.record(&path, &original, &merged, log)?;
   }
 
-  // 2. .vscode/settings.json and extensions.json — deep merge
+  // 2. .vscode/settings.json and extensions.json — deep merge, plus a Rust overlay
+  //    (`vscode/<name>.rust.json`) for projects that also contain a crate.
   for name in ["settings.json", "extensions.json"] {
     let path = ctx.root.join(".vscode").join(name);
     let template = templates::load(templates_dir, &format!("vscode/{name}"), &ctx, templates::Escape::Json)?;
     let original = read_optional(&path)?;
     let mut log = Vec::new();
-    let merged = json_merge::merge_json_file(original.as_deref(), &template, &mut log)?;
+    let mut merged = json_merge::merge_json_file(original.as_deref(), &template, &mut log)?;
+    if ctx.has_rust {
+      let (stem, _) = name.rsplit_once('.').unwrap_or((name, ""));
+      let overlay = templates::load_optional(templates_dir, &format!("vscode/{stem}.rust.json"), &ctx, templates::Escape::Json)?;
+      if let Some(overlay) = overlay {
+        merged = json_merge::merge_json_file(Some(&merged), &overlay, &mut log)?;
+      }
+    }
     changes.record_optional(&path, original.as_deref(), &merged, log)?;
   }
 
@@ -76,10 +84,11 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
     changes.record_optional(&path, original.as_deref(), &merged, log)?;
   }
 
-  // 6. .gitignore — replace-or-prepend
+  // 6. .gitignore — replace-or-prepend (Rust projects get the `rust.gitignore` overlay
+  //    appended to the template first, so its rules count as template rules).
   {
     let path = ctx.root.join(".gitignore");
-    let template = templates::load(templates_dir, "gitignore", &ctx, templates::Escape::None)?;
+    let template = load_with_rust_overlay(templates_dir, "gitignore", &ctx)?;
     let original = read_optional(&path)?;
     let mut log = Vec::new();
     let merged = lines::merge_gitignore(original.as_deref(), &template, &mut log);
@@ -99,7 +108,7 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
   // 8. .dockerignore — line union, only for projects that have a Docker setup
   if ctx.has_docker {
     let path = ctx.root.join(".dockerignore");
-    let template = templates::load(templates_dir, "dockerignore", &ctx, templates::Escape::None)?;
+    let template = load_with_rust_overlay(templates_dir, "dockerignore", &ctx)?;
     let original = read_optional(&path)?;
     let mut log = Vec::new();
     let merged = lines::line_union(original.as_deref(), &template, &mut log);
@@ -107,6 +116,22 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
   }
 
   Ok(changes)
+}
+
+/// A line-based template (`gitignore`, `dockerignore`) with the `rust.<name>` overlay
+/// appended when the project contains a crate.
+fn load_with_rust_overlay(templates_dir: &Path, name: &str, ctx: &ProjectContext) -> Result<String> {
+  let mut template = templates::load(templates_dir, name, ctx, templates::Escape::None)?;
+  if ctx.has_rust
+    && let Some(overlay) = templates::load_optional(templates_dir, &format!("rust.{name}"), ctx, templates::Escape::None)?
+  {
+    if !template.ends_with('\n') {
+      template.push('\n');
+    }
+    template.push('\n');
+    template.push_str(&overlay);
+  }
+  Ok(template)
 }
 
 fn read_optional(path: &Path) -> Result<Option<String>> {

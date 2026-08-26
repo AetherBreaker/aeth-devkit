@@ -239,6 +239,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "poethepoet" },
     { name = "pyright" },
 ]
 
@@ -249,7 +250,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pyright", specifier = ">=1.1.411" }]
+dev = [
+    { name = "poethepoet", specifier = ">=0.46.0" },
+    { name = "pyright", specifier = ">=1.1.411" },
+]
 
 [[package]]
 name = "poethepoet"

@@ -282,6 +282,8 @@ mod tests {
       package: "proj".into(),
       dependencies: deps.iter().map(|d| d.to_string()).collect::<HashSet<_>>(),
       has_docker: false,
+      python_dir: "src".into(),
+      has_rust: false,
     }
   }
 
