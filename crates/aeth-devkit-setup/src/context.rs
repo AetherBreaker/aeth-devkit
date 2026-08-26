@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 
+pub use aeth_devkit_core::paths::strip_verbatim;
+
 #[derive(Debug, Clone)]
 pub struct ProjectContext {
   pub root: PathBuf,
@@ -97,15 +99,6 @@ impl ProjectContext {
   pub fn resolve_workspace_var(&self, value: &str) -> PathBuf {
     let replaced = value.replace("${workspaceFolder}", &self.root.to_string_lossy());
     PathBuf::from(replaced.replace('/', std::path::MAIN_SEPARATOR_STR))
-  }
-}
-
-/// `\\?\D:\foo` → `D:\foo` (Windows canonicalize adds the verbatim prefix).
-pub fn strip_verbatim(p: PathBuf) -> PathBuf {
-  let s = p.to_string_lossy();
-  match s.strip_prefix(r"\\?\") {
-    Some(rest) => PathBuf::from(rest),
-    None => p,
   }
 }
 

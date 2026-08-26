@@ -9,6 +9,7 @@ use clap::Parser;
 use toml_edit::DocumentMut;
 
 use aeth_devkit_core::index::IndexClient;
+use aeth_devkit_core::paths::strip_verbatim;
 use aeth_devkit_core::process::Runner;
 use aeth_devkit_core::{git, pyproject, version};
 
@@ -142,13 +143,4 @@ fn bump_pin(doc: &mut DocumentMut, pkg: &str, index: &dyn IndexClient) -> Result
     println!("Updated {pkg} pin to {latest}");
   }
   Ok(())
-}
-
-/// `\\?\D:\foo` → `D:\foo` (Windows canonicalize adds the verbatim prefix).
-fn strip_verbatim(p: PathBuf) -> PathBuf {
-  let s = p.to_string_lossy();
-  match s.strip_prefix(r"\\?\") {
-    Some(rest) => PathBuf::from(rest),
-    None => p,
-  }
 }
