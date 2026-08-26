@@ -207,7 +207,7 @@ fn mixed_rust_python_project_uses_python_dir_and_rust_overlays() {
   let settings = read(root, ".vscode/settings.json");
   assert!(settings.contains("\"[rust]\""), "{settings}");
   let gi = read(root, ".gitignore");
-  assert!(gi.contains("target/"), "{gi}");
+  assert!(gi.contains("*.pdb"), "rust overlay must be merged: {gi}");
   assert!(gi.contains("secrets/"), "{gi}");
   assert!(sft_setup::run(root, &templates(), false).unwrap().is_empty());
 }
