@@ -37,10 +37,11 @@ deployment files, moving `dist/`, or deleting `.cache/`.
 poe setup-project [--check] [--dry-run] [--no-commit] [--root PATH] [--templates-dir PATH]
 ```
 
-- Implemented in **Rust** as a standalone CLI binary (`devkit setup-project`) that lives in this repo
-  and is packaged into the `aeth_devkit` wheel by **maturin (`bindings = "bin"`)** — no pyo3,
-  no Python ABI coupling. The poe task is simply `cmd = "devkit setup-project ..."`, the same
-  pattern as the existing shell scripts. See "Rust / packaging" below.
+- Implemented in **Rust** as the `setup-project` subcommand of the `devkit` binary
+  (crate `aeth-devkit-setup`, dispatched by crate `aeth-devkit`) and packaged into the
+  `aeth_devkit` wheel by **maturin (`bindings = "bin"`)** — no pyo3, no Python ABI coupling.
+  The poe task is simply `cmd = "devkit setup-project"`, the same pattern as the existing
+  shell scripts. See "Rust / packaging" below.
 - Runs against cwd (must contain `pyproject.toml`).
 - `--dry-run`: print changes, write nothing. `--check`: dry-run + exit 1 if anything would change.
 - Prints one line per changed file; silent for unchanged files. Second run = no output.
@@ -211,19 +212,20 @@ migrate to the same binary later once this path is proven.
 Layout:
 
 ```text
-aeth_devkit/
-├── pyproject.toml        # build-backend = "maturin", [tool.maturin] bindings = "bin"
-├── Cargo.toml            # [[bin]] name = "devkit setup-project"
-├── src/                  # Rust: lib.rs, main.rs, merge modules
-├── tests/                # cargo integration tests + fixtures
-├── python/aeth_devkit/     # Python: __init__.py, scripts/, templates/
+aeth-devkit/
+├── pyproject.toml                 # build-backend = "maturin", [tool.maturin] bindings = "bin"
+├── Cargo.toml                     # [workspace] members = crates/*
+├── crates/aeth-devkit/            # [[bin]] name = "devkit" — the shipped dispatcher
+├── crates/aeth-devkit-setup/      # this command: lib + merge modules, tests/ + fixtures
+├── crates/aeth-devkit-core/       # shared git/process/pyproject helpers
+├── python/aeth_devkit/            # Python: __init__.py, scripts/, templates/
 └── uv.lock
 ```
 
 Build / release contract:
 
 - `uv build` runs `cargo build --release` via maturin and produces a
-  `py3-none-win_amd64` wheel containing `devkit setup-project.exe` as a console script plus the
+  `py3-none-win_amd64` wheel containing `devkit.exe` as a console script plus the
   Python package and templates. Downstream `uv sync` installs the wheel — no Rust
   toolchain needed downstream.
 - `[project].version` in `pyproject.toml` stays the single version; `release.sh` is
@@ -248,8 +250,8 @@ via `uv tool`, VS Code `rust-analyzer` + `vadimcn.vscode-lldb`. Shared
 - Templates are package data under `python/aeth_devkit/templates/`.
 - Tests: Rust unit/integration tests (`cargo test`) cover each merge mode against fixture
   files copied from the current projects, plus an idempotency test (apply twice → second
-  diff empty). A single pytest smoke test confirms the installed wheel exposes a working
-  `devkit setup-project --version`.
+  diff empty). CI's wheel job confirms the installed wheel exposes a working
+  `devkit --version` and `devkit setup-project --help`.
 - Sequence: (1) toolchain + hello-world build, (2) maturin skeleton in `aeth_devkit` with a
-  stub binary, verify `uv build` → install → `devkit setup-project --version` works end-to-end,
+  stub binary, verify `uv build` → install → `devkit --version` works end-to-end,
   (3) merge logic per the spec.
