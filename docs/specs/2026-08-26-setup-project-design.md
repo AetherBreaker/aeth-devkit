@@ -1,15 +1,22 @@
 # `poe setup-project` — design spec
 
-Status: DRAFT (open questions at the bottom)
+Status: DRAFT v2 (template-driven). Open questions at the bottom.
 
 ## Purpose
 
-A one-and-done, idempotent script that standardizes a project's configuration so all
-generated clutter lands in `<project_root>/.cache/`, and (later) bootstraps the rest of
-the SFT project conventions. Run once per project; re-run only if something drifts.
+A one-and-done, idempotent script that standardizes a project's configuration from a set
+of **templates shipped inside `poe_tasks`**. Two goals:
 
-Explicitly **not** responsible for: cleaning up existing stragglers (that's `poe clean`),
-touching Docker/deployment files, or moving `dist/`.
+1. All generated clutter lands in `<project_root>/.cache/`.
+2. Tool/editor/repo configuration travels *with* each repository (no more `extends`
+   chains to parent directories), while still being maintained in exactly one place:
+   the templates. To change a convention, edit the template and re-run
+   `poe setup-project` in each project.
+
+Run once per project; re-run only when something drifts or a template changes.
+
+Explicitly **not** responsible for: cleaning existing stragglers (`poe clean`), Docker or
+deployment files, moving `dist/`, or deleting `.cache/`.
 
 ## Invocation
 
@@ -17,131 +24,140 @@ touching Docker/deployment files, or moving `dist/`.
 poe setup-project [--check] [--dry-run]
 ```
 
-- Shipped in `poe_tasks` as `src/poe_tasks/scripts/setup_project.py`, exposed as a poe task.
-- Runs against the cwd project root (where `pyproject.toml` lives).
-- `--dry-run`: print the changes that would be made, write nothing.
-- `--check`: like dry-run, but exit non-zero if anything would change (drift detection / CI).
-- Every change is printed as `<file>: <what changed>`; unchanged files print nothing.
+- Implemented as `src/poe_tasks/scripts/setup_project.py` (Python, stdlib + `tomlkit`).
+- Runs against cwd (must contain `pyproject.toml`).
+- `--dry-run`: print changes, write nothing. `--check`: dry-run + exit 1 if anything would change.
+- Prints one line per changed file; silent for unchanged files. Second run = no output.
 
-## Constants
+## Templates
 
-| Name                | Value                                     |
-| ------------------- | ----------------------------------------- |
-| `CACHE_DIR`         | `.cache`                                  |
-| `PYCACHE_DIR`       | `.cache/pycache`                          |
-| `PYCACHE_ABS`       | `<project_root>\.cache\pycache` (native separators, resolved at runtime) |
-| `PYCACHE_VSCODE`    | `${workspaceFolder}/.cache/pycache`       |
+Live in `src/poe_tasks/templates/` and ship with the wheel:
 
-## Changes made
+| Template                   | Target                       | Merge mode |
+| -------------------------- | ---------------------------- | ---------- |
+| `pyproject.toml`           | `pyproject.toml`             | TOML deep-merge |
+| `vscode/settings.json`     | `.vscode/settings.json`      | JSON deep-merge |
+| `vscode/launch.json`       | `.vscode/launch.json`        | create-if-missing + per-config env patch |
+| `vscode/extensions.json`   | `.vscode/extensions.json`    | JSON deep-merge (`recommendations` list-union) |
+| `gitignore`                | `.gitignore`                 | line-union |
+| `dockerignore`             | `.dockerignore`              | line-union, only if `docker/` or `Dockerfile*` exists |
+| `gitattributes`            | `.gitattributes`             | line-union |
+| `env`                      | `.env` + other referenced env files | key upsert |
 
-### 1. `pyproject.toml` (edited with `tomlkit`, preserving comments/formatting)
+Templates may use `{placeholders}` resolved at runtime:
 
-Set (create tables if missing, override if present — overriding the parent
-`../pyproject.toml` that ruff/pyright `extend` is fine):
+| Placeholder          | Value |
+| -------------------- | ----- |
+| `{project_root}`     | absolute path, native separators |
+| `{package}`          | import name: sole directory under `src/` if unambiguous, else `project.name` with `-`→`_` |
+| `{latest_poe_tasks}` | latest stable `poe-tasks` on SFTPyPI (same lookup as `lock.sh`) |
 
-| Key                                   | Value                    | Condition |
-| ------------------------------------- | ------------------------ | --------- |
-| `tool.pytest.ini_options.cache_dir`   | `".cache/pytest"`        | always |
-| `tool.ruff.cache-dir`                 | `".cache/ruff"`          | always |
-| `tool.coverage.run.data_file`         | `".cache/.coverage"`     | always |
-| `tool.coverage.html.directory`        | `".cache/htmlcov"`       | always |
-| `tool.coverage.xml.output`            | `".cache/coverage.xml"`  | always |
-| `tool.coverage.lcov.output`           | `".cache/coverage.lcov"` | always |
-| `tool.mypy.cache_dir`                 | `".cache/mypy"`          | only if `mypy` appears in any dependency list |
+### Merge modes
 
-`[tool.poe.tasks.clean]` / `poe clean` is **not** modified and must never delete `.cache/`.
+**TOML deep-merge** (`pyproject.toml`): walk the template; tables merge recursively,
+every leaf (scalar *or* array) present in the template **overwrites** the project value;
+keys absent from the template are left untouched (project name, version, deps,
+`tool.docker`, `tool.uv.sources` for other packages, …). Comments/formatting preserved via
+`tomlkit`. Special rules:
+- Arrays flagged *union* (see open Q1) are unioned, not replaced.
+- `tool.ruff.extend` and `tool.pyright.extends` are **removed** from the project once the
+  template has inlined the full config (that is the whole point).
+- Array-of-tables `[[tool.uv.index]]`: ensure an entry with `name = "SFTPyPI"` exists and
+  matches the template; other index entries untouched.
+- `dependency-groups.dev`: ensure an entry for each template dep by package name; a
+  matching existing entry (any specifier) is replaced with the template's specifier.
 
-### 2. `.env` (project root)
+**JSON deep-merge** (`settings.json`, `extensions.json`): same as TOML; objects merge,
+leaves overwrite, lists replace unless flagged union. JSONC input tolerated (comments and
+trailing commas stripped; the leading `//` header block is preserved verbatim).
 
-- Upsert `PYTHONPYCACHEPREFIX="<PYCACHE_ABS>"`, replacing an existing line in place
-  (preserving position) or appending; create the file if missing.
-- All other lines (secrets, comments, ordering) are preserved byte-for-byte.
-- Backslashes are written literally; poethepoet's parser and VS Code's envFile reader
-  both keep them as-is inside double quotes (verified).
+**launch.json**: if absent, write the template. If present, do **not** add/remove
+configurations; for every configuration with `type` in `{debugpy, python}` and
+`request == "launch"`: ensure `envFile` (default `${workspaceFolder}/.env`, existing value
+kept) and set `env.PYTHONPYCACHEPREFIX`, `env.PYTHONUNBUFFERED`, `env.PYTHONSAFEPATH` from
+the template's `env` block (overwrite; other `env` keys kept). Non-Python configs, attach
+configs and compounds are untouched. `tasks.json` is likewise patched
+(`options.env.PYTHONPYCACHEPREFIX` on every task) but never created — tasks are
+project-specific.
 
-### 3. Other env files referenced by VS Code
+**line-union** (`.gitignore`, `.dockerignore`, `.gitattributes`): create from template if
+absent; otherwise append each template line not already present (comparison ignores
+surrounding whitespace and treats `.cache` ≡ `.cache/`). Never removes or reorders.
 
-For every `envFile` value in `.vscode/launch.json` that is not `${workspaceFolder}/.env`
-(e.g. `testing.env`): apply the same upsert as (2). If the referenced file does not
-exist, create it with just the one variable.
+**env upsert**: for each `KEY=value` in the `env` template, replace the existing `KEY=`
+line in place or append; all other lines preserved byte-for-byte; line endings preserved;
+file created if missing. Applied to `.env` and to every distinct `envFile` referenced in
+`launch.json` (e.g. `testing.env`).
 
-### 4. `.vscode/launch.json`
+## Template contents (v1)
 
-Facts: debugpy launch configs do **not** load `.env` unless `envFile` is set, and `env`
-entries override `envFile`.
+### `pyproject.toml`
+- `[dependency-groups].dev`: `poe-tasks>={latest_poe_tasks}`, `poethepoet>=0.46.0`, `pyright>=1.1.411`
+- `[tool.poe].include_script = [{ script = "poe_tasks:tasks", executor = { type = "uv", frozen = true } }]`
+- `[[tool.uv.index]]` SFTPyPI block; `[tool.uv.sources].poe-tasks = [{ index = "SFTPyPI" }]`
+- `[tool.pyright]`: full block currently in the grandparent `pyproject.toml` (no `extends`);
+  `executionEnvironments = [{ root = "src", extraPaths = ["src"] }]`
+- `[tool.ruff]`: full block from grandparent (`exclude`, `fix`, `indent-width`, `line-length`,
+  `format`, `lint.extend-select`, `lint.ignore`, `lint.isort.*`) + `cache-dir = ".cache/ruff"`,
+  `src = ["./src"]`, `lint.isort.known-first-party = ["{package}"]`
+- `[tool.tombi]`: full block from grandparent
+- `[tool.pytest.ini_options]`: `addopts`, `cache_dir = ".cache/pytest"`, `testpaths`, `xfail_strict`, `asyncio_mode`
+- `[tool.coverage.run]`: `data_file = ".cache/.coverage"`, `source_pkgs = ["{package}"]`;
+  `[tool.coverage.report].show_missing = true`; `[tool.coverage.html].directory = ".cache/htmlcov"`;
+  `[tool.coverage.xml].output = ".cache/coverage.xml"`; `[tool.coverage.lcov].output = ".cache/coverage.lcov"`
+- `[tool.mypy].cache_dir = ".cache/mypy"` — applied only if `mypy` is in any dependency list
+  (the only conditional section; marked in the template with a `# setup-project: if-dep mypy` comment)
 
-For each configuration with `"type": "debugpy"` (or legacy `"python"`) and
-`"request": "launch"`:
-- Ensure `envFile` exists; if absent set `"${workspaceFolder}/.env"`. Existing values are kept.
-- Ensure `env.PYTHONPYCACHEPREFIX = PYCACHE_VSCODE` (create `env` if missing; override
-  any other value, e.g. the old `.cache/__pycache__` spelling).
-- Other config types (`PowerShell`, `attach`, compounds) are untouched.
-- If the file does not exist, do nothing (no invented launch configs — a later
-  "project bootstrap" phase may add a default one; see open questions).
-
-### 5. `.vscode/tasks.json`
-
-For each task: ensure `options.env.PYTHONPYCACHEPREFIX = PYCACHE_VSCODE`. Skip if file absent.
-
-### 6. `.vscode/settings.json` (create if missing)
-
+### `vscode/settings.json`
 ```jsonc
 "python.envFile": "${workspaceFolder}/.env",
-"terminal.integrated.env.windows": { "PYTHONPYCACHEPREFIX": "${workspaceFolder}\.cache\pycache" },
+"python.testing.pytestEnabled": true, "python.testing.unittestEnabled": false,
+"python.testing.pytestArgs": ["tests"],
+"[python]": { "editor.defaultFormatter": "charliermarsh.ruff", "editor.formatOnSave": true },
+"terminal.integrated.env.windows": { "PYTHONPYCACHEPREFIX": "${workspaceFolder}\\.cache\\pycache" },
 "terminal.integrated.env.linux":   { "PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache" },
 "terminal.integrated.env.osx":     { "PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache" },
 "files.exclude":        { ".cache": true, ".venv": true, "**/__pycache__": true },
 "search.exclude":       { ".cache": true, ".venv": true, "**/__pycache__": true },
 "files.watcherExclude": { "**/.cache/**": true, "**/.venv/**": true, "**/__pycache__/**": true }
 ```
+The terminal env is a straggler-catcher *in addition to* `.env`; `python.envFile` only
+feeds extension-spawned processes, and debugpy only reads `.env` when `envFile` is set.
 
-Merge semantics: keys are set/overridden individually; existing unrelated keys and
-existing entries inside the exclude maps are preserved.
+### `vscode/launch.json`
+One `Current File` debugpy config: `program=${file}`, `console=integratedTerminal`,
+`justMyCode=false`, `cwd=${workspaceFolder}`, `envFile=${workspaceFolder}/.env`,
+`env = { PYTHONPATH: ${workspaceFolder}/src, PYTHONPYCACHEPREFIX: ${workspaceFolder}/.cache/pycache, PYTHONUNBUFFERED: "1", PYTHONSAFEPATH: "1" }`.
 
-Rationale for the terminal env: `python.envFile` only feeds extension-spawned
-processes; `poe`/`uv run` typed in an integrated terminal would otherwise write
-`__pycache__` next to sources. This is a straggler-catcher, **in addition to** `.env`.
+### `vscode/extensions.json`
+`recommendations`: `ms-python.python`, `ms-python.debugpy`, `charliermarsh.ruff`,
+`ms-python.vscode-pylance`, `tamasfe.even-better-toml` (list-union; project extras kept).
 
-### 7. `.gitignore`
+### `env`
+`PYTHONPYCACHEPREFIX="{project_root}\.cache\pycache"` (backslashes are kept literal by
+both poethepoet's and VS Code's env parsers — verified).
 
-Ensure a `.cache/` line exists (accept existing `.cache` without slash as satisfying it).
-Legacy entries (`.pytest_cache`, `.coverage`, `__pycache__/`, …) are left alone.
+### `gitignore` / `dockerignore` / `gitattributes`
+- gitignore: standard GitHub Python template + `.cache/`, `.env`, `*.env`, `persisted_data/`.
+- dockerignore: `.cache/`, `.venv/`, `**/__pycache__`, `.git`, `.vscode`, `*.env`, `dist/`.
+- gitattributes: `* text=auto eol=lf`, `*.sh text eol=lf`.
 
-### 8. `.gitattributes`
-
-Ensure these lines exist (append if missing, create file if absent):
-
-```
-* text=auto eol=lf
-*.sh text eol=lf
-```
-
-## JSONC handling for `.vscode/*.json`
-
-VS Code files may contain `//` comments and trailing commas. Approach:
-- Preserve the leading comment block (lines before the first `{`) verbatim.
-- Strip remaining comments/trailing commas, `json.load`, mutate, re-dump with 4-space
-  indent. Inline comments elsewhere in the file are lost — acceptable; across the
-  seven current projects only the boilerplate header comment exists.
+## Naming
+Bytecode cache dir is `.cache/pycache` everywhere (existing `.cache/__pycache__` values in
+`.env`/launch.json are overwritten to match).
 
 ## Idempotency / safety
+- Second run makes no changes. Never deletes files/dirs. Never rewrites secrets.
+- `.env` handled line-wise only; `pyproject.toml` via tomlkit round-trip.
 
-- Running twice yields no changes on the second run.
-- Never deletes files or directories.
-- Never writes secrets; only touches the single `PYTHONPYCACHEPREFIX` line in env files.
-- `.env` is written with the file's existing line-ending style.
+## Decided / out of scope (2026-08-26)
+No `poe clean` changes; no `dist/` move; no Docker/compose edits; no straggler or
+git-tracked-file reports; no `.python-version` or README scaffolding; no
+`requires-python`/build-system enforcement.
 
-## Dependencies added to `poe_tasks`
-
-- `tomlkit` (runtime dep).
-
-## Denied / out of scope (decided 2026-08-26)
-
-- `poe clean` nuking `.cache/` — no; the cache should persist.
-- `dist/` relocation — no.
-- Docker/compose/Dockerfile edits — no; deployment env is intentional.
-- Straggler report and git-tracked-cache-file report — no; not this script's job.
-
-## Open questions (project-bootstrap scope)
-
-See the accompanying decision list.
+## Open questions
+1. Array merge policy for `pytest.addopts`, `ruff.lint.extend-select`, `ruff.lint.ignore`,
+   `ruff.exclude`: replace from template, or union with project values?
+2. Per-project opt-out: honour a `[tool.setup-project].keep = ["tool.pyright.reportMissingTypeStubs", ...]`
+   list of dotted keys the merge must not overwrite (aeth_ext currently flips two pyright
+   flags), or is "template always wins, edit the project after" acceptable?
