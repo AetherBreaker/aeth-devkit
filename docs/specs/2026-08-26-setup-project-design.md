@@ -37,10 +37,10 @@ deployment files, moving `dist/`, or deleting `.cache/`.
 poe setup-project [--check] [--dry-run]
 ```
 
-- Implemented in **Python** (`src/poe_tasks/scripts/setup_project.py`, stdlib + `tomlkit`),
-  not bash: the merge logic needs real TOML/JSONC parsing and tests, and Python ships
-  inside the `poe_tasks` wheel with no extra toolchain (Rust would need its own
-  build/distribution path just to edit config files).
+- Implemented in **Rust** as a standalone CLI binary (`sft-setup`) that lives in this repo
+  and is packaged into the `poe_tasks` wheel by **maturin (`bindings = "bin"`)** — no pyo3,
+  no Python ABI coupling. The poe task is simply `cmd = "sft-setup ..."`, the same
+  pattern as the existing shell scripts. See "Rust / packaging" below.
 - Runs against cwd (must contain `pyproject.toml`).
 - `--dry-run`: print changes, write nothing. `--check`: dry-run + exit 1 if anything would change.
 - Prints one line per changed file; silent for unchanged files. Second run = no output.
@@ -193,9 +193,56 @@ produces (`.python-version`, README, `requires-python`, build-system, SFTPyPI in
 2. `[tool.setup-project].keep` opt-out list is honoured.
 3. `extends` / `extend` lines pointing at `../pyproject.toml` are removed.
 
+## Rust / packaging
+
+Why Rust rather than Python: the merge logic wants a first-class comment-preserving TOML
+editor (`toml_edit`, the one `cargo` itself uses), the binary is usable outside poe and
+outside Python projects, a broken build fails at `uv build` rather than at `poe` import
+time, and the maintainer wants to learn Rust. The higher-frequency shell scripts
+(`release.sh`, `lock.sh`, `docker-pin-latest.sh`, `rescind-release.sh`) are expected to
+migrate to the same binary later once this path is proven.
+
+Layout:
+
+```text
+poe_tasks/
+├── pyproject.toml        # build-backend = "maturin", [tool.maturin] bindings = "bin"
+├── Cargo.toml            # [[bin]] name = "sft-setup"
+├── rust/src/main.rs      # CLI (clap), merge logic, tests
+├── src/poe_tasks/        # unchanged Python: __init__.py, scripts/, templates/
+└── uv.lock
+```
+
+Build / release contract:
+
+- `uv build` runs `cargo build --release` via maturin and produces a
+  `py3-none-win_amd64` wheel containing `sft-setup.exe` as a console script plus the
+  Python package and templates. Downstream `uv sync` installs the wheel — no Rust
+  toolchain needed downstream.
+- `[project].version` in `pyproject.toml` stays the single version; `release.sh` is
+  unchanged apart from keeping `Cargo.toml`'s version in step.
+- Wheels are platform-specific. Windows-only is sufficient today because `poe-tasks` is a
+  `dev`-group dependency and never installed in Docker images. Linux wheels, if ever
+  needed, come from `maturin build --target x86_64-unknown-linux-musl --zig`.
+- An editable `../poe_tasks` source in a downstream project triggers `maturin develop`
+  (a compile) on `uv sync`; only machines doing that need the toolchain.
+- Templates are read at runtime from the installed Python package
+  (`sft-setup` locates them via `python -c "import poe_tasks.templates"` or an explicit
+  `--templates-dir`), so editing a template never requires a rebuild.
+
+Toolchain (dev machines): MSVC Build Tools (C++ workload), `rustup` stable, `maturin`
+via `uv tool`, VS Code `rust-analyzer` + `vadimcn.vscode-lldb`. Shared
+`CARGO_TARGET_DIR` on D: to keep `target/` out of every repo.
+
 ## Implementation notes
 
-- `tomlkit` is added as a runtime dependency of `poe_tasks`; templates are package data
-  under `src/poe_tasks/templates/` and located via `importlib.resources`.
-- Tests (pytest, in `tests/`) cover each merge mode against fixture files copied from the
-  current projects, plus an idempotency test (apply twice → second diff empty).
+- Crates: `clap` (CLI), `toml_edit` (pyproject), `serde_json` + a small JSONC
+  comment/trailing-comma stripper (VS Code files), `anyhow` (errors). No `tomlkit`.
+- Templates are package data under `src/poe_tasks/templates/`.
+- Tests: Rust unit/integration tests (`cargo test`) cover each merge mode against fixture
+  files copied from the current projects, plus an idempotency test (apply twice → second
+  diff empty). A single pytest smoke test confirms the installed wheel exposes a working
+  `sft-setup --version`.
+- Sequence: (1) toolchain + hello-world build, (2) maturin skeleton in `poe_tasks` with a
+  stub binary, verify `uv build` → install → `sft-setup --version` works end-to-end,
+  (3) merge logic per the spec.
