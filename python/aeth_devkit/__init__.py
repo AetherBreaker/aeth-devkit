@@ -31,22 +31,10 @@ tasks.add(
       "poe release 'publish notes'"
     ),
     "envfile": ".env",
-    "shell": "devkit release ${force:+--force} ${dry_run:+--dry-run} $POE_EXTRA_ARGS",
-    "interpreter": "bash",
-    "args": [
-      {
-        "name": "force",
-        "options": ["--force", "-f"],
-        "type": "boolean",
-        "help": "Skip the confirmation prompts (dirty tree, existing artefacts)",
-      },
-      {
-        "name": "dry_run",
-        "options": ["--dry-run"],
-        "type": "boolean",
-        "help": "Run every check and print the plan without changing anything",
-      },
-    ],
+    # No declared args on purpose: poe would then reject the free positionals. Everything
+    # (bump words, quoted notes, --force/-f, --dry-run) is forwarded verbatim and parsed by
+    # `devkit release` itself.
+    "cmd": "devkit release $POE_EXTRA_ARGS",
   },
 )
 
@@ -98,18 +86,9 @@ tasks.add(
     ),
     "envfile": ".env",
     "shell": (
-      'devkit release ${force:+--force} $POE_EXTRA_ARGS'
-      f' && bash "{_script_path("docker-pin-latest.sh")}" "$(uv version --short)"'
+      f'devkit release $POE_EXTRA_ARGS && bash "{_script_path("docker-pin-latest.sh")}" "$(uv version --short)"'
     ),
     "interpreter": "bash",
-    "args": [
-      {
-        "name": "force",
-        "options": ["--force", "-f"],
-        "type": "boolean",
-        "help": "Skip the confirmation prompts (dirty tree, existing artefacts)",
-      },
-    ],
   },
 )
 

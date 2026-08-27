@@ -66,10 +66,28 @@ pub struct Args {
   /// Bump types (major minor patch stable alpha beta rc post dev) followed by optional
   /// multi-word notes.
   // Only `///` doc comments become `--help` text; this `//` note is for readers of the code.
-  // `trailing_var_arg` + `allow_hyphen_values`: once the first positional is seen, every
-  // remaining word (even `-f`) lands here, and `args::parse_positionals` sorts them out.
-  #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+  // A plain `Vec<String>` positional: clap keeps parsing `--force` / `--dry-run` / `-f`
+  // wherever they appear (before or after the words), which matters because `poe release`
+  // forwards the whole command line verbatim through `$POE_EXTRA_ARGS`. Everything that is
+  // not a known flag lands here, and `args::parse_positionals` sorts bumps from notes.
   pub words: Vec<String>,
+}
+
+#[cfg(test)]
+mod cli_tests {
+  use super::*;
+
+  #[test]
+  fn flags_parse_anywhere_on_the_line() {
+    // `try_parse_from` takes the full argv including the program name, and returns a
+    // `Result` instead of exiting the process like `parse()` would.
+    let a = Args::try_parse_from(["devkit-release", "patch", "--dry-run", "-f", "first patch release"]).unwrap();
+    assert!(a.force && a.dry_run);
+    assert_eq!(a.words, vec!["patch", "first patch release"]);
+    let a = Args::try_parse_from(["devkit-release", "--index", "Other", "major", "alpha"]).unwrap();
+    assert_eq!(a.index.as_deref(), Some("Other"));
+    assert_eq!(a.words, vec!["major", "alpha"]);
+  }
 }
 
 /// The injectable collaborators. Production passes real ones (see [`run_real`]); tests pass
