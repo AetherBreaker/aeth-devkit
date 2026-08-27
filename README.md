@@ -9,7 +9,7 @@ plus the `devkit` CLI (Rust) they call.
 | --- | --- | --- |
 | `poe setup-project` | `devkit setup-project` | Standardize a project's config from the shipped templates (idempotent). |
 | `poe lock [-U] [--all-extras] [-p PKG] [--dry-run] [--no-commit]` | `devkit lock` | Bump the `aeth-devkit` pin to the latest stable release on its index, `uv sync`, commit `uv.lock`. |
-| `poe release …` | `scripts/release.sh` | Bump version, tag, build, publish. |
+| `poe release [-f] [--dry-run] [bump …] ["notes"]` | `devkit release` | Bump version, build, tag, publish to the index and GitHub; rolls back on failure. |
 | `poe docker-pin-latest` | `scripts/docker-pin-latest.sh` | Pin the compose file's package version. |
 | `poe rescind-release` | `scripts/rescind-release.sh` | Undo a release. |
 

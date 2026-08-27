@@ -65,9 +65,9 @@ pub struct Args {
 
   /// Bump types (major minor patch stable alpha beta rc post dev) followed by optional
   /// multi-word notes.
-  ///
-  /// `trailing_var_arg` + `allow_hyphen_values`: once the first positional is seen, every
-  /// remaining word (even `-f`) lands here, and `args::parse_positionals` sorts them out.
+  // Only `///` doc comments become `--help` text; this `//` note is for readers of the code.
+  // `trailing_var_arg` + `allow_hyphen_values`: once the first positional is seen, every
+  // remaining word (even `-f`) lands here, and `args::parse_positionals` sorts them out.
   #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
   pub words: Vec<String>,
 }

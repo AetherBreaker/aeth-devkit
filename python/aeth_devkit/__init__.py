@@ -23,7 +23,7 @@ tasks.add(
       "To include release notes, append a multi-word string as the final arg "
       "(single-word trailing args are treated as a typo and raise an error). "
       "Omit all bump types to publish the current version without bumping. "
-      "Pass --force / -f to skip the uncommitted-changes prompt. "
+      "Pass --force / -f to skip the confirmation prompts; --dry-run to only print the plan. "
       "Examples: "
       "poe release patch | "
       "poe release major alpha | "
@@ -31,7 +31,22 @@ tasks.add(
       "poe release 'publish notes'"
     ),
     "envfile": ".env",
-    "cmd": f'bash "{_script_path("release.sh")}" $POE_EXTRA_ARGS',
+    "shell": "devkit release ${force:+--force} ${dry_run:+--dry-run} $POE_EXTRA_ARGS",
+    "interpreter": "bash",
+    "args": [
+      {
+        "name": "force",
+        "options": ["--force", "-f"],
+        "type": "boolean",
+        "help": "Skip the confirmation prompts (dirty tree, existing artefacts)",
+      },
+      {
+        "name": "dry_run",
+        "options": ["--dry-run"],
+        "type": "boolean",
+        "help": "Run every check and print the plan without changing anything",
+      },
+    ],
   },
 )
 
@@ -75,7 +90,7 @@ tasks.add(
       "valid values: major, minor, patch, stable, alpha, beta, rc, post, dev. "
       "To include release notes, append a multi-word string as the final arg "
       "(single-word trailing args are treated as a typo and raise an error). "
-      "Pass --force / -f to skip the uncommitted-changes prompt. "
+      "Pass --force / -f to skip the confirmation prompts. "
       "Examples: "
       "poe release-and-pin patch | "
       "poe release-and-pin major alpha | "
@@ -83,9 +98,18 @@ tasks.add(
     ),
     "envfile": ".env",
     "shell": (
-      f'bash "{_script_path("release.sh")}" $POE_EXTRA_ARGS && bash "{_script_path("docker-pin-latest.sh")}" "$(uv version --short)"'
+      'devkit release ${force:+--force} $POE_EXTRA_ARGS'
+      f' && bash "{_script_path("docker-pin-latest.sh")}" "$(uv version --short)"'
     ),
     "interpreter": "bash",
+    "args": [
+      {
+        "name": "force",
+        "options": ["--force", "-f"],
+        "type": "boolean",
+        "help": "Skip the confirmation prompts (dirty tree, existing artefacts)",
+      },
+    ],
   },
 )
 

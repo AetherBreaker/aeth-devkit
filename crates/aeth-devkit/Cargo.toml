@@ -10,6 +10,7 @@
 
 [dependencies]
   aeth-devkit-lock  = { workspace = true }
+  aeth-devkit-release = { workspace = true }
   aeth-devkit-setup = { workspace = true }
   anyhow            = { workspace = true }
   clap              = { workspace = true }
