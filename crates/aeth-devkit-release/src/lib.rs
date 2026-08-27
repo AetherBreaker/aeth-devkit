@@ -73,23 +73,6 @@ pub struct Args {
   pub words: Vec<String>,
 }
 
-#[cfg(test)]
-mod cli_tests {
-  use super::*;
-
-  #[test]
-  fn flags_parse_anywhere_on_the_line() {
-    // `try_parse_from` takes the full argv including the program name, and returns a
-    // `Result` instead of exiting the process like `parse()` would.
-    let a = Args::try_parse_from(["devkit-release", "patch", "--dry-run", "-f", "first patch release"]).unwrap();
-    assert!(a.force && a.dry_run);
-    assert_eq!(a.words, vec!["patch", "first patch release"]);
-    let a = Args::try_parse_from(["devkit-release", "--index", "Other", "major", "alpha"]).unwrap();
-    assert_eq!(a.index.as_deref(), Some("Other"));
-    assert_eq!(a.words, vec!["major", "alpha"]);
-  }
-}
-
 /// The injectable collaborators. Production passes real ones (see [`run_real`]); tests pass
 /// recorders and stubs. Bundling them in one struct keeps `run`'s signature stable as the
 /// list grows.
@@ -210,4 +193,21 @@ pub fn run_real(args: &Args) -> Result<ExitCode> {
       interrupted: &INTERRUPTED,
     },
   )
+}
+
+#[cfg(test)]
+mod cli_tests {
+  use super::*;
+
+  #[test]
+  fn flags_parse_anywhere_on_the_line() {
+    // `try_parse_from` takes the full argv including the program name, and returns a
+    // `Result` instead of exiting the process like `parse()` would.
+    let a = Args::try_parse_from(["devkit-release", "patch", "--dry-run", "-f", "first patch release"]).unwrap();
+    assert!(a.force && a.dry_run);
+    assert_eq!(a.words, vec!["patch", "first patch release"]);
+    let a = Args::try_parse_from(["devkit-release", "--index", "Other", "major", "alpha"]).unwrap();
+    assert_eq!(a.index.as_deref(), Some("Other"));
+    assert_eq!(a.words, vec!["major", "alpha"]);
+  }
 }
