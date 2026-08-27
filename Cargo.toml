@@ -9,7 +9,9 @@
 
 [workspace.dependencies]
   anyhow     = "1.0.104"
+  base64     = "0.22.1"
   clap       = { version = "4", features = ["derive"] }
+  ctrlc      = "3.5.1"
   pep440_rs  = "0.7.3"
   regex      = "1.13.1"
   serde      = "1.0.229"
@@ -21,6 +23,7 @@
   aeth-devkit-core  = { path = "crates/aeth-devkit-core" }
   aeth-devkit-setup = { path = "crates/aeth-devkit-setup" }
   aeth-devkit-lock  = { path = "crates/aeth-devkit-lock" }
+  aeth-devkit-release = { path = "crates/aeth-devkit-release" }
 
 [profile.release]
   strip       = true
