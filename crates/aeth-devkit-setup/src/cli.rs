@@ -37,8 +37,17 @@ pub struct Args {
 pub fn run(args: &Args) -> Result<ExitCode> {
   let dry_run = args.dry_run || args.check;
   let templates = crate::templates::locate(args.templates_dir.as_deref())?;
-  let changes = crate::run(&args.root, &templates, dry_run)?;
+  let mut changes = crate::run(&args.root, &templates, dry_run)?;
   let root = crate::context::strip_verbatim(args.root.canonicalize().unwrap_or(args.root.clone()));
+  if !dry_run {
+    match crate::format::format_pyproject(&root, &crate::format::SystemRunner, &mut changes)? {
+      crate::format::Outcome::Formatted(_) => {}
+      crate::format::Outcome::Unavailable => println!("note: tombi not found; skipping pyproject.toml formatting."),
+      crate::format::Outcome::Failed { code } => {
+        eprintln!("warning: tombi format exited with {code:?}; pyproject.toml left unformatted.");
+      }
+    }
+  }
   if changes.is_empty() {
     println!("Nothing to do — project already matches the templates.");
     return Ok(ExitCode::SUCCESS);

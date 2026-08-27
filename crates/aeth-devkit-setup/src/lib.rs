@@ -4,6 +4,7 @@
 pub mod changes;
 pub mod cli;
 pub mod context;
+pub mod format;
 pub mod git;
 pub mod json_merge;
 pub mod lines;

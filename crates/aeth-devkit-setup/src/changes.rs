@@ -59,6 +59,20 @@ impl Changes {
     Ok(())
   }
 
+  /// Record a change an external tool already wrote to disk (nothing is written here).
+  /// Appends `detail` to an existing entry for `path`, or adds a new "updated" entry.
+  pub fn note(&mut self, path: &Path, detail: &str) {
+    if let Some(f) = self.files.iter_mut().find(|f| f.path == path) {
+      f.details.push(detail.to_string());
+    } else {
+      self.files.push(FileChange {
+        path: path.to_path_buf(),
+        created: false,
+        details: vec![detail.to_string()],
+      });
+    }
+  }
+
   /// Human-readable report, one file per block.
   pub fn report(&self, root: &Path) -> String {
     let mut out = String::new();

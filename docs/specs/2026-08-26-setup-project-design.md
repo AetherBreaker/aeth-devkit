@@ -45,6 +45,11 @@ poe setup-project [--check] [--dry-run] [--no-commit] [--root PATH] [--templates
 - Runs against cwd (must contain `pyproject.toml`).
 - `--dry-run`: print changes, write nothing. `--check`: dry-run + exit 1 if anything would change.
 - Prints one line per changed file; silent for unchanged files. Second run = no output.
+- After the merges are written, `tombi format pyproject.toml` runs so the result is sorted
+  and cleanly formatted. The step is best-effort: if `tombi` is not on `PATH` it is skipped
+  with a note; if it exits non-zero the merged file is kept as-is with a warning. Any
+  reformatting counts as a change (reported and committed with the rest). Not run under
+  `--dry-run` / `--check`.
 - When the project is git-tracked, the changed files are committed automatically
   (`git commit -- <files>` so pre-staged user changes are untouched; env files and
   gitignored files are never committed). `--no-commit` opts out.
