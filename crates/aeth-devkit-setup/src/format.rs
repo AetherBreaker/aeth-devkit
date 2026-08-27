@@ -51,7 +51,7 @@ fn is_not_found(e: &anyhow::Error) -> bool {
 mod tests {
   use std::path::PathBuf;
 
-  use aeth_devkit_core::process::RecordingRunner;
+  use aeth_devkit_core::process::{CapturedOutput, RecordingRunner};
 
   use super::*;
 
@@ -61,6 +61,11 @@ mod tests {
     fn run_inherit(&self, program: &str, _: &[String], _: &Path) -> Result<Option<i32>> {
       use anyhow::Context as _;
       Err(std::io::Error::from(std::io::ErrorKind::NotFound)).with_context(|| format!("running {program}"))
+    }
+    // A missing program fails the same way whether or not output is captured, so this
+    // simply reuses `run_inherit` and discards its (never produced) exit code.
+    fn run_capture(&self, program: &str, args: &[String], cwd: &Path) -> Result<CapturedOutput> {
+      self.run_inherit(program, args, cwd).map(|_| CapturedOutput::default())
     }
   }
 
@@ -73,6 +78,14 @@ mod tests {
     fn run_inherit(&self, _: &str, _: &[String], cwd: &Path) -> Result<Option<i32>> {
       std::fs::write(cwd.join("pyproject.toml"), self.content)?;
       Ok(Some(self.exit_code))
+    }
+    // Same side effect, with the exit code wrapped in a `CapturedOutput` and no text.
+    fn run_capture(&self, program: &str, args: &[String], cwd: &Path) -> Result<CapturedOutput> {
+      let code = self.run_inherit(program, args, cwd)?;
+      Ok(CapturedOutput {
+        code,
+        ..Default::default()
+      })
     }
   }
 
