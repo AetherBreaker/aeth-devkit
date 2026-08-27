@@ -130,9 +130,10 @@ pub struct Script {
 
 /// Records every call and answers from scripts; for tests.
 ///
-/// Matching rules: the first [`Script`] whose `program` equals the call's program and whose
-/// `arg_prefix` is a prefix of the call's arguments wins; scripts are never consumed, so one
-/// script answers any number of calls. Unmatched calls succeed/fail with `exit_code` and
+/// Matching rules: the *most recently registered* [`Script`] whose `program` equals the
+/// call's program and whose `arg_prefix` is a prefix of the call's arguments wins, so a test
+/// can register broad defaults first and override one call later; scripts are never
+/// consumed, so one script answers any number of calls. Unmatched calls succeed/fail with `exit_code` and
 /// produce no output. [`fail_at`](Self::fail_at) overrides everything for one specific call.
 pub struct RecordingRunner {
   /// Public so tests can inspect the raw log; wrapped in `RefCell` so `&self` methods can
@@ -208,9 +209,14 @@ impl RecordingRunner {
       };
     }
     let scripts = self.scripts.borrow();
-    // `find` returns the first script satisfying the closure; `starts_with` on slices checks
-    // that `args` begins with every element of `arg_prefix`, in order.
-    match scripts.iter().find(|s| s.program == program && args.starts_with(&s.arg_prefix)) {
+    // `.rev()` walks newest-first so later registrations override earlier ones; `find`
+    // returns the first script satisfying the closure; `starts_with` on slices checks that
+    // `args` begins with every element of `arg_prefix`, in order.
+    match scripts
+      .iter()
+      .rev()
+      .find(|s| s.program == program && args.starts_with(&s.arg_prefix))
+    {
       Some(s) => CapturedOutput {
         code: Some(s.code),
         stdout: s.stdout.clone(),
