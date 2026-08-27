@@ -18,6 +18,8 @@ enum Command {
   SetupProject(aeth_devkit_setup::cli::Args),
   /// Bump the aeth-devkit pin, run `uv sync`, and commit uv.lock.
   Lock(aeth_devkit_lock::Args),
+  /// Bump version, build, tag, publish to the index, and create a GitHub release.
+  Release(aeth_devkit_release::Args),
 }
 
 fn main() -> ExitCode {
@@ -25,6 +27,7 @@ fn main() -> ExitCode {
   let result = match &cli.command {
     Command::SetupProject(args) => aeth_devkit_setup::cli::run(args),
     Command::Lock(args) => aeth_devkit_lock::run_real(args),
+    Command::Release(args) => aeth_devkit_release::run_real(args),
   };
   match result {
     Ok(code) => code,

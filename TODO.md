@@ -49,7 +49,7 @@ dispatches):
 
 - [x] `lock.sh` → `devkit lock` (7.0.0)
 - [ ] `docker-pin-latest.sh`
-- [ ] `release.sh`
+- [x] `release.sh` → `devkit release` (spec: `docs/specs/2026-08-26-devkit-release-design.md`)
 - [ ] `rescind-release.sh`
 
 ## Housekeeping

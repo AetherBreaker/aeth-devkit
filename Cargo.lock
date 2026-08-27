@@ -13,6 +13,7 @@ name = "aeth-devkit"
 version = "7.0.2"
 dependencies = [
  "aeth-devkit-lock",
+ "aeth-devkit-release",
  "aeth-devkit-setup",
  "anyhow",
  "clap",
