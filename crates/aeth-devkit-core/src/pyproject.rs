@@ -1,8 +1,9 @@
 //! Reading and editing dependency pins and index configuration in `pyproject.toml`.
 
+use anyhow::{Result, bail};
 use regex::Regex;
 use std::sync::LazyLock;
-use toml_edit::{Array, DocumentMut, Item, Value};
+use toml_edit::{Array, DocumentMut, Item, TableLike, Value};
 
 /// PEP 503 normalization: lowercase, runs of `-_.` → `-`.
 pub fn normalize_dist_name(name: &str) -> String {
@@ -221,10 +222,100 @@ pub fn index_url_for(doc: &DocumentMut, name: &str) -> Option<String> {
       .then(|| t.get("url").and_then(Item::as_str).map(str::to_string))
       .flatten()
   };
-  match doc.get("tool")?.get("uv")?.get("index")? {
-    Item::ArrayOfTables(a) => a.iter().find_map(|t| url_of(t)),
-    Item::Value(Value::Array(a)) => a.iter().find_map(|v| v.as_inline_table().and_then(|t| url_of(t))),
-    _ => None,
+  index_tables(doc).into_iter().find_map(url_of)
+}
+
+/// Every `[[tool.uv.index]]` entry, whichever TOML shape it was written in.
+///
+/// uv accepts both an array of tables (`[[tool.uv.index]]` headers) and an inline array of
+/// inline tables (`index = [{ name = … }]`). Those are different `toml_edit` types
+/// (`Table` vs `InlineTable`), but both implement the `TableLike` trait, so we erase the
+/// difference by returning trait objects: `&dyn TableLike`. The `'a` lifetime ties each
+/// borrowed table back to `doc`.
+fn index_tables(doc: &DocumentMut) -> Vec<&dyn TableLike> {
+  // `let … else`: bind on success, otherwise run the `else` block, which must diverge
+  // (here: return early). It replaces a nested `match` for the common "or bail" shape.
+  let Some(item) = doc.get("tool").and_then(|t| t.get("uv")).and_then(|u| u.get("index")) else {
+    return Vec::new();
+  };
+  match item {
+    // `t as &dyn TableLike` is an *unsizing coercion*: a concrete `&Table` becomes a fat
+    // pointer carrying the vtable for `TableLike`.
+    Item::ArrayOfTables(a) => a.iter().map(|t| t as &dyn TableLike).collect(),
+    Item::Value(Value::Array(a)) => a.iter().filter_map(|v| v.as_inline_table().map(|t| t as &dyn TableLike)).collect(),
+    _ => Vec::new(),
+  }
+}
+
+/// `[project].name`, or an error naming what is missing.
+pub fn project_name(doc: &DocumentMut) -> Result<String> {
+  doc
+    .get("project")
+    .and_then(|p| p.get("name"))
+    // `Item::as_str` is a method used as a plain function: `and_then(Item::as_str)` is the
+    // same as `and_then(|i| i.as_str())`, just terser.
+    .and_then(Item::as_str)
+    .map(str::to_string)
+    // Convert `None` into an `Err` with a message; the closure is only run on `None`.
+    .ok_or_else(|| anyhow::anyhow!("pyproject.toml has no [project].name"))
+}
+
+/// The index a release is published to: its `name` and `publish-url`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishIndex {
+  pub name: String,
+  pub publish_url: String,
+}
+
+/// Pick the publish index. With `Some(name)`, that index must exist and carry a
+/// `publish-url`. With `None`, exactly one index must have a `publish-url`; zero or several
+/// is an error asking the caller to pass `--index`.
+pub fn publish_index(doc: &DocumentMut, name: Option<&str>) -> Result<PublishIndex> {
+  let tables = index_tables(doc);
+  if tables.is_empty() {
+    bail!("no [[tool.uv.index]] entries in pyproject.toml");
+  }
+  // A small closure to read a string key from any table-like node. Closures capture their
+  // environment; this one captures nothing, it just saves repeating the chain.
+  let str_of = |t: &dyn TableLike, key: &str| t.get(key).and_then(Item::as_str).map(str::to_string);
+  match name {
+    Some(want) => {
+      // `tables` holds `&dyn TableLike`. `.iter()` would yield `&&dyn`; `.copied()` turns
+      // each back into a plain `&dyn` (references are `Copy`), so `find`'s closure sees
+      // `&&dyn` and one `*` gets us the table.
+      let Some(t) = tables.iter().copied().find(|t| str_of(*t, "name").as_deref() == Some(want)) else {
+        bail!("no [[tool.uv.index]] named {want}");
+      };
+      let Some(publish_url) = str_of(t, "publish-url") else {
+        bail!("index {want} has no publish-url");
+      };
+      Ok(PublishIndex {
+        name: want.to_string(),
+        publish_url,
+      })
+    }
+    None => {
+      // `filter_map` with `?` inside the closure: any table missing `name` or
+      // `publish-url` yields `None` and is dropped.
+      let candidates: Vec<PublishIndex> = tables
+        .iter()
+        .filter_map(|t| {
+          Some(PublishIndex {
+            name: str_of(*t, "name")?,
+            publish_url: str_of(*t, "publish-url")?,
+          })
+        })
+        .collect();
+      // Slice patterns: `[one]` matches exactly one element, `[]` none, `many` anything.
+      match candidates.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => bail!("no [[tool.uv.index]] has a publish-url; pass --index"),
+        many => bail!(
+          "several indexes have a publish-url ({}); pass --index",
+          many.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
+        ),
+      }
+    }
   }
 }
 
@@ -257,7 +348,41 @@ mod tests {
   name     = "Private"
   url      = "https://pypi.example.com/user/internal/+simple"
   explicit = true
+
+[[tool.uv.index]]
+  name        = "SFTPyPI"
+  url         = "https://pypi.example.com/user/internal/+simple"
+  publish-url = "https://pypi.example.com/user/internal/"
 "#;
+
+  #[test]
+  fn reads_project_name() {
+    let d: DocumentMut = DOC.parse().unwrap();
+    assert_eq!(project_name(&d).unwrap(), "demo");
+    let empty: DocumentMut = "[tool]
+"
+    .parse()
+    .unwrap();
+    assert!(project_name(&empty).is_err());
+  }
+
+  #[test]
+  fn selects_publish_index() {
+    let d: DocumentMut = DOC.parse().unwrap();
+    let p = publish_index(&d, None).unwrap();
+    assert_eq!(p.name, "SFTPyPI");
+    assert_eq!(p.publish_url, "https://pypi.example.com/user/internal/");
+    assert_eq!(publish_index(&d, Some("SFTPyPI")).unwrap().name, "SFTPyPI");
+    let err = publish_index(&d, Some("Private")).unwrap_err().to_string();
+    assert!(err.contains("publish-url"), "{err}");
+    assert!(publish_index(&d, Some("Nope")).is_err());
+    let none: DocumentMut = "[project]
+name='x'
+"
+    .parse()
+    .unwrap();
+    assert!(publish_index(&none, None).unwrap_err().to_string().contains("no [[tool.uv.index]]"));
+  }
 
   fn doc() -> DocumentMut {
     DOC.parse().unwrap()
