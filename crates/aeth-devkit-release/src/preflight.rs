@@ -52,7 +52,11 @@ pub fn check_tools(runner: &dyn Runner, root: &Path) -> Result<()> {
   }
 }
 
-/// The branch must have an upstream and must not be behind it. Returns the branch name.
+/// The branch must be `main`, must have an upstream, and must not be behind it.
+/// Returns the branch name.
+///
+/// `main` is hard-coded rather than configurable: `undo` already pushes to
+/// `refs/heads/main`, so a release from any other branch would be un-rescindable anyway.
 ///
 /// The branch name is read through the runner (not `git::current_branch`) so a test can
 /// script it without a real upstream; everything here is a remote-flavoured question.
@@ -62,6 +66,10 @@ pub fn check_branch(runner: &dyn Runner, root: &Path) -> Result<String> {
   };
   let branch = runner.run_capture("git", &s(&["rev-parse", "--abbrev-ref", "HEAD"]), root)?;
   let branch = branch.stdout.trim().to_string();
+  // Checked before the fetch: a wrong branch is a local fact, no point paying for network.
+  if branch != "main" {
+    bail!("releases are cut from main, but the current branch is {branch}; switch to main first");
+  }
   git::fetch(runner, root)?;
   let behind = git::behind_count(runner, root)?;
   if behind > 0 {
@@ -239,6 +247,19 @@ mod tests {
     r.script("git", &["rev-parse", "--abbrev-ref", "HEAD"], 0, "main\n");
     r.script("git", &["rev-list", "--count"], 0, "3\n");
     assert!(check_branch(&r, Path::new(".")).unwrap_err().to_string().contains("behind"));
+  }
+
+  #[test]
+  fn branch_check_requires_main() {
+    let r = RecordingRunner::new(0);
+    r.script("git", &["rev-parse", "--abbrev-ref", "@{u}"], 0, "origin/feature
+");
+    r.script("git", &["rev-parse", "--abbrev-ref", "HEAD"], 0, "feature
+");
+    let err = check_branch(&r, Path::new(".")).unwrap_err().to_string();
+    assert!(err.contains("current branch is feature"), "{err}");
+    // Refused before any fetch: the only git calls are the two rev-parses.
+    assert_eq!(r.calls_for("git").len(), 2);
   }
 
   #[test]
