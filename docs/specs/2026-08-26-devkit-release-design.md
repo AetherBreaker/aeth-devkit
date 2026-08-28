@@ -139,7 +139,7 @@ visible, except where stdout is captured for parsing.
 | 2 | `uv version --bump …` (real); set Cargo.toml version via `toml_edit`; `cargo update --workspace --quiet` when `Cargo.lock` exists (its failure is an error, not swallowed). | bump | — (covered by 1) |
 | 3 | `uv lock` | bump | — |
 | 4 | Delete `dist/*.whl`, `dist/*.tar.gz`; `uv build`. | both | — |
-| 5 | `git::commit_paths` on the subset of `pyproject.toml uv.lock Cargo.toml Cargo.lock` that exist, message `Bump version to <new>`. Record the new `HEAD` SHA once; the push step reuses it. | bump | `ResetCommit { bump_sha, pre_sha, paths }` |
+| 5 | Commit only the release's own edits to `pyproject.toml uv.lock Cargo.toml Cargo.lock`, message `Bump version to <new>`: step 2 first reset any dirty managed file to its `HEAD` content so the tools ran on clean input; the bumped bytes are committed through a scratch index (`GIT_INDEX_FILE`), never `git add`; then the HEAD→bumped delta is three-way merged (`git merge-file`) back onto the user's working-tree copy and onto their staged copy, so their edits survive and `git status` afterwards shows exactly what it showed before. Overlapping edits are an error (→ rollback). The commit SHA is recorded once; the push step reuses it. | bump | `ResetCommit { bump_sha, pre_sha, index }` |
 | 6 | `git tag -a v<new> -m "Version <new>"` | both | `DeleteLocalTag` |
 | 7 | `uv publish --index NAME` (credentials via the inherited `UV_INDEX_<NAME>_USERNAME/_PASSWORD`, never argv). On a non-zero exit, probe the index and queue `DeleteDevpi` if anything landed (partial wheel/sdist upload). | both | `DeleteDevpi` |
 | 8 | bump: `git push --atomic origin <branch> v<new>` (both refs or neither). no-bump: `git push --atomic origin v<new>`. | both | `DeleteRemoteTag`, plus `ForcePushBranch { branch, sha }` in bump mode |
@@ -152,7 +152,7 @@ Success: remove the snapshot dir, print `Released <pkg> <new>` and the GitHub UR
 ```rust
 enum Undo {
   RestoreFiles(Snapshot),                   // copy back; delete files that were absent
-  ResetCommit { bump_sha, pre_sha, paths }, // git reset --soft pre_sha && git reset pre_sha -- paths, only if HEAD == bump_sha
+  ResetCommit { bump_sha, pre_sha, index }, // git reset --soft pre_sha, then restore the pre-run index entries (mode+blob) of the managed files; only if HEAD == bump_sha
   DeleteLocalTag(String),                   // git tag -d
   DeleteDevpi { package, version },         // DELETE <devpi url>; 200/204/404 all fine
   DeleteRemoteTag(String),                  // git push origin --delete vX
@@ -170,8 +170,9 @@ enum Undo {
 - `ResetCommit` refuses (and reports) if `HEAD != sha`; `RestoreFiles` then still restores
   the working files, which is safe because it only touches the four versioned files and
   `dist/`.
-- `ResetCommit` uses `--soft` plus a pathspec reset of only the bumped files, so anything
-  else the user had staged (accepted under `--force`) stays staged.
+- `ResetCommit` uses `--soft` and then puts back the exact pre-run index entries of the
+  managed files (recorded before step 2), so the user's staged state — in those files and
+  everywhere else — is byte-identical after a rollback.
 - If `RestoreFiles` itself fails, the snapshot directory is kept (not deleted on drop) and
   the manual command tells the user to copy from it — `git checkout` would restore `HEAD`,
   not the pre-run tree, and would not restore `dist/`.

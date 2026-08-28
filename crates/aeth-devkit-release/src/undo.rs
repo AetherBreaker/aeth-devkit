@@ -11,7 +11,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
-use aeth_devkit_core::git;
+use aeth_devkit_core::git::{self, IndexEntry};
 
 use crate::Deps;
 use crate::config::Config;
@@ -21,13 +21,13 @@ use crate::snapshot::Snapshot;
 pub enum Undo {
   /// Copy the snapshot back (covers `uv version`, the Cargo edit, `uv lock`, `uv build`).
   RestoreFiles(Snapshot),
-  /// Drop the bump commit — but only if `HEAD` is still that commit. `paths` are the files
-  /// that commit touched: only their index entries are reset, so anything else the user had
-  /// staged (allowed under `--force`) survives the rollback.
+  /// Drop the bump commit — but only if `HEAD` is still that commit — and put the index
+  /// entries of the release-managed files back to exactly what they were before the run
+  /// (`index`), staged edits included. Nothing else in the index is touched.
   ResetCommit {
     bump_sha: String,
     pre_sha: String,
-    paths: Vec<String>,
+    index: Vec<IndexEntry>,
   },
   DeleteLocalTag(String),
   /// `index_name` is only for the manual command, which must name the credential
@@ -79,8 +79,15 @@ impl Undo {
         "cp -r \"{}\"/. .   # pre-run copies of pyproject.toml, uv.lock, Cargo.toml, Cargo.lock, dist/",
         snap.path().display()
       ),
-      Undo::ResetCommit { pre_sha, paths, .. } => {
-        format!("git reset --soft {pre_sha} && git reset {pre_sha} -- {}", paths.join(" "))
+      Undo::ResetCommit { pre_sha, index, .. } => {
+        let mut s = format!("git reset --soft {pre_sha}");
+        for e in index {
+          match &e.staged {
+            Some((mode, sha)) => s += &format!(" && git update-index --add --cacheinfo {mode},{sha},{}", e.path),
+            None => s += &format!(" && git update-index --force-remove -- {}", e.path),
+          }
+        }
+        s
       }
       Undo::DeleteLocalTag(t) => format!("git tag -d {t}"),
       Undo::DeleteDevpi { url, index_name } => {
@@ -100,7 +107,7 @@ impl Undo {
   fn apply(&self, deps: &Deps, root: &Path, cfg: &Config) -> Result<()> {
     match self {
       Undo::RestoreFiles(snap) => snap.restore(root),
-      Undo::ResetCommit { bump_sha, pre_sha, paths } => {
+      Undo::ResetCommit { bump_sha, pre_sha, index } => {
         // The guard that the old `git reset HEAD~1` lacked: refuse to reset if `HEAD` is
         // not the commit we made. `&head[..7]` slices the first seven characters for the
         // message (SHAs are ASCII, so byte slicing is safe).
@@ -108,7 +115,11 @@ impl Undo {
         if head != *bump_sha {
           bail!("HEAD is {} but the bump commit was {}; not resetting", &head[..7], &bump_sha[..7]);
         }
-        git::reset_commit_keeping_index(root, pre_sha, paths)
+        git::reset_soft_to(root, pre_sha)?;
+        for e in index {
+          git::set_index_entry(root, e)?;
+        }
+        Ok(())
       }
       Undo::DeleteLocalTag(t) => git::delete_tag(root, t),
       // `.map(|_| ())` throws away the `DeleteOutcome`: gone is gone, either way.
@@ -197,6 +208,8 @@ mod tests {
     git::commit_paths(root, &["pyproject.toml".into()], "init").unwrap();
     let pre = git::head_sha(root).unwrap();
     let snap = crate::snapshot::take(root).unwrap();
+    // Recorded *before* the bump commit, as `steps::execute` does.
+    let pre_index = git::index_entries(root, &["pyproject.toml".into()]).unwrap();
     std::fs::write(root.join("pyproject.toml"), "v=2\n").unwrap();
     git::commit_paths(root, &["pyproject.toml".into()], "bump").unwrap();
     let bump = git::head_sha(root).unwrap();
@@ -221,7 +234,7 @@ mod tests {
       Undo::ResetCommit {
         bump_sha: bump.clone(),
         pre_sha: pre.clone(),
-        paths: vec!["pyproject.toml".into()],
+        index: pre_index,
       },
       Undo::DeleteLocalTag("v2".into()),
       Undo::DeleteDevpi {
@@ -296,7 +309,7 @@ mod tests {
       vec![Undo::ResetCommit {
         bump_sha: bump,
         pre_sha: pre,
-        paths: vec!["a".into()],
+        index: Vec::new(),
       }],
       &deps,
       root,

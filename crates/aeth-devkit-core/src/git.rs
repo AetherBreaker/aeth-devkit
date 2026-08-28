@@ -148,20 +148,180 @@ pub fn reset_mixed_to(root: &Path, rev: &str) -> Result<()> {
   expect_ok(capture(root, &["reset", "--mixed", "--quiet", rev])?, "git reset").map(|_| ())
 }
 
-/// Drop a commit while leaving the rest of the index alone: `git reset --soft <rev>` moves
-/// `HEAD` without touching the index or working tree, then `git reset <rev> -- <paths>`
-/// puts *only* the listed index entries back to what `rev` has. Anything else the user had
-/// staged before the run stays staged — which a plain `--mixed` reset would silently
-/// unstage. `paths` are the files the dropped commit touched.
-pub fn reset_commit_keeping_index(root: &Path, rev: &str, paths: &[String]) -> Result<()> {
-  expect_ok(capture(root, &["reset", "--soft", "--quiet", rev])?, "git reset --soft")?;
-  if paths.is_empty() {
-    return Ok(());
+/// `git reset --soft <rev>`: move `HEAD` only; index and working tree stay as they are.
+pub fn reset_soft_to(root: &Path, rev: &str) -> Result<()> {
+  expect_ok(capture(root, &["reset", "--soft", "--quiet", rev])?, "git reset --soft").map(|_| ())
+}
+
+// ---------------------------------------------------------------------------------------
+// Blob-level plumbing. These let a caller build a commit from exact file contents without
+// going through `git add`, and put the index back exactly as it was. Bytes, not `String`s:
+// lockfiles and TOML are text, but nothing here should depend on that.
+// ---------------------------------------------------------------------------------------
+
+/// What the index holds for one path: `(mode, blob sha)`, or `None` when the path is not
+/// staged at all (untracked, or never existed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexEntry {
+  pub path: String,
+  pub staged: Option<(String, String)>,
+}
+
+/// Run `git args` and return raw stdout bytes; errors carry stderr.
+fn capture_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
+  let out = git(root)
+    .args(args)
+    .output()
+    .with_context(|| format!("running git {}", args.join(" ")))?;
+  if !out.status.success() {
+    bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
   }
-  // Build `["reset", "--quiet", rev, "--", p1, p2, …]` as `&str`s for `capture`.
-  let mut args = vec!["reset", "--quiet", rev, "--"];
+  Ok(out.stdout)
+}
+
+/// The index entries for `paths`, in the order given. `git ls-files -s` prints
+/// `<mode> <sha> <stage>\t<path>` for staged paths only, so anything it does not mention
+/// is `None`.
+pub fn index_entries(root: &Path, paths: &[String]) -> Result<Vec<IndexEntry>> {
+  let mut args = vec!["ls-files", "-s", "--"];
   args.extend(paths.iter().map(String::as_str));
-  expect_ok(capture(root, &args)?, "git reset -- <paths>").map(|_| ())
+  let listing = expect_ok(capture(root, &args)?, "git ls-files -s")?;
+  Ok(
+    paths
+      .iter()
+      .map(|p| {
+        // Find the line for this path: split each line at the tab, compare the tail.
+        let staged = listing.lines().find_map(|line| {
+          let (meta, path) = line.split_once('\t')?;
+          if path != p {
+            return None;
+          }
+          let mut fields = meta.split_whitespace();
+          Some((fields.next()?.to_string(), fields.next()?.to_string()))
+        });
+        IndexEntry { path: p.clone(), staged }
+      })
+      .collect(),
+  )
+}
+
+/// The bytes of `path` as committed in `HEAD`, or `None` if `HEAD` has no such file.
+pub fn head_blob(root: &Path, path: &str) -> Result<Option<Vec<u8>>> {
+  let spec = format!("HEAD:{path}");
+  // `rev-parse -q --verify` exits non-zero (quietly) when the path is not in the tree.
+  let out = capture(root, &["rev-parse", "-q", "--verify", &spec])?;
+  if !out.success() {
+    return Ok(None);
+  }
+  blob_bytes(root, out.stdout.trim()).map(Some)
+}
+
+/// The bytes of an object by sha.
+pub fn blob_bytes(root: &Path, sha: &str) -> Result<Vec<u8>> {
+  capture_bytes(root, &["cat-file", "blob", sha])
+}
+
+/// Store `bytes` as a blob in the object database and return its sha.
+pub fn hash_object(root: &Path, bytes: &[u8]) -> Result<String> {
+  use std::io::Write as _;
+  use std::process::Stdio;
+  let mut child = git(root)
+    .args(["hash-object", "-w", "--stdin"])
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .context("running git hash-object")?;
+  // `take()` moves the pipe out of the child so it is closed (EOF) when this block ends;
+  // git will not finish reading until it sees that EOF.
+  {
+    let mut stdin = child.stdin.take().context("opening git hash-object stdin")?;
+    stdin.write_all(bytes).context("writing to git hash-object")?;
+  }
+  let out = child.wait_with_output().context("waiting for git hash-object")?;
+  if !out.status.success() {
+    bail!("git hash-object failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+  }
+  Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Three-way merge of file contents: the changes from `base` to `other`, applied on top of
+/// `current`. `Ok(None)` means the two sides touched overlapping lines and git could not
+/// combine them. Runs `git merge-file -p` on three temporary files.
+pub fn merge_file(root: &Path, current: &[u8], base: &[u8], other: &[u8]) -> Result<Option<Vec<u8>>> {
+  let dir = tempfile::tempdir().context("creating merge scratch dir")?;
+  let (c, b, o) = (dir.path().join("current"), dir.path().join("base"), dir.path().join("other"));
+  std::fs::write(&c, current).context("writing merge input")?;
+  std::fs::write(&b, base).context("writing merge input")?;
+  std::fs::write(&o, other).context("writing merge input")?;
+  let out = git(root)
+    .arg("merge-file")
+    .arg("-p")
+    .args([&c, &b, &o])
+    .output()
+    .context("running git merge-file")?;
+  // Exit status is the number of conflicts (0 = clean, capped at 127); 255 is an error.
+  match out.status.code() {
+    Some(0) => Ok(Some(out.stdout)),
+    Some(n) if (1..=127).contains(&n) => Ok(None),
+    _ => bail!("git merge-file failed: {}", String::from_utf8_lossy(&out.stderr).trim()),
+  }
+}
+
+/// Put one index entry back: stage `(mode, sha)` for `path`, or drop the entry entirely.
+pub fn set_index_entry(root: &Path, entry: &IndexEntry) -> Result<()> {
+  let args: Vec<String> = match &entry.staged {
+    Some((mode, sha)) => vec![
+      "update-index".into(),
+      "--add".into(),
+      "--cacheinfo".into(),
+      format!("{mode},{sha},{}", entry.path),
+    ],
+    None => vec!["update-index".into(), "--force-remove".into(), "--".into(), entry.path.clone()],
+  };
+  let args: Vec<&str> = args.iter().map(String::as_str).collect();
+  expect_ok(capture(root, &args)?, "git update-index").map(|_| ())
+}
+
+/// Create a commit on top of `HEAD` whose tree is `HEAD`'s tree with `files` swapped in,
+/// and advance the current branch to it — without touching the user's index or working
+/// tree. Each entry stages `(mode, sha)` at its path, or removes the path when `None`.
+///
+/// The trick is `GIT_INDEX_FILE`: git builds commits from *an* index, and pointing that
+/// variable at a scratch file gives us a private one. `read-tree HEAD` fills it, the
+/// `update-index` calls edit it, `write-tree` turns it into a tree object, `commit-tree`
+/// wraps that in a commit, and `update-ref` moves the branch. Returns the full sha.
+pub fn commit_files_on_head(root: &Path, files: &[IndexEntry], message: &str) -> Result<String> {
+  let scratch = tempfile::tempdir().context("creating scratch index dir")?;
+  let index = scratch.path().join("index");
+  // A closure that runs git with the scratch index; `&[&str]` args like `capture`.
+  let run = |args: &[&str]| -> Result<String> {
+    let out = git(root)
+      .env("GIT_INDEX_FILE", &index)
+      .args(args)
+      .output()
+      .with_context(|| format!("running git {}", args.join(" ")))?;
+    if !out.status.success() {
+      bail!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+  };
+  run(&["read-tree", "HEAD"])?;
+  for f in files {
+    match &f.staged {
+      Some((mode, sha)) => {
+        let info = format!("{mode},{sha},{}", f.path);
+        run(&["update-index", "--add", "--cacheinfo", &info])?;
+      }
+      None => {
+        run(&["update-index", "--force-remove", "--", &f.path])?;
+      }
+    }
+  }
+  let tree = run(&["write-tree"])?;
+  let commit = run(&["commit-tree", &tree, "-p", "HEAD", "-m", message])?;
+  run(&["update-ref", "-m", message, "HEAD", &commit])?;
+  Ok(commit)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -322,7 +482,20 @@ mod tests {
   }
 
   #[test]
-  fn reset_keeping_index_preserves_unrelated_staged_changes() {
+  fn merge_file_applies_delta_or_reports_conflict() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init_test_repo(root);
+    let base = b"a\nb\nc\nd\ne\n";
+    // The user changed line 1; the release changed line 5. Disjoint → merges cleanly.
+    let merged = merge_file(root, b"A\nb\nc\nd\ne\n", base, b"a\nb\nc\nd\nE\n").unwrap();
+    assert_eq!(merged.as_deref(), Some(&b"A\nb\nc\nd\nE\n"[..]));
+    // Both sides changed line 5 → conflict → `None`.
+    assert_eq!(merge_file(root, b"a\nb\nc\nd\nX\n", base, b"a\nb\nc\nd\nE\n").unwrap(), None);
+  }
+
+  #[test]
+  fn commit_files_on_head_leaves_index_and_worktree_alone() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     init_test_repo(root);
@@ -330,18 +503,51 @@ mod tests {
     write(root, "other.txt", "x\n");
     commit_paths(root, &["a.txt".into(), "other.txt".into()], "first").unwrap();
     let first = head_sha(root).unwrap();
-    // The user stages an unrelated change, then a "bump" commit touches only a.txt.
+    // User state: `other.txt` staged, `a.txt` edited but unstaged.
     write(root, "other.txt", "y\n");
     assert!(git(root).args(["add", "other.txt"]).status().unwrap().success());
-    write(root, "a.txt", "2\n");
-    commit_paths(root, &["a.txt".into()], "bump").unwrap();
+    write(root, "a.txt", "user\n");
+    let before = index_entries(root, &["a.txt".into(), "other.txt".into(), "new.txt".into()]).unwrap();
+    assert!(before[0].staged.is_some() && before[1].staged.is_some() && before[2].staged.is_none());
 
-    reset_commit_keeping_index(root, &first, &["a.txt".into()]).unwrap();
+    // Commit "bumped" content for a.txt plus a brand-new file, straight from bytes.
+    let bumped = hash_object(root, b"bumped\n").unwrap();
+    let fresh = hash_object(root, b"new\n").unwrap();
+    let sha = commit_files_on_head(
+      root,
+      &[
+        IndexEntry {
+          path: "a.txt".into(),
+          staged: Some(("100644".into(), bumped)),
+        },
+        IndexEntry {
+          path: "new.txt".into(),
+          staged: Some(("100644".into(), fresh)),
+        },
+      ],
+      "bump",
+    )
+    .unwrap();
+    assert_eq!(head_sha(root).unwrap(), sha);
+    assert_eq!(head_blob(root, "a.txt").unwrap().as_deref(), Some(&b"bumped\n"[..]));
+    assert_eq!(head_blob(root, "new.txt").unwrap().as_deref(), Some(&b"new\n"[..]));
+    assert_eq!(head_blob(root, "missing.txt").unwrap(), None);
+    // The real index and working tree are exactly as the user left them.
+    assert_eq!(
+      index_entries(root, &["a.txt".into(), "other.txt".into(), "new.txt".into()]).unwrap(),
+      before
+    );
+    assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "user\n");
+    assert!(!root.join("new.txt").exists());
+
+    // Undo: soft reset + put the recorded entries back → index identical to `before`.
+    reset_soft_to(root, &first).unwrap();
+    for e in &before {
+      set_index_entry(root, e).unwrap();
+    }
     assert_eq!(head_sha(root).unwrap(), first);
-    // `a.txt` is no longer staged (index matches `first`), but `other.txt` still is.
     let staged = String::from_utf8(git(root).args(["diff", "--cached", "--name-only"]).output().unwrap().stdout).unwrap();
     assert_eq!(staged.trim(), "other.txt");
-    assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "2\n");
   }
 
   #[test]

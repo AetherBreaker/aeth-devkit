@@ -16,8 +16,6 @@
   pep440_rs  = { workspace = true }
   regex      = { workspace = true }
   serde_json = { workspace = true }
+  tempfile   = { workspace = true }
   toml_edit  = { workspace = true }
   ureq       = { workspace = true }
-
-[dev-dependencies]
-  tempfile = { workspace = true }
