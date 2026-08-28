@@ -124,6 +124,9 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
   // --- Pre-flight: nothing below this line mutates anything until `steps::execute`. ---
   preflight::check_tools(deps.runner, &root)?;
   let branch = preflight::check_branch(deps.runner, &root)?;
+  // `cfg` above came from the *worktree* pyproject.toml; a release builds from `HEAD`'s
+  // copy, so the two must agree on everything release-critical (hard error, exit 2).
+  preflight::check_config_committed(&root, &cfg, args.index.as_deref(), deps.env)?;
   let target = preflight::target_version(deps.runner, &root, &parsed.bumps)?;
   if parsed.bumps.is_empty() {
     println!("Releasing {} {} (no bump)", cfg.package, target.new);

@@ -156,7 +156,7 @@ enum Undo {
   ResetCommit { bump_sha, pre_sha, index }, // git reset --soft pre_sha, then restore the pre-run index entries (mode+blob) of the managed files; only if HEAD == bump_sha
   DeleteLocalTag(String),                   // git tag -d
   DeleteDevpi { package, version },         // DELETE <devpi url>; 200/204/404 all fine
-  DeleteRemoteTag(String),                  // git push origin --delete vX
+  DeleteRemoteTag { tag, expected },        // lease-guarded: push :refs/tags/vX with --force-with-lease=refs/tags/vX:<expected tag object>
   ForcePushBranch { branch, sha },          // git push --force-with-lease=<branch>:<sha> origin <pre-bump-sha>:<branch>
   DeleteGithubRelease(String),              // gh release delete vX --yes --cleanup-tag
 }
@@ -182,9 +182,15 @@ enum Undo {
   A *failed* push is still not proof the remote stayed put (the response can be lost after
   the server applied it), so the failure path probes both remote refs with `ls-remote` and
   queues `DeleteRemoteTag` / `ForcePushBranch` for whatever actually landed — assuming the
-  worst when the probe itself fails. Likewise `gh release create` failures are followed by
-  a `gh release view` probe so a release that was created but failed asset upload still
-  gets `DeleteGithubRelease` queued.
+  worst when the probe itself fails. Existence is not ownership: the tag is compensated
+  only when the remote tag *object id* matches the tag this run created, the branch only
+  when the remote points at our bump commit, and both compensations carry leases so a
+  concurrently replaced ref is refused rather than destroyed. The same principle guards
+  devpi: after a failed `uv publish`, the stored release files are byte-compared against
+  this run's `dist/` artifacts, and `DeleteDevpi` is queued only when they are ours (an
+  unanswerable probe still assumes the worst). Likewise `gh release create` failures are
+  followed by a `gh release view` probe so a release that was created but failed asset
+  upload still gets `DeleteGithubRelease` queued.
 - After unwinding: print `Rollback complete.` if nothing failed, else a block
   `Manual cleanup required:` listing each failed step's copy-pasteable command. Exit code
   1 either way (the release failed); the original error is printed first.
@@ -206,7 +212,7 @@ crates/aeth-devkit-release/
   src/lib.rs          Args, run(args, &Deps), run_real; top-level orchestration
   src/args.rs         parse_positionals — bump/notes heuristic (pure)
   src/config.rs       index selection, credentials, devpi URL, package name
-  src/preflight.rs    tools, branch, version, Cargo check, dirty-tree, existence probes
+  src/preflight.rs    tools, branch, committed-config check, version, Cargo check, unmerged/dirty-tree, existence probes
   src/report.rs       existence-report rendering (pure)
   src/steps.rs        forward steps 1–9
   src/undo.rs         Undo enum, unwind(), manual-command rendering

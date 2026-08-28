@@ -138,6 +138,16 @@ pub fn create_annotated_tag(root: &Path, tag: &str, message: &str) -> Result<()>
   expect_ok(capture(root, &["tag", "-a", tag, "-m", message])?, "git tag").map(|_| ())
 }
 
+/// The full object id of the local tag itself — for an annotated tag, the *tag object*,
+/// not the commit it points at (that is `tag_target`'s job). This is the identity a remote
+/// `ls-remote` reports for `refs/tags/<tag>`, so comparing the two answers "is the tag on
+/// the remote the very one this run created?".
+pub fn tag_object_sha(root: &Path, tag: &str) -> Result<String> {
+  let rev = format!("refs/tags/{tag}");
+  let s = expect_ok(capture(root, &["rev-parse", "--verify", &rev])?, "git rev-parse")?;
+  Ok(s.trim().to_string())
+}
+
 /// `git tag -d <tag>`; an error if the tag does not exist.
 pub fn delete_tag(root: &Path, tag: &str) -> Result<()> {
   expect_ok(capture(root, &["tag", "-d", tag])?, "git tag -d").map(|_| ())
@@ -392,11 +402,23 @@ pub fn behind_count(runner: &dyn Runner, root: &Path) -> Result<u32> {
   s.trim().parse().with_context(|| format!("parsing rev-list count {s:?}"))
 }
 
-/// Whether `origin` has `refs/tags/<tag>`. `ls-remote` prints one line per matching ref.
-pub fn remote_tag_exists(runner: &dyn Runner, root: &Path, tag: &str) -> Result<bool> {
+/// The object id `origin` has for `refs/tags/<tag>` (for an annotated tag, the tag
+/// object's id), or `None` when the remote has no such tag. `ls-remote --tags` prints
+/// `<sha>\t<refname>` lines, and for annotated tags also a peeled `<refname>^{}` line
+/// pointing at the commit — only the exact refname row is the tag's own identity.
+pub fn remote_tag_sha(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Option<String>> {
   let refname = format!("refs/tags/{tag}");
   let s = expect_ok(remote(runner, root, &["ls-remote", "--tags", "origin", &refname])?, "git ls-remote")?;
-  Ok(!s.trim().is_empty())
+  // `find_map` stops at the first line whose ref column matches exactly (skipping `^{}`).
+  Ok(s.lines().find_map(|line| {
+    let (sha, r) = line.split_once('\t')?;
+    (r == refname).then(|| sha.trim().to_string())
+  }))
+}
+
+/// Whether `origin` has `refs/tags/<tag>`.
+pub fn remote_tag_exists(runner: &dyn Runner, root: &Path, tag: &str) -> Result<bool> {
+  Ok(remote_tag_sha(runner, root, tag)?.is_some())
 }
 
 /// The sha `origin` has for `refs/heads/<branch>`, or `None` when the remote has no such
@@ -418,6 +440,37 @@ pub fn push_refs(runner: &dyn Runner, root: &Path, refs: &[&str]) -> Result<()> 
   let mut args = vec!["push", "--atomic", "origin"];
   args.extend_from_slice(refs);
   expect_ok(remote(runner, root, &args)?, "git push").map(|_| ())
+}
+
+/// Delete `refs/tags/<tag>` on `origin`, but only if the remote still holds `expected` —
+/// the tag object this release created. The lease turns "delete the tag" into a
+/// compare-and-swap: a tag some concurrent publisher replaced in the meantime is *their*
+/// ref, and the delete is refused instead of destroying it.
+///
+/// A rejected push is disambiguated by re-probing: the tag being gone already (say, a
+/// preceding `gh release delete --cleanup-tag` in the same rollback) is success, the tag
+/// having a different id is a refusal, and anything else surfaces the push error.
+pub fn delete_remote_tag_leased(runner: &dyn Runner, root: &Path, tag: &str, expected: &str) -> Result<()> {
+  let refname = format!("refs/tags/{tag}");
+  let lease = format!("--force-with-lease={refname}:{expected}");
+  // An empty source in the refspec (`:refs/tags/x`) means "push nothing there" — a delete.
+  let refspec = format!(":{refname}");
+  let out = remote(runner, root, &["push", &lease, "origin", &refspec])?;
+  if out.success() {
+    return Ok(());
+  }
+  match remote_tag_sha(runner, root, tag)? {
+    None => Ok(()), // already gone: the goal ("not there afterwards") is met
+    Some(sha) if sha != expected => {
+      bail!(
+        "remote tag {tag} is no longer the one this release created ({} vs {}); leaving it in place",
+        &sha[..7],
+        &expected[..7]
+      )
+    }
+    // Still ours, yet the delete failed — a real error (network, permissions); report it.
+    Some(_) => bail!("git push --delete {tag} failed: {}", out.stderr.trim()),
+  }
 }
 
 /// `git push origin --delete <tag>`. Treats "already gone" as success, because a preceding
@@ -520,6 +573,10 @@ mod tests {
       tag_target(root, "v1.0.0").unwrap().as_deref(),
       Some(short_head(root).unwrap().as_str())
     );
+    // The annotated tag is its own object: full sha, and *not* the commit it points at.
+    let tag_obj = tag_object_sha(root, "v1.0.0").unwrap();
+    assert_eq!(tag_obj.len(), 40);
+    assert_ne!(tag_obj, head_sha(root).unwrap());
     delete_tag(root, "v1.0.0").unwrap();
     assert_eq!(tag_target(root, "v1.0.0").unwrap(), None);
     assert!(delete_tag(root, "v1.0.0").is_err());
@@ -633,6 +690,50 @@ mod tests {
     assert_eq!(head_sha(root).unwrap(), first);
     let staged = String::from_utf8(git(root).args(["diff", "--cached", "--name-only"]).output().unwrap().stdout).unwrap();
     assert_eq!(staged.trim(), "other.txt");
+  }
+
+  #[test]
+  fn remote_tag_sha_and_leased_delete() {
+    use crate::process::RecordingRunner;
+    let root = Path::new(".");
+    let r = RecordingRunner::new(0);
+    // For an annotated tag, `ls-remote` prints the tag object line and a peeled `^{}`
+    // line naming the commit; only the exact refname's sha is the tag's identity.
+    r.script(
+      "git",
+      &["ls-remote", "--tags"],
+      0,
+      "tagtagtagtag\trefs/tags/v1\ncommitcommit\trefs/tags/v1^{}\n",
+    );
+    assert_eq!(remote_tag_sha(&r, root, "v1").unwrap().as_deref(), Some("tagtagtagtag"));
+    // The leased delete pushes an empty source to the tag ref, guarded by the expected id.
+    delete_remote_tag_leased(&r, root, "v1", "tagtagtagtag").unwrap();
+    assert_eq!(
+      r.calls_for("git").last().unwrap(),
+      &vec![
+        "push".to_string(),
+        "--force-with-lease=refs/tags/v1:tagtagtagtag".into(),
+        "origin".into(),
+        ":refs/tags/v1".into()
+      ]
+    );
+
+    // A rejected push whose re-probe finds the tag gone is success (someone — likely
+    // `gh release delete --cleanup-tag` — already removed it).
+    let gone = RecordingRunner::new(0);
+    gone.script("git", &["push"], 1, "");
+    gone.script("git", &["ls-remote", "--tags"], 0, "");
+    delete_remote_tag_leased(&gone, root, "v1", "tagtagtagtag").unwrap();
+
+    // A rejected push whose re-probe finds a *different* tag object refuses: that tag is
+    // someone else's now.
+    let moved = RecordingRunner::new(0);
+    moved.script("git", &["push"], 1, "");
+    moved.script("git", &["ls-remote", "--tags"], 0, "othertagother\trefs/tags/v1\n");
+    let err = delete_remote_tag_leased(&moved, root, "v1", "tagtagtagtag")
+      .unwrap_err()
+      .to_string();
+    assert!(err.contains("no longer"), "{err}");
   }
 
   #[test]
