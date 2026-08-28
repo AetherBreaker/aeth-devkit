@@ -71,8 +71,9 @@ is the tail.
 - 2+ tail words → joined with single spaces as notes.
 
 Implemented in a pure function `parse_positionals(&[String]) -> Result<Parsed>` so it is
-unit-testable without clap. Clap collects all positionals into one `Vec<String>`
-(`trailing_var_arg`), and `run` calls the parser.
+unit-testable without clap. Clap collects all positionals into one plain `Vec<String>`
+(recognized flags like `--force`/`--dry-run` still parse wherever they appear on the
+line), and `run` calls the parser.
 
 ### Index and credentials
 
@@ -166,7 +167,8 @@ enum Undo {
 - `DeleteGithubRelease` with `--cleanup-tag` already removes the remote tag, so a
   subsequent `DeleteRemoteTag` treats "tag not found" as success.
 - `ForcePushBranch` pushes the *pre-bump* SHA (recorded before step 5) to the branch with
-  a lease on the bump SHA. It runs after `ResetCommit`, so local and remote end up equal.
+  a lease on the bump SHA. Unwinding walks the journal backwards, so it runs *before*
+  `ResetCommit` (the remote is rewound first, then the local branch); both end up equal.
 - `ResetCommit` refuses (and reports) if `HEAD != sha`; `RestoreFiles` then still restores
   the working files, which is safe because it only touches the four versioned files and
   `dist/`.
@@ -176,9 +178,13 @@ enum Undo {
 - If `RestoreFiles` itself fails, the snapshot directory is kept (not deleted on drop) and
   the manual command tells the user to copy from it — `git checkout` would restore `HEAD`,
   not the pre-run tree, and would not restore `dist/`.
-- `push_refs` uses `git push --atomic`, so the branch and tag land together or not at all;
-  `gh release create` failures are followed by a `gh release view` probe so a release that
-  was created but failed asset upload still gets `DeleteGithubRelease` queued.
+- `push_refs` uses `git push --atomic`, so the branch and tag land together or not at all.
+  A *failed* push is still not proof the remote stayed put (the response can be lost after
+  the server applied it), so the failure path probes both remote refs with `ls-remote` and
+  queues `DeleteRemoteTag` / `ForcePushBranch` for whatever actually landed — assuming the
+  worst when the probe itself fails. Likewise `gh release create` failures are followed by
+  a `gh release view` probe so a release that was created but failed asset upload still
+  gets `DeleteGithubRelease` queued.
 - After unwinding: print `Rollback complete.` if nothing failed, else a block
   `Manual cleanup required:` listing each failed step's copy-pasteable command. Exit code
   1 either way (the release failed); the original error is printed first.
@@ -215,10 +221,12 @@ interrupt flag.
 ### `aeth-devkit-core` additions (reusable by a future `rescind-release`)
 
 - `process`: `Runner::run_capture(program, args, cwd) -> Result<Output>` (exit code +
-  stdout + stderr as `String`). `RecordingRunner` gains a scripted response queue: a
-  `VecDeque<Scripted>` where each entry is `{ matches: fn/closure on (program, args)?,
-  code, stdout }`; unmatched calls succeed with empty stdout. A `fail_at: Option<usize>`
-  convenience fails the Nth call.
+  stdout + stderr as `String`). `RecordingRunner` gains scripted responses: a
+  `Vec<Script>` where each entry is `{ program, arg_prefix, code, stdout, stderr }`,
+  matched by program plus argument prefix. The most recently registered match wins and
+  scripts are never consumed (one script answers any number of calls), so tests register
+  broad defaults first and override later; unmatched calls answer with a default exit
+  code and empty output. A `fail_at(n)` convenience fails the Nth call regardless.
 - `devpi.rs`: `trait DevpiClient { fn exists(url, user, pass) -> Result<bool>; fn delete(url, user, pass) -> Result<DeleteOutcome> }`, `HttpDevpiClient` (ureq basic auth), `StubDevpiClient` (records calls, scripted `exists` answers).
 - `pyproject.rs`: `project_name(doc) -> Result<String>`, `publish_index(doc, name: Option<&str>) -> Result<PublishIndex { name, publish_url }>`.
 - `cargo_toml.rs`: `read_version(&str) -> Option<String>`, `set_version(&mut DocumentMut, &str) -> bool` targeting `workspace.package.version` then `package.version`.

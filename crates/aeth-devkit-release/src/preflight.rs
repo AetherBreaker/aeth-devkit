@@ -142,6 +142,19 @@ pub fn check_cargo_version(root: &Path, current: &str) -> Result<()> {
   }
 }
 
+/// Refuse if any release-managed file is mid merge-conflict. Unlike a merely dirty tree
+/// (which the release works around and `--force` may wave through), unmerged index entries
+/// have no automatic resolution — three competing versions of the file exist and only the
+/// user knows which is right — so this is a hard error, not a prompt.
+///
+/// The check itself lives in `git::index_entries`, which fails on unmerged rows because it
+/// cannot represent them; calling it here surfaces that error before anything is mutated
+/// instead of mid-release in step 2.
+pub fn check_unmerged(root: &Path) -> Result<()> {
+  let paths: Vec<String> = crate::snapshot::TRACKED.iter().map(|p| p.to_string()).collect();
+  git::index_entries(root, &paths).map(|_| ())
+}
+
 /// Show uncommitted changes and require `force` (typed or flagged) to continue.
 ///
 /// Edits to the files the release itself rewrites are fine too: step 5 builds the bump

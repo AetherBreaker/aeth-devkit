@@ -98,6 +98,10 @@ struct TrackedBase {
   path: String,
   /// The committed bytes (`None` if `HEAD` has no such file).
   head: Option<Vec<u8>>,
+  /// The committed file mode (`100644`/`100755`), `None` alongside `head`. The bump commit
+  /// keeps *this* mode, not the index's: a staged `chmod` is the user's pending change and
+  /// must stay in their index, not be folded into the release commit.
+  head_mode: Option<String>,
   /// The working-tree bytes before the run — the user's version, edits and all — or
   /// `None` when the file was absent (deleted by the user, or never created yet).
   worktree: Option<Vec<u8>>,
@@ -125,6 +129,7 @@ fn stage_clean_base(root: &Path) -> Result<Vec<TrackedBase>> {
       None
     };
     let head = git::head_blob(root, &path)?;
+    let head_mode = git::head_mode(root, &path)?;
     if worktree.is_none() && head.is_none() && index.staged.is_none() {
       continue; // the project simply does not have this file
     }
@@ -144,6 +149,7 @@ fn stage_clean_base(root: &Path) -> Result<Vec<TrackedBase>> {
     bases.push(TrackedBase {
       path,
       head,
+      head_mode,
       worktree,
       index,
       index_bytes,
@@ -178,21 +184,38 @@ fn commit_release_edits(root: &Path, bases: &[TrackedBase], message: &str, pre_s
       continue;
     }
     let bumped = std::fs::read(&file).with_context(|| format!("reading {}", b.path))?;
-    // Mode: keep the index's if it had one, else a plain file.
-    let mode = b.index.staged.as_ref().map_or("100644", |(m, _)| m.as_str()).to_string();
-    to_commit.push(IndexEntry {
-      path: b.path.clone(),
-      staged: Some((mode.clone(), git::hash_object(root, &bumped)?)),
-    });
-    // With no committed version there was no clean base to diverge from: the tools ran on
-    // the user's bytes directly, so `bumped` already *is* "theirs plus the bump".
+    // Two very different situations hide behind "HEAD has no such file".
     let Some(head) = &b.head else {
+      if b.worktree.is_some() || b.index.staged.is_some() {
+        // The file predates the run (untracked, or staged as new): its bytes are the
+        // *user's* content, which the tools edited in place, and committing it would
+        // sweep their work into the bump commit and silently start tracking it. Leave it
+        // out of the commit entirely: the working tree already holds "theirs plus the
+        // bump", and the real index — never touched by the scratch-index commit — still
+        // holds exactly what they had staged.
+        continue;
+      }
+      // Created *by this release* (a first `Cargo.lock`, say): nothing pre-existed, so
+      // commit it as-is and stage the same entry — without one, the committed path would
+      // show up in `git status` as a staged deletion.
+      let staged = Some(("100644".to_string(), git::hash_object(root, &bumped)?));
+      to_commit.push(IndexEntry {
+        path: b.path.clone(),
+        staged: staged.clone(),
+      });
       new_index.push(IndexEntry {
         path: b.path.clone(),
-        staged: Some((mode, git::hash_object(root, &bumped)?)),
+        staged,
       });
       continue;
     };
+    // The commit's mode comes from `HEAD` (captured with the blob in `stage_clean_base`);
+    // a mode the user *staged* stays theirs, restored with their index entry below.
+    let head_mode = b.head_mode.clone().unwrap_or_else(|| "100644".to_string());
+    to_commit.push(IndexEntry {
+      path: b.path.clone(),
+      staged: Some((head_mode, git::hash_object(root, &bumped)?)),
+    });
     let replay = |onto: &[u8], what: &str| -> Result<Vec<u8>> {
       if onto == head.as_slice() {
         return Ok(bumped.clone());
@@ -210,10 +233,13 @@ fn commit_release_edits(root: &Path, bases: &[TrackedBase], message: &str, pre_s
       None => None,
     };
     // The user's staged copy: replay onto it; a staged deletion (HEAD has the file, the
-    // index does not) stays a deletion.
-    let index = match &b.index_bytes {
-      Some(bytes) => Some((mode, git::hash_object(root, &replay(bytes, "staged")?)?)),
-      None => None,
+    // index does not) stays a deletion. The rebuilt entry keeps the *index's* mode — this
+    // is where a staged `chmod` survives, while the commit above kept HEAD's mode.
+    let index = match (&b.index_bytes, b.index.staged.as_ref()) {
+      // Both are `Some` together (`index_bytes` was read from the staged sha); matching
+      // the pair lets the compiler hand us the mode without an `unwrap`.
+      (Some(bytes), Some((staged_mode, _))) => Some((staged_mode.clone(), git::hash_object(root, &replay(bytes, "staged")?)?)),
+      _ => None,
     };
     new_index.push(IndexEntry {
       path: b.path.clone(),
@@ -313,6 +339,7 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
         bases.push(TrackedBase {
           path: p.to_string(),
           head: None,
+          head_mode: None,
           worktree: None,
           index: IndexEntry {
             path: p.to_string(),
@@ -365,18 +392,47 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   check_interrupt(deps)?;
   println!("[8/9] Pushing...");
   if plan.bumping() {
+    // Set in step 5, which always runs in bump mode; `expect` documents that invariant.
+    let bump = bump_sha.expect("bump mode commits before pushing");
     // One `--atomic` push for both refs: the server takes both or neither, so a rejected
     // ref cannot leave the branch moved with no undo for it.
-    git::push_refs(deps.runner, root, &[plan.branch, &tag])?;
+    if let Err(e) = git::push_refs(deps.runner, root, &[plan.branch, &tag]) {
+      // A failed push is not proof the remote stayed put: the server can apply both refs
+      // and the client lose the connection before hearing so. Probe each ref and journal
+      // its undo only for what actually landed; a probe that itself errors means we
+      // cannot tell, so assume the worst — the tag delete treats "already gone" as
+      // success, and the branch rewind is guarded by its lease either way.
+      if git::remote_tag_exists(deps.runner, root, &tag).unwrap_or(true) {
+        journal.push(Undo::DeleteRemoteTag(tag.clone()));
+      }
+      // The branch "landed" only if the remote now points at our bump commit; any other
+      // sha is someone else's work, which the rollback must not rewind.
+      let landed = git::remote_branch_sha(deps.runner, root, plan.branch)
+        .map(|sha| sha.as_deref() == Some(bump.as_str()))
+        .unwrap_or(true);
+      if landed {
+        journal.push(Undo::ForcePushBranch {
+          branch: plan.branch.to_string(),
+          bump_sha: bump,
+          pre_sha,
+        });
+      }
+      return Err(e);
+    }
     journal.push(Undo::DeleteRemoteTag(tag.clone()));
     journal.push(Undo::ForcePushBranch {
       branch: plan.branch.to_string(),
-      // Set in step 5, which always runs in bump mode; `expect` documents that invariant.
-      bump_sha: bump_sha.expect("bump mode commits before pushing"),
+      bump_sha: bump,
       pre_sha,
     });
   } else {
-    git::push_refs(deps.runner, root, &[&tag])?;
+    if let Err(e) = git::push_refs(deps.runner, root, &[&tag]) {
+      // Same ambiguity as above, tag only.
+      if git::remote_tag_exists(deps.runner, root, &tag).unwrap_or(true) {
+        journal.push(Undo::DeleteRemoteTag(tag.clone()));
+      }
+      return Err(e);
+    }
     journal.push(Undo::DeleteRemoteTag(tag.clone()));
   }
 
