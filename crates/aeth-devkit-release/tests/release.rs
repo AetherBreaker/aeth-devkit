@@ -505,6 +505,114 @@ fn deleted_lockfile_rollback_is_exact() {
 }
 
 #[test]
+fn untracked_lockfile_stays_untracked_and_out_of_the_commit() {
+  let w = World::new(&[]);
+  let root = w.root();
+  // A Cargo.lock the user created but never committed (the fixture's HEAD has none). The
+  // untracked file makes the tree dirty; --force accepts that.
+  std::fs::write(root.join("Cargo.lock"), "# the user's lockfile\n").unwrap();
+  let mut a = w.args(&["patch"]);
+  a.force = true;
+  assert!(ok(run(&a, &w.deps()).unwrap()));
+  // The bump commit must not adopt the user's file — releasing must never be the thing
+  // that starts tracking a path the user chose not to commit.
+  assert_eq!(git_out(root, &["ls-tree", "HEAD", "--", "Cargo.lock"]), "");
+  // Afterwards the file is right where it was: on disk and untracked.
+  assert_eq!(git_out(root, &["status", "--porcelain", "--", "Cargo.lock"]), "?? Cargo.lock");
+}
+
+#[test]
+fn untracked_lockfile_rollback_is_exact() {
+  let w = World::new(&[]);
+  std::fs::write(w.root().join("Cargo.lock"), "# the user's lockfile\n").unwrap();
+  let before = w.state();
+  w.runner.script("uv", &["publish"], 1, "");
+  let mut a = w.args(&["patch"]);
+  a.force = true;
+  assert!(!ok(run(&a, &w.deps()).unwrap()));
+  // `state` covers the Cargo.lock bytes and the full index listing, so this also proves
+  // the file is byte-identical and still untracked.
+  assert_eq!(w.state(), before);
+}
+
+#[test]
+fn staged_chmod_stays_out_of_the_bump_commit() {
+  let w = World::new(&[]);
+  let root = w.root();
+  // The user staged an executable bit on pyproject.toml (content unchanged). `--chmod=+x`
+  // records mode 100755 in the index regardless of filesystem support, so this works on
+  // Windows too.
+  assert!(git_out(root, &["update-index", "--chmod=+x", "pyproject.toml"]).is_empty());
+  let mut a = w.args(&["patch"]);
+  a.force = true; // the staged mode change is a dirty tree
+  assert!(ok(run(&a, &w.deps()).unwrap()));
+  // The commit keeps HEAD's mode: the pending chmod is the user's change, not the bump's…
+  assert!(git_out(root, &["ls-tree", "HEAD", "--", "pyproject.toml"]).starts_with("100644"));
+  // …and it is still staged for them afterwards.
+  assert!(git_out(root, &["ls-files", "-s", "--", "pyproject.toml"]).starts_with("100755"));
+}
+
+#[test]
+fn unmerged_managed_file_is_refused_before_anything() {
+  use std::io::Write as _;
+  let w = World::new(&[]);
+  let root = w.root();
+  // Manufacture a merge conflict in uv.lock: stage-1/2/3 rows via `update-index
+  // --index-info` are what a real conflicted merge leaves in the index.
+  let sha = git_out(root, &["hash-object", "-w", "uv.lock"]);
+  let rows = format!("100644 {sha} 1\tuv.lock\n100644 {sha} 2\tuv.lock\n100644 {sha} 3\tuv.lock\n");
+  let mut child = std::process::Command::new("git")
+    .args(["update-index", "--index-info"])
+    .current_dir(root)
+    .stdin(std::process::Stdio::piped())
+    .spawn()
+    .unwrap();
+  child.stdin.take().unwrap().write_all(rows.as_bytes()).unwrap();
+  assert!(child.wait().unwrap().success());
+  let before = w.state();
+  // A hard pre-flight error (exit 2), not a prompt: --force must not wave a conflict
+  // through, because neither the release nor the rollback can represent three stages.
+  let mut a = w.args(&["patch"]);
+  a.force = true;
+  let err = run(&a, &w.deps()).unwrap_err().to_string();
+  assert!(err.contains("unmerged"), "{err}");
+  assert_eq!(w.state(), before);
+  assert!(w.runner.calls_for("uv").iter().all(|c| c[0] != "build"));
+}
+
+#[test]
+fn ambiguous_push_failure_probes_and_compensates_what_landed() {
+  // The push reports failure, but the remote actually applied it and only the response
+  // was lost: the post-failure probe finds refs/tags/v1.0.1 on the remote. (The same
+  // script answers the pre-flight probe, so the run first reports the "leaked" tag and
+  // removes it — hence the scripted "force" answer.)
+  let w = World::new(&["force"]);
+  let before = w.state();
+  w.runner.script("git", &["push", "--atomic"], 1, "");
+  w.runner.script(
+    "git",
+    &["ls-remote", "--tags", "origin", "refs/tags/v1.0.1"],
+    0,
+    "abc\trefs/tags/v1.0.1\n",
+  );
+  assert!(!ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+  assert_eq!(w.state(), before);
+  let git_calls = w.runner.calls_for("git");
+  // Two deletes: pre-flight removing the scripted "existing" tag, then the rollback
+  // compensating for the tag the failed-but-landed push left behind.
+  assert_eq!(
+    git_calls
+      .iter()
+      .filter(|c| starts(c, &["push", "origin", "--delete", "v1.0.1"]))
+      .count(),
+    2
+  );
+  // The branch probe (the broad `ls-remote` script answers "") saw no bump sha on the
+  // remote, so the rollback must not force-push someone's branch on a hunch.
+  assert!(git_calls.iter().all(|c| !c.iter().any(|arg| arg.starts_with("--force-with-lease"))));
+}
+
+#[test]
 fn overlapping_user_edit_is_an_error_and_rolls_back() {
   let w = World::new(&[]);
   let root = w.root();

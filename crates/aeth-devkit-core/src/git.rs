@@ -181,11 +181,24 @@ fn capture_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
 
 /// The index entries for `paths`, in the order given. `git ls-files -s` prints
 /// `<mode> <sha> <stage>\t<path>` for staged paths only, so anything it does not mention
-/// is `None`.
+/// is `None`. A path mid merge-conflict is an error: it has *three* rows (stages 1/2/3
+/// instead of one stage-0 row), a shape `IndexEntry` cannot represent — silently taking
+/// one row would build the release from the merge ancestor and lose the conflict state
+/// on restore.
 pub fn index_entries(root: &Path, paths: &[String]) -> Result<Vec<IndexEntry>> {
   let mut args = vec!["ls-files", "-s", "--"];
   args.extend(paths.iter().map(String::as_str));
   let listing = expect_ok(capture(root, &args)?, "git ls-files -s")?;
+  // First pass: refuse unmerged rows. Only the requested paths are listed, so any row
+  // whose third field is not "0" is a managed file in conflict. `nth(2)` consumes the
+  // iterator up to the stage field (mode, sha, then stage).
+  for line in listing.lines() {
+    // `let … else` destructures or skips: a line without a tab is not an entry row.
+    let Some((meta, path)) = line.split_once('\t') else { continue };
+    if meta.split_whitespace().nth(2) != Some("0") {
+      bail!("{path} has unmerged index entries (a merge conflict in progress); resolve and commit the conflict first");
+    }
+  }
   Ok(
     paths
       .iter()
@@ -214,6 +227,22 @@ pub fn head_blob(root: &Path, path: &str) -> Result<Option<Vec<u8>>> {
     return Ok(None);
   }
   blob_bytes(root, out.stdout.trim()).map(Some)
+}
+
+/// The file mode (e.g. `100644`, `100755`) of `path` as committed in `HEAD`, or `None`
+/// when `HEAD` has no such file. Modes live in *tree* objects, not blobs, so this asks
+/// `ls-tree` (which prints `<mode> <type> <sha>\t<path>`) rather than `cat-file`.
+pub fn head_mode(root: &Path, path: &str) -> Result<Option<String>> {
+  // `ls-tree` exits 0 with empty output for a path HEAD does not have.
+  let listing = expect_ok(capture(root, &["ls-tree", "HEAD", "--", path])?, "git ls-tree")?;
+  // First line → text before the first space. `and_then` chains the two `Option`s.
+  Ok(
+    listing
+      .lines()
+      .next()
+      .and_then(|line| line.split_whitespace().next())
+      .map(str::to_string),
+  )
 }
 
 /// The bytes of an object by sha.
@@ -306,7 +335,13 @@ pub fn commit_files_on_head(root: &Path, files: &[IndexEntry], message: &str) ->
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
   };
-  run(&["read-tree", "HEAD"])?;
+  // `HEAD` is resolved to a sha exactly once. Passing the literal string `HEAD` to each
+  // command below would resolve it at three different moments; if another process advanced
+  // the branch mid-way, the commit could get the wrong parent and `update-ref` would then
+  // overwrite the concurrent commit. With one captured sha the tree, the parent, and the
+  // compare-and-swap below all agree on the same starting point.
+  let head = run(&["rev-parse", "HEAD"])?;
+  run(&["read-tree", &head])?;
   for f in files {
     match &f.staged {
       Some((mode, sha)) => {
@@ -319,8 +354,11 @@ pub fn commit_files_on_head(root: &Path, files: &[IndexEntry], message: &str) ->
     }
   }
   let tree = run(&["write-tree"])?;
-  let commit = run(&["commit-tree", &tree, "-p", "HEAD", "-m", message])?;
-  run(&["update-ref", "-m", message, "HEAD", &commit])?;
+  let commit = run(&["commit-tree", &tree, "-p", &head, "-m", message])?;
+  // The trailing `&head` is `update-ref`'s *old-value* argument: git moves the ref only if
+  // it still equals that sha, and fails otherwise. So a branch some other process moved
+  // during this function makes us abort cleanly instead of silently discarding their commit.
+  run(&["update-ref", "-m", message, "HEAD", &commit, &head])?;
   Ok(commit)
 }
 
@@ -359,6 +397,17 @@ pub fn remote_tag_exists(runner: &dyn Runner, root: &Path, tag: &str) -> Result<
   let refname = format!("refs/tags/{tag}");
   let s = expect_ok(remote(runner, root, &["ls-remote", "--tags", "origin", &refname])?, "git ls-remote")?;
   Ok(!s.trim().is_empty())
+}
+
+/// The sha `origin` has for `refs/heads/<branch>`, or `None` when the remote has no such
+/// branch. Used after a failed push to learn whether the branch actually moved: a push
+/// whose response was lost on the wire reports failure even though the refs landed.
+pub fn remote_branch_sha(runner: &dyn Runner, root: &Path, branch: &str) -> Result<Option<String>> {
+  let refname = format!("refs/heads/{branch}");
+  let s = expect_ok(remote(runner, root, &["ls-remote", "origin", &refname])?, "git ls-remote")?;
+  // Output is `<sha>\t<refname>` or empty; the sha is everything before the first
+  // whitespace, and `map` only runs when there was a first token at all.
+  Ok(s.split_whitespace().next().map(str::to_string))
 }
 
 /// `git push --atomic origin <refs…>` — one push, and `--atomic` makes the server update
@@ -456,6 +505,8 @@ mod tests {
     commit_paths(root, &["a.txt".into()], "first").unwrap();
     let first = head_sha(root).unwrap();
     assert_eq!(first.len(), 40);
+    assert_eq!(head_mode(root, "a.txt").unwrap().as_deref(), Some("100644"));
+    assert_eq!(head_mode(root, "missing.txt").unwrap(), None);
     assert_eq!(current_branch(root).unwrap(), "main");
     assert_eq!(status_porcelain(root).unwrap(), "");
     write(root, "b.txt", "x\n");
@@ -479,6 +530,40 @@ mod tests {
     assert_eq!(head_sha(root).unwrap(), first);
     // Mixed reset keeps the working tree: the file still has the newer content.
     assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "2\n");
+  }
+
+  #[test]
+  fn index_entries_reject_unmerged_paths() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init_test_repo(root);
+    write(root, "a.txt", "base\n");
+    write(root, "b.txt", "fine\n");
+    commit_paths(root, &["a.txt".into(), "b.txt".into()], "first").unwrap();
+    // Manufacture a merge conflict without a real merge: `update-index --index-info`
+    // writes raw index rows, and stage-1/2/3 entries (ancestor/ours/theirs) for one path
+    // are exactly what `git merge` leaves behind for a conflicted file.
+    let (b, o, t) = (
+      hash_object(root, b"base\n").unwrap(),
+      hash_object(root, b"ours\n").unwrap(),
+      hash_object(root, b"theirs\n").unwrap(),
+    );
+    let rows = format!("100644 {b} 1\ta.txt\n100644 {o} 2\ta.txt\n100644 {t} 3\ta.txt\n");
+    let mut child = git(root)
+      .args(["update-index", "--index-info"])
+      .stdin(Stdio::piped())
+      .spawn()
+      .unwrap();
+    child.stdin.take().unwrap().write_all(rows.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+    // The conflicted path is refused with a message naming it…
+    let err = index_entries(root, &["a.txt".into()]).unwrap_err().to_string();
+    assert!(err.contains("a.txt") && err.contains("unmerged"), "{err}");
+    // …and a clean path on its own still parses normally.
+    let clean = index_entries(root, &["b.txt".into()]).unwrap();
+    assert!(clean[0].staged.is_some());
   }
 
   #[test]
@@ -570,6 +655,11 @@ mod tests {
     assert_eq!(git[4], vec!["push", "--atomic", "origin", "main", "v1.0.0"]);
     assert_eq!(git[5], vec!["push", "origin", "--delete", "v1.0.0"]);
     assert_eq!(git[6], vec!["push", "--force-with-lease=main:aaa", "origin", "bbb:refs/heads/main"]);
+    // The broad `ls-remote` script answers the branch probe too (its output's first token
+    // is the sha); a later, more specific empty script models a branch the remote lacks.
+    assert_eq!(remote_branch_sha(&r, root, "main").unwrap().as_deref(), Some("abc"));
+    r.script("git", &["ls-remote", "origin", "refs/heads/gone"], 0, "");
+    assert_eq!(remote_branch_sha(&r, root, "gone").unwrap(), None);
 
     let failing = RecordingRunner::new(1);
     assert_eq!(upstream(&failing, root).unwrap(), None);

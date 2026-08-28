@@ -131,6 +131,10 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
     println!("Releasing {} {} -> {}", cfg.package, target.current, target.new);
   }
   preflight::check_cargo_version(&root, &target.current)?;
+  // Hard error (exit 2), deliberately *before* the dirty-tree prompt: `--force` may accept
+  // a dirty tree, but an unresolved merge conflict in a managed file has no safe automatic
+  // handling (see `preflight::check_unmerged`).
+  preflight::check_unmerged(&root)?;
   // A declined prompt is a normal exit (1), not an error (2): the user chose to stop.
   if let Err(e) = preflight::confirm_dirty_tree(&root, force, deps.prompt) {
     eprintln!("{e:#}");
