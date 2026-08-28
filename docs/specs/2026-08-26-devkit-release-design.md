@@ -50,7 +50,9 @@ Arguments:
 Options:
   -f, --force        Answer both confirmation prompts as if `force` had been typed.
       --dry-run      Run every pre-flight check, print the existence report and the plan,
-                     mutate nothing (no files, no git, no network writes).
+                     mutate nothing (no files, no commits/tags/index, no network writes).
+                     The one read-flavoured side effect is the `git fetch` that the
+                     behind-upstream check needs (it refreshes remote-tracking refs).
       --index NAME   `[[tool.uv.index]]` to publish to. Default: the single index that has
                      a `publish-url`; error if none or more than one.
       --root DIR     Project root (default `.`).
@@ -137,10 +139,10 @@ visible, except where stdout is captured for parsing.
 | 2 | `uv version --bump …` (real); set Cargo.toml version via `toml_edit`; `cargo update --workspace --quiet` when `Cargo.lock` exists (its failure is an error, not swallowed). | bump | — (covered by 1) |
 | 3 | `uv lock` | bump | — |
 | 4 | Delete `dist/*.whl`, `dist/*.tar.gz`; `uv build`. | both | — |
-| 5 | `git::commit_paths` on the subset of `pyproject.toml uv.lock Cargo.toml Cargo.lock` that exist, message `Bump version to <new>`. Record the new `HEAD` SHA. | bump | `ResetCommit { sha }` |
+| 5 | `git::commit_paths` on the subset of `pyproject.toml uv.lock Cargo.toml Cargo.lock` that exist, message `Bump version to <new>`. Record the new `HEAD` SHA once; the push step reuses it. | bump | `ResetCommit { bump_sha, pre_sha, paths }` |
 | 6 | `git tag -a v<new> -m "Version <new>"` | both | `DeleteLocalTag` |
-| 7 | `uv publish --index NAME --username … --password …` | both | `DeleteDevpi` |
-| 8 | bump: `git push origin <branch> v<new>` (one push, atomic per ref). no-bump: `git push origin v<new>`. | both | `DeleteRemoteTag`, plus `ForcePushBranch { branch, sha }` in bump mode |
+| 7 | `uv publish --index NAME` (credentials via the inherited `UV_INDEX_<NAME>_USERNAME/_PASSWORD`, never argv). On a non-zero exit, probe the index and queue `DeleteDevpi` if anything landed (partial wheel/sdist upload). | both | `DeleteDevpi` |
+| 8 | bump: `git push --atomic origin <branch> v<new>` (both refs or neither). no-bump: `git push --atomic origin v<new>`. | both | `DeleteRemoteTag`, plus `ForcePushBranch { branch, sha }` in bump mode |
 | 9 | `gh release create v<new> dist/* --title v<new>` with `--notes "<notes>"` or `--generate-notes`. | both | `DeleteGithubRelease` |
 
 Success: remove the snapshot dir, print `Released <pkg> <new>` and the GitHub URL.
@@ -150,7 +152,7 @@ Success: remove the snapshot dir, print `Released <pkg> <new>` and the GitHub UR
 ```rust
 enum Undo {
   RestoreFiles(Snapshot),                   // copy back; delete files that were absent
-  ResetCommit { sha: String },              // git reset --mixed HEAD~1, only if HEAD == sha
+  ResetCommit { bump_sha, pre_sha, paths }, // git reset --soft pre_sha && git reset pre_sha -- paths, only if HEAD == bump_sha
   DeleteLocalTag(String),                   // git tag -d
   DeleteDevpi { package, version },         // DELETE <devpi url>; 200/204/404 all fine
   DeleteRemoteTag(String),                  // git push origin --delete vX
@@ -168,6 +170,14 @@ enum Undo {
 - `ResetCommit` refuses (and reports) if `HEAD != sha`; `RestoreFiles` then still restores
   the working files, which is safe because it only touches the four versioned files and
   `dist/`.
+- `ResetCommit` uses `--soft` plus a pathspec reset of only the bumped files, so anything
+  else the user had staged (accepted under `--force`) stays staged.
+- If `RestoreFiles` itself fails, the snapshot directory is kept (not deleted on drop) and
+  the manual command tells the user to copy from it — `git checkout` would restore `HEAD`,
+  not the pre-run tree, and would not restore `dist/`.
+- `push_refs` uses `git push --atomic`, so the branch and tag land together or not at all;
+  `gh release create` failures are followed by a `gh release view` probe so a release that
+  was created but failed asset upload still gets `DeleteGithubRelease` queued.
 - After unwinding: print `Rollback complete.` if nothing failed, else a block
   `Manual cleanup required:` listing each failed step's copy-pasteable command. Exit code
   1 either way (the release failed); the original error is printed first.
@@ -220,8 +230,13 @@ interrupt flag.
 
 - `crates/aeth-devkit/src/main.rs`: `Release(aeth_devkit_release::Args)` subcommand.
 - `python/aeth_devkit/__init__.py`:
-  - `release`: `cmd = 'devkit release ${force:+--force} $POE_EXTRA_ARGS'`, `interpreter: bash`, `args: [force]` (boolean, `--force/-f`), `envfile: .env`.
-  - `release-and-pin`: `devkit release ${force:+--force} $POE_EXTRA_ARGS && bash "…docker-pin-latest.sh" "$(uv version --short)"`.
+  - `release`: `cmd = 'devkit release $POE_EXTRA_ARGS'`, `envfile: .env`, and *no*
+    declared args: poe would otherwise reject the free positionals. `--force`/`-f` and
+    `--dry-run` travel through `$POE_EXTRA_ARGS` verbatim (poe expands it in place for
+    `cmd` tasks, preserving quoted multi-word notes) and clap parses them wherever they
+    appear.
+  - `release-and-pin`: `shell` task with `interpreter: bash`:
+    `devkit release $POE_EXTRA_ARGS && bash "…docker-pin-latest.sh" "$(uv version --short)"`.
 - Delete `python/aeth_devkit/scripts/release.sh`.
 - README table row for `poe release` → `devkit release`; TODO: check off `release.sh`.
 - Bump workspace version alongside the next release (the pre-flight Cargo check will

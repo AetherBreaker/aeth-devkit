@@ -87,6 +87,19 @@ pub fn take(root: &Path) -> Result<Snapshot> {
 }
 
 impl Snapshot {
+  /// Where the copies live on disk, for the manual-recovery message.
+  pub fn path(&self) -> &Path {
+    self.dir.path()
+  }
+
+  /// Give up automatic cleanup and return the directory's path. Called when `restore`
+  /// failed: the copies are now the only pre-run state left, so they must outlive us for
+  /// the user to recover from by hand. `self` by value — the `Snapshot` is consumed, and
+  /// `TempDir::keep` disarms the delete-on-drop.
+  pub fn keep(self) -> PathBuf {
+    self.dir.keep()
+  }
+
   /// Did `rel` exist when the snapshot was taken?
   pub fn present(&self, rel: &str) -> bool {
     self.present.contains(&rel)

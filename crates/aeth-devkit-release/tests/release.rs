@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
-use aeth_devkit_core::devpi::StubDevpiClient;
+use aeth_devkit_core::devpi::{DeleteOutcome, DevpiClient, StubDevpiClient};
 use aeth_devkit_core::git;
 use aeth_devkit_core::process::RecordingRunner;
 use aeth_devkit_release::prompt::ScriptedPrompt;
@@ -142,15 +142,21 @@ fn bump_mode_happy_path() {
   assert!(uv.contains(&vec!["version".to_string(), "--bump".into(), "patch".into()]));
   assert!(uv.contains(&vec!["lock".to_string()]));
   assert!(uv.contains(&vec!["build".to_string()]));
-  assert!(
-    uv.iter()
-      .any(|c| c.starts_with(&["publish".to_string(), "--index".into(), "Private".into()]))
-  );
+  // Exactly this and nothing more: the credentials must stay in the environment (uv reads
+  // `UV_INDEX_PRIVATE_*` itself), never on argv where an error message could echo them.
+  assert!(uv.contains(&vec!["publish".to_string(), "--index".into(), "Private".into()]));
+  assert!(uv.iter().flatten().all(|a| a != "--password" && a != "p"));
   // Cargo.lock does not exist in the fixture, so `cargo update` must not run; Cargo.toml
   // itself is still rewritten.
   assert!(w.runner.calls_for("cargo").is_empty());
   let git_calls = w.runner.calls_for("git");
-  assert!(git_calls.contains(&vec!["push".to_string(), "origin".into(), "main".into(), "v1.0.1".into()]));
+  assert!(git_calls.contains(&vec![
+    "push".to_string(),
+    "--atomic".into(),
+    "origin".into(),
+    "main".into(),
+    "v1.0.1".into()
+  ]));
   let gh = w.runner.calls_for("gh");
   let create = gh.iter().find(|c| starts(c, &["release", "create"])).unwrap();
   assert!(create.contains(&"--generate-notes".to_string()));
@@ -170,7 +176,7 @@ fn no_bump_mode_pushes_only_the_tag() {
   assert!(
     w.runner
       .calls_for("git")
-      .contains(&vec!["push".to_string(), "origin".into(), "v1.0.0".into()])
+      .contains(&vec!["push".to_string(), "--atomic".into(), "origin".into(), "v1.0.0".into()])
   );
   assert!(!w.runner.calls_for("uv").contains(&vec!["lock".to_string()]));
 }
@@ -214,7 +220,7 @@ fn publish_failure_resets_commit_and_tag() {
 
 #[test]
 fn push_failure_deletes_devpi_version() {
-  let w = rollback_case("git", &["push", "origin", "main"]);
+  let w = rollback_case("git", &["push", "--atomic", "origin", "main"]);
   assert_eq!(*w.devpi.calls.borrow().last().unwrap(), "DELETE https://x/user/internal/demo/1.0.1");
   assert!(w.runner.calls_for("gh").iter().all(|c| !starts(c, &["release", "delete"])));
 }
@@ -231,6 +237,105 @@ fn github_failure_unwinds_everything_with_lease() {
   assert!(git_calls.contains(&vec!["push".to_string(), "origin".into(), "--delete".into(), "v1.0.1".into()]));
   // The GitHub release was never created, so nothing tries to delete it.
   assert!(w.runner.calls_for("gh").iter().all(|c| !starts(c, &["release", "delete"])));
+}
+
+/// A devpi where the version is *always* present — models the partial upload where the
+/// wheel landed before the sdist failed, so `uv publish` exits non-zero yet the index
+/// holds a release. The stub's flip-on-delete would hide that case.
+struct StickyDevpi {
+  calls: std::cell::RefCell<Vec<String>>,
+}
+
+impl DevpiClient for StickyDevpi {
+  fn exists(&self, url: &str, _u: &str, _p: &str) -> anyhow::Result<bool> {
+    self.calls.borrow_mut().push(format!("GET {url}"));
+    Ok(true)
+  }
+  fn delete(&self, url: &str, _u: &str, _p: &str) -> anyhow::Result<DeleteOutcome> {
+    self.calls.borrow_mut().push(format!("DELETE {url}"));
+    Ok(DeleteOutcome::Deleted)
+  }
+}
+
+#[test]
+fn partial_publish_is_deleted_on_rollback() {
+  let w = World::new(&[]);
+  let devpi = StickyDevpi {
+    calls: std::cell::RefCell::new(Vec::new()),
+  };
+  let deps = Deps {
+    runner: &w.runner,
+    devpi: &devpi,
+    prompt: &w.prompt,
+    env: &env,
+    interrupted: &w.flag,
+  };
+  let before = w.state();
+  w.runner.script("uv", &["publish"], 1, "");
+  // `force`: the pre-flight probe also sees the sticky version and would otherwise prompt.
+  let mut a = w.args(&["patch"]);
+  a.force = true;
+  assert!(!ok(run(&a, &deps).unwrap()));
+  assert_eq!(w.state(), before);
+  let url = "https://x/user/internal/demo/1.0.1";
+  // Pre-flight probe + removal, then the post-failure probe and the rollback delete.
+  assert_eq!(
+    *devpi.calls.borrow(),
+    vec![
+      format!("GET {url}"),
+      format!("DELETE {url}"),
+      format!("GET {url}"),
+      format!("DELETE {url}")
+    ]
+  );
+}
+
+#[test]
+fn partial_github_release_is_deleted_on_rollback() {
+  let w = World::new(&[]);
+  let before = w.state();
+  // `create` fails (say, an asset upload), but `view` afterwards finds the release.
+  w.runner.script("gh", &["release", "create"], 1, "");
+  w.runner
+    .script("gh", &["release", "view"], 0, "https://github.com/o/demo/releases/tag/v1.0.1\n");
+  let mut a = w.args(&["patch"]);
+  a.force = true; // the pre-flight probe sees that same `view` answer
+  assert!(!ok(run(&a, &w.deps()).unwrap()));
+  assert_eq!(w.state(), before);
+  let gh = w.runner.calls_for("gh");
+  let create_at = gh.iter().position(|c| starts(c, &["release", "create"])).unwrap();
+  assert!(
+    gh[create_at..].iter().any(|c| starts(c, &["release", "delete", "v1.0.1"])),
+    "the half-created release must be deleted during rollback: {gh:?}"
+  );
+}
+
+#[test]
+fn rollback_keeps_unrelated_staged_changes() {
+  let w = World::new(&[]);
+  let root = w.root();
+  // The user has an unrelated file staged and accepts the dirty tree with `--force`.
+  std::fs::write(root.join("notes.md"), "wip\n").unwrap();
+  assert!(
+    std::process::Command::new("git")
+      .args(["add", "notes.md"])
+      .current_dir(root)
+      .status()
+      .unwrap()
+      .success()
+  );
+  let before = w.state();
+  w.runner.script("uv", &["publish"], 1, "");
+  let mut a = w.args(&["patch"]);
+  a.force = true;
+  assert!(!ok(run(&a, &w.deps()).unwrap()));
+  assert_eq!(w.state(), before);
+  let staged = std::process::Command::new("git")
+    .args(["diff", "--cached", "--name-only"])
+    .current_dir(root)
+    .output()
+    .unwrap();
+  assert_eq!(String::from_utf8(staged.stdout).unwrap().trim(), "notes.md");
 }
 
 #[test]
