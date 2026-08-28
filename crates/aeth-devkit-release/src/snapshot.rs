@@ -43,13 +43,16 @@ pub fn dist_artifacts(root: &Path) -> Result<Vec<PathBuf>> {
   if !dist.is_dir() {
     return Ok(Vec::new());
   }
-  // `read_dir` yields `Result<DirEntry>` per entry; `filter_map(|e| e.ok()…)` drops the
-  // unreadable ones rather than failing the whole listing on a single bad entry.
-  let mut out: Vec<PathBuf> = std::fs::read_dir(&dist)
+  // `read_dir` yields `Result<DirEntry>` per entry. An unreadable entry must fail the
+  // listing, not be skipped: a snapshot that silently misses an artefact would later let
+  // `clear_dist` delete something we have no copy of. Collecting into `Result<Vec<_>>`
+  // stops at the first `Err` and returns it.
+  let entries: Vec<PathBuf> = std::fs::read_dir(&dist)
     .context("reading dist/")?
-    .filter_map(|e| e.ok().map(|e| e.path()))
-    .filter(|p| p.is_file() && is_artifact(p))
-    .collect();
+    .map(|e| e.map(|e| e.path()))
+    .collect::<std::io::Result<_>>()
+    .context("reading an entry in dist/")?;
+  let mut out: Vec<PathBuf> = entries.into_iter().filter(|p| p.is_file() && is_artifact(p)).collect();
   out.sort();
   Ok(out)
 }

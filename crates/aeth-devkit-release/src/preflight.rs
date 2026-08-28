@@ -18,6 +18,11 @@ use crate::Deps;
 use crate::config::Config;
 use crate::prompt::{Prompt, confirm_force};
 use crate::report::Existing;
+use crate::snapshot::TRACKED;
+
+/// What `gh release view` prints on stderr for a missing release. Any *other* non-zero
+/// exit (auth, network, wrong repo) is a real error, not "absent".
+pub const GH_NOT_FOUND: &str = "release not found";
 
 /// The version being released, and the one currently in `pyproject.toml`.
 /// In no-bump mode the two are equal.
@@ -52,8 +57,8 @@ pub fn check_tools(runner: &dyn Runner, root: &Path) -> Result<()> {
   }
 }
 
-/// The branch must be `main`, must have an upstream, and must not be behind it.
-/// Returns the branch name.
+/// The branch must be `main`, its upstream must be `origin/main` (the ref the release
+/// will push), and it must not be behind it. Returns the branch name.
 ///
 /// `main` is hard-coded rather than configurable: `undo` already pushes to
 /// `refs/heads/main`, so a release from any other branch would be un-rescindable anyway.
@@ -69,6 +74,11 @@ pub fn check_branch(runner: &dyn Runner, root: &Path) -> Result<String> {
   // Checked before the fetch: a wrong branch is a local fact, no point paying for network.
   if branch != "main" {
     bail!("releases are cut from main, but the current branch is {branch}; switch to main first");
+  }
+  // The fetch below refreshes `origin`, and the release pushes `origin/main`; if `@{u}`
+  // named anything else the behind-count would be answering a different question.
+  if up != "origin/main" {
+    bail!("main must track origin/main to release, but its upstream is {up}; fix with git branch -u origin/main");
   }
   git::fetch(runner, root)?;
   let behind = git::behind_count(runner, root)?;
@@ -134,9 +144,27 @@ pub fn check_cargo_version(root: &Path, current: &str) -> Result<()> {
 }
 
 /// Show uncommitted changes and require `force` (typed or flagged) to continue.
+///
+/// The files the release itself rewrites are the exception: `--force` cannot accept edits
+/// to those, because step 5 `git add`s them and any pre-existing change would be swept
+/// into the bump commit — and then reset away on rollback.
 pub fn confirm_dirty_tree(root: &Path, force: bool, prompt: &dyn Prompt) -> Result<()> {
   if git::status_porcelain(root)?.is_empty() {
     return Ok(());
+  }
+  let mut dirty_tracked = Vec::new();
+  for rel in TRACKED {
+    if root.join(rel).is_file() && git::is_dirty(root, &[rel])? {
+      dirty_tracked.push(rel);
+    }
+  }
+  if !dirty_tracked.is_empty() {
+    bail!(
+      "{} {} uncommitted changes, and the release rewrites {}; commit or stash first (--force does not apply here)",
+      dirty_tracked.join(", "),
+      if dirty_tracked.len() == 1 { "has" } else { "have" },
+      if dirty_tracked.len() == 1 { "it" } else { "them" },
+    );
   }
   eprintln!("WARNING: You have uncommitted changes:\n{}", git::status_short(root)?);
   if force {
@@ -153,14 +181,22 @@ pub fn confirm_dirty_tree(root: &Path, force: bool, prompt: &dyn Prompt) -> Resu
 /// Probe every place `v<version>` could already exist.
 pub fn probe(deps: &Deps, root: &Path, cfg: &Config, version: &str) -> Result<Existing> {
   let tag = format!("v{version}");
-  // `--jq .url` makes gh print just the URL; a non-zero exit means "no such release".
+  // `--jq .url` makes gh print just the URL. Only a confirmed "release not found" is
+  // absence; anything else non-zero would make the report lie, so it is an error.
   let gh = deps
     .runner
     .run_capture("gh", &s(&["release", "view", &tag, "--json", "url", "--jq", ".url"]), root)?;
+  let github = if gh.success() {
+    Some(gh.stdout.trim().to_string())
+  } else if gh.stderr.contains(GH_NOT_FOUND) {
+    None
+  } else {
+    bail!("gh release view {tag} failed: {}", gh.stderr.trim());
+  };
   Ok(Existing {
     local_tag: git::tag_target(root, &tag)?,
     remote_tag: git::remote_tag_exists(deps.runner, root, &tag)?,
-    github: gh.success().then(|| gh.stdout.trim().to_string()),
+    github,
     devpi: deps.devpi.exists(&cfg.devpi_url(version), &cfg.username, &cfg.password)?,
   })
 }
@@ -171,6 +207,9 @@ pub fn probe(deps: &Deps, root: &Path, cfg: &Config, version: &str) -> Result<Ex
 pub fn remove_existing(deps: &Deps, root: &Path, cfg: &Config, version: &str, ex: &Existing, dry_run: bool) -> Result<()> {
   let tag = format!("v{version}");
   let verb = if dry_run { "Would remove" } else { "Removing" };
+  // This is the one destructive thing pre-flight does, so it honours Ctrl-C the same way
+  // the forward steps do: checked before each deletion.
+  deps.check_interrupt()?;
   if ex.github.is_some() {
     println!("  -> {verb} GitHub release {tag} (and its remote tag)");
     if !dry_run {
@@ -182,12 +221,14 @@ pub fn remove_existing(deps: &Deps, root: &Path, cfg: &Config, version: &str, ex
       }
     }
   }
+  deps.check_interrupt()?;
   if ex.remote_tag {
     println!("  -> {verb} remote tag {tag}");
     if !dry_run {
       git::delete_remote_tag(deps.runner, root, &tag)?;
     }
   }
+  deps.check_interrupt()?;
   if ex.devpi {
     println!("  -> {verb} {}=={version} from {}", cfg.package, cfg.index_name);
     if !dry_run {
@@ -198,6 +239,7 @@ pub fn remove_existing(deps: &Deps, root: &Path, cfg: &Config, version: &str, ex
       }
     }
   }
+  deps.check_interrupt()?;
   if ex.local_tag.is_some() {
     println!("  -> {verb} local tag {tag}");
     if !dry_run {
@@ -250,12 +292,32 @@ mod tests {
   }
 
   #[test]
+  fn branch_check_requires_origin_main_upstream() {
+    let r = RecordingRunner::new(0);
+    r.script("git", &["rev-parse", "--abbrev-ref", "@{u}"], 0, "upstream/main\n");
+    r.script("git", &["rev-parse", "--abbrev-ref", "HEAD"], 0, "main\n");
+    let err = check_branch(&r, Path::new(".")).unwrap_err().to_string();
+    assert!(err.contains("upstream is upstream/main"), "{err}");
+    assert!(r.calls_for("git").iter().all(|c| c[0] != "fetch"));
+  }
+
+  #[test]
   fn branch_check_requires_main() {
     let r = RecordingRunner::new(0);
-    r.script("git", &["rev-parse", "--abbrev-ref", "@{u}"], 0, "origin/feature
-");
-    r.script("git", &["rev-parse", "--abbrev-ref", "HEAD"], 0, "feature
-");
+    r.script(
+      "git",
+      &["rev-parse", "--abbrev-ref", "@{u}"],
+      0,
+      "origin/feature
+",
+    );
+    r.script(
+      "git",
+      &["rev-parse", "--abbrev-ref", "HEAD"],
+      0,
+      "feature
+",
+    );
     let err = check_branch(&r, Path::new(".")).unwrap_err().to_string();
     assert!(err.contains("current branch is feature"), "{err}");
     // Refused before any fetch: the only git calls are the two rev-parses.

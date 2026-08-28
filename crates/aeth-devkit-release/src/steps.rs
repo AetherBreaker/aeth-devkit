@@ -7,8 +7,6 @@
 //! already proven, and the expensive compensations are reserved for the rare late failure.
 
 use std::path::Path;
-// `Ordering` here is the memory-ordering enum for atomics, not the comparison one.
-use std::sync::atomic::Ordering;
 
 use anyhow::{Context as _, Result, bail};
 use toml_edit::DocumentMut;
@@ -78,14 +76,9 @@ pub fn describe(plan: &Plan) -> String {
   s
 }
 
-/// Abort between steps if Ctrl-C was pressed. `SeqCst` is the strongest (and simplest to
-/// reason about) memory ordering; the cost is irrelevant at this frequency.
+/// Abort between steps if Ctrl-C was pressed (see [`Deps::check_interrupt`]).
 fn check_interrupt(deps: &Deps) -> Result<()> {
-  if deps.interrupted.load(Ordering::SeqCst) {
-    bail!("interrupted")
-  } else {
-    Ok(())
-  }
+  deps.check_interrupt()
 }
 
 /// Run a tool with inherited stdio (the user sees its output) and require exit code 0.
@@ -196,11 +189,17 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
       .exists(&devpi_url, &plan.cfg.username, &plan.cfg.password)
       .unwrap_or(true);
     if landed {
-      journal.push(Undo::DeleteDevpi { url: devpi_url });
+      journal.push(Undo::DeleteDevpi {
+        url: devpi_url,
+        index_name: plan.cfg.index_name.clone(),
+      });
     }
     return Err(e);
   }
-  journal.push(Undo::DeleteDevpi { url: devpi_url });
+  journal.push(Undo::DeleteDevpi {
+    url: devpi_url,
+    index_name: plan.cfg.index_name.clone(),
+  });
 
   check_interrupt(deps)?;
   println!("[8/9] Pushing...");
@@ -238,7 +237,11 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
     // before giving up so a half-made release is still deleted by the rollback. If the
     // probe itself errors, assume the worst and queue the delete anyway.
     let view: Vec<String> = ["release", "view", &tag].iter().map(|s| s.to_string()).collect();
-    let created = deps.runner.run_capture("gh", &view, root).map(|o| o.success()).unwrap_or(true);
+    let created = match deps.runner.run_capture("gh", &view, root) {
+      Ok(o) if o.success() => true,
+      Ok(o) if o.stderr.contains(crate::preflight::GH_NOT_FOUND) => false,
+      _ => true,
+    };
     if created {
       journal.push(Undo::DeleteGithubRelease(tag));
     }

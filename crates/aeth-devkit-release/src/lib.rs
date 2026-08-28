@@ -89,6 +89,18 @@ pub struct Deps<'a> {
   pub interrupted: &'a AtomicBool,
 }
 
+impl Deps<'_> {
+  /// Abort if Ctrl-C was pressed. `SeqCst` is the strongest (and simplest to reason
+  /// about) memory ordering; the cost is irrelevant at this frequency.
+  pub fn check_interrupt(&self) -> Result<()> {
+    if self.interrupted.load(Ordering::SeqCst) {
+      anyhow::bail!("interrupted")
+    } else {
+      Ok(())
+    }
+  }
+}
+
 /// Exit codes: 0 released; 1 aborted at a prompt or failed and rolled back. Errors from
 /// pre-flight bubble up as `Err` (the dispatcher prints them and exits 2).
 pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
@@ -132,6 +144,8 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
       eprintln!("aborted: artefacts for v{} already exist", target.new);
       return Ok(ExitCode::from(1));
     }
+    // The probe above may have taken a while; do not start deleting after a Ctrl-C.
+    deps.check_interrupt()?;
     preflight::remove_existing(deps, &root, &cfg, &target.new, &existing, args.dry_run)?;
   } else {
     println!("No existing artefacts for v{}.", target.new);

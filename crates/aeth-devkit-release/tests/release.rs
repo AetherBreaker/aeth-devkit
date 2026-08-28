@@ -71,7 +71,7 @@ impl World {
     runner.script("git", &["rev-list", "--count"], 0, "0\n");
     runner.script("git", &["ls-remote"], 0, "");
     // No GitHub release exists (view fails); create succeeds and prints a URL.
-    runner.script("gh", &["release", "view"], 1, "");
+    runner.script_err("gh", &["release", "view"], 1, "release not found");
     runner.script("gh", &["release", "create"], 0, "https://github.com/o/demo/releases/tag/v1.0.1\n");
     // Matching is newest-registration-wins, so the broad `uv version` answer goes first and
     // the more specific `--bump … --dry-run` answer overrides it for that call.
@@ -376,6 +376,44 @@ fn dirty_tree_prompt() {
   a.force = true;
   assert!(ok(run(&a, &w2.deps()).unwrap()));
   assert!(w2.prompt.asked.borrow().is_empty());
+}
+
+#[test]
+fn gh_view_errors_other_than_not_found_abort_preflight() {
+  let w = World::new(&[]);
+  let before = w.state();
+  w.runner.script_err("gh", &["release", "view"], 1, "HTTP 401: Bad credentials");
+  let err = run(&w.args(&["patch"]), &w.deps()).unwrap_err().to_string();
+  assert!(err.contains("gh release view"), "{err}");
+  assert_eq!(w.state(), before);
+  assert!(w.runner.calls_for("uv").iter().all(|c| c[0] != "build"));
+}
+
+#[test]
+fn dirty_release_files_are_refused_even_with_force() {
+  let w = World::new(&[]);
+  std::fs::write(w.root().join("pyproject.toml"), format!("{PYPROJECT}# local edit\n")).unwrap();
+  let before = w.state();
+  let mut a = w.args(&["patch"]);
+  a.force = true;
+  // Refusals from the dirty-tree check are a normal exit 1 (printed, not `Err`), same as
+  // a declined prompt.
+  assert!(!ok(run(&a, &w.deps()).unwrap()));
+  assert_eq!(w.state(), before);
+  assert!(w.prompt.asked.borrow().is_empty());
+  assert!(w.runner.calls_for("uv").iter().all(|c| c[0] != "build"));
+}
+
+#[test]
+fn interrupt_before_cleanup_deletes_nothing() {
+  let w = World::new(&[]);
+  w.devpi.exists.set(true);
+  w.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+  let mut a = w.args(&["patch"]);
+  a.force = true;
+  let err = run(&a, &w.deps()).unwrap_err().to_string();
+  assert!(err.contains("interrupted"), "{err}");
+  assert!(w.devpi.calls.borrow().iter().all(|c| c.starts_with("GET")));
 }
 
 #[test]
