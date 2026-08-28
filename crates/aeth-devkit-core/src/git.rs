@@ -148,6 +148,22 @@ pub fn reset_mixed_to(root: &Path, rev: &str) -> Result<()> {
   expect_ok(capture(root, &["reset", "--mixed", "--quiet", rev])?, "git reset").map(|_| ())
 }
 
+/// Drop a commit while leaving the rest of the index alone: `git reset --soft <rev>` moves
+/// `HEAD` without touching the index or working tree, then `git reset <rev> -- <paths>`
+/// puts *only* the listed index entries back to what `rev` has. Anything else the user had
+/// staged before the run stays staged — which a plain `--mixed` reset would silently
+/// unstage. `paths` are the files the dropped commit touched.
+pub fn reset_commit_keeping_index(root: &Path, rev: &str, paths: &[String]) -> Result<()> {
+  expect_ok(capture(root, &["reset", "--soft", "--quiet", rev])?, "git reset --soft")?;
+  if paths.is_empty() {
+    return Ok(());
+  }
+  // Build `["reset", "--quiet", rev, "--", p1, p2, …]` as `&str`s for `capture`.
+  let mut args = vec!["reset", "--quiet", rev, "--"];
+  args.extend(paths.iter().map(String::as_str));
+  expect_ok(capture(root, &args)?, "git reset -- <paths>").map(|_| ())
+}
+
 // ---------------------------------------------------------------------------------------
 // Remote helpers: these may talk to `origin`, so they go through the injected `Runner` and
 // tests can script them instead of needing a network.
@@ -185,9 +201,12 @@ pub fn remote_tag_exists(runner: &dyn Runner, root: &Path, tag: &str) -> Result<
   Ok(!s.trim().is_empty())
 }
 
-/// `git push origin <refs…>` — one push, so a failure leaves nothing half-done on the remote.
+/// `git push --atomic origin <refs…>` — one push, and `--atomic` makes the server update
+/// all of the refs or none of them. Without it a multi-ref push is *not* all-or-nothing:
+/// the branch could land while the tag is rejected, and a failure would leave the remote
+/// half-done with no undo queued for the branch.
 pub fn push_refs(runner: &dyn Runner, root: &Path, refs: &[&str]) -> Result<()> {
-  let mut args = vec!["push", "origin"];
+  let mut args = vec!["push", "--atomic", "origin"];
   args.extend_from_slice(refs);
   expect_ok(remote(runner, root, &args)?, "git push").map(|_| ())
 }
@@ -303,6 +322,29 @@ mod tests {
   }
 
   #[test]
+  fn reset_keeping_index_preserves_unrelated_staged_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init_test_repo(root);
+    write(root, "a.txt", "1\n");
+    write(root, "other.txt", "x\n");
+    commit_paths(root, &["a.txt".into(), "other.txt".into()], "first").unwrap();
+    let first = head_sha(root).unwrap();
+    // The user stages an unrelated change, then a "bump" commit touches only a.txt.
+    write(root, "other.txt", "y\n");
+    assert!(git(root).args(["add", "other.txt"]).status().unwrap().success());
+    write(root, "a.txt", "2\n");
+    commit_paths(root, &["a.txt".into()], "bump").unwrap();
+
+    reset_commit_keeping_index(root, &first, &["a.txt".into()]).unwrap();
+    assert_eq!(head_sha(root).unwrap(), first);
+    // `a.txt` is no longer staged (index matches `first`), but `other.txt` still is.
+    let staged = String::from_utf8(git(root).args(["diff", "--cached", "--name-only"]).output().unwrap().stdout).unwrap();
+    assert_eq!(staged.trim(), "other.txt");
+    assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "2\n");
+  }
+
+  #[test]
   fn remote_helpers_go_through_runner() {
     use crate::process::RecordingRunner;
     let r = RecordingRunner::new(0);
@@ -319,7 +361,7 @@ mod tests {
     force_push_with_lease(&r, root, "main", "aaa", "bbb").unwrap();
     let git = r.calls_for("git");
     assert_eq!(git[0], vec!["fetch", "--quiet", "origin"]);
-    assert_eq!(git[4], vec!["push", "origin", "main", "v1.0.0"]);
+    assert_eq!(git[4], vec!["push", "--atomic", "origin", "main", "v1.0.0"]);
     assert_eq!(git[5], vec!["push", "origin", "--delete", "v1.0.0"]);
     assert_eq!(git[6], vec!["push", "--force-with-lease=main:aaa", "origin", "bbb:refs/heads/main"]);
 

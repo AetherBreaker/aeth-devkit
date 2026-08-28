@@ -130,6 +130,8 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
 
   // Recorded before any commit so the rollback knows where the branch was.
   let pre_sha = git::head_sha(root)?;
+  // `Some(sha)` once the bump commit exists; `None` in no-bump mode.
+  let mut bump_sha: Option<String> = None;
   if plan.bumping() {
     check_interrupt(deps)?;
     println!("[2/9] Bumping version to {new}...");
@@ -162,10 +164,15 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
     // exactly these, so anything else the user had staged stays out of the bump commit.
     let paths: Vec<String> = TRACKED.iter().filter(|p| root.join(p).is_file()).map(|p| p.to_string()).collect();
     git::commit_paths(root, &paths, &format!("Bump version to {new}"))?;
+    // Read once, here, while nothing remote has happened yet. The push step reuses it so
+    // no fallible call sits between mutating the remote and journaling its undo.
+    let sha = git::head_sha(root)?;
     journal.push(Undo::ResetCommit {
-      bump_sha: git::head_sha(root)?,
+      bump_sha: sha.clone(),
       pre_sha: pre_sha.clone(),
+      paths,
     });
+    bump_sha = Some(sha);
   }
 
   check_interrupt(deps)?;
@@ -175,34 +182,37 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
 
   check_interrupt(deps)?;
   println!("[7/9] Publishing to {}...", plan.cfg.index_name);
-  // devpi has no trusted publishing, so credentials go on the command line as before.
-  run_ok(
-    deps,
-    root,
-    "uv",
-    &[
-      "publish",
-      "--index",
-      &plan.cfg.index_name,
-      "--username",
-      &plan.cfg.username,
-      "--password",
-      &plan.cfg.password,
-    ],
-  )?;
-  journal.push(Undo::DeleteDevpi {
-    url: plan.cfg.devpi_url(new),
-  });
+  // Credentials are deliberately *not* on the command line: uv reads
+  // `UV_INDEX_<NAME>_USERNAME` / `_PASSWORD` from the environment it inherits (the same
+  // variables `config::resolve` required), and argv would leak the password into process
+  // listings and into `run_ok`'s error text.
+  let devpi_url = plan.cfg.devpi_url(new);
+  if let Err(e) = run_ok(deps, root, "uv", &["publish", "--index", &plan.cfg.index_name]) {
+    // A non-zero exit is not proof nothing landed: the wheel can upload before the sdist
+    // fails. Probe, and queue the delete if anything is there. If the probe itself errors
+    // we cannot tell, so assume the worst — `delete` treats "not found" as success.
+    let landed = deps
+      .devpi
+      .exists(&devpi_url, &plan.cfg.username, &plan.cfg.password)
+      .unwrap_or(true);
+    if landed {
+      journal.push(Undo::DeleteDevpi { url: devpi_url });
+    }
+    return Err(e);
+  }
+  journal.push(Undo::DeleteDevpi { url: devpi_url });
 
   check_interrupt(deps)?;
   println!("[8/9] Pushing...");
   if plan.bumping() {
-    // One push for both refs: git applies them atomically per ref, and one round trip.
+    // One `--atomic` push for both refs: the server takes both or neither, so a rejected
+    // ref cannot leave the branch moved with no undo for it.
     git::push_refs(deps.runner, root, &[plan.branch, &tag])?;
     journal.push(Undo::DeleteRemoteTag(tag.clone()));
     journal.push(Undo::ForcePushBranch {
       branch: plan.branch.to_string(),
-      bump_sha: git::head_sha(root)?,
+      // Set in step 5, which always runs in bump mode; `expect` documents that invariant.
+      bump_sha: bump_sha.expect("bump mode commits before pushing"),
       pre_sha,
     });
   } else {
@@ -224,6 +234,14 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   // Captured (not inherited) because gh prints the release URL, which we return.
   let out = deps.runner.run_capture("gh", &args, root)?;
   if !out.success() {
+    // `gh release create` can create the release and then fail uploading an asset. Probe
+    // before giving up so a half-made release is still deleted by the rollback. If the
+    // probe itself errors, assume the worst and queue the delete anyway.
+    let view: Vec<String> = ["release", "view", &tag].iter().map(|s| s.to_string()).collect();
+    let created = deps.runner.run_capture("gh", &view, root).map(|o| o.success()).unwrap_or(true);
+    if created {
+      journal.push(Undo::DeleteGithubRelease(tag));
+    }
     bail!("gh release create failed: {}{}", out.stdout.trim(), out.stderr.trim());
   }
   journal.push(Undo::DeleteGithubRelease(tag));

@@ -21,10 +21,13 @@ use crate::snapshot::Snapshot;
 pub enum Undo {
   /// Copy the snapshot back (covers `uv version`, the Cargo edit, `uv lock`, `uv build`).
   RestoreFiles(Snapshot),
-  /// Drop the bump commit — but only if `HEAD` is still that commit.
+  /// Drop the bump commit — but only if `HEAD` is still that commit. `paths` are the files
+  /// that commit touched: only their index entries are reset, so anything else the user had
+  /// staged (allowed under `--force`) survives the rollback.
   ResetCommit {
     bump_sha: String,
     pre_sha: String,
+    paths: Vec<String>,
   },
   DeleteLocalTag(String),
   DeleteDevpi {
@@ -66,8 +69,16 @@ impl Undo {
   /// The shell command a user can paste if this undo fails.
   pub fn manual_command(&self) -> String {
     match self {
-      Undo::RestoreFiles(_) => "git checkout -- pyproject.toml uv.lock Cargo.toml Cargo.lock".into(),
-      Undo::ResetCommit { pre_sha, .. } => format!("git reset --mixed {pre_sha}"),
+      // `git checkout` would restore `HEAD`, not the pre-run tree (which may have held
+      // accepted dirty changes, and `dist/` is not tracked at all). The snapshot directory
+      // is the real pre-run state; `unwind` keeps it on disk when this undo fails.
+      Undo::RestoreFiles(snap) => format!(
+        "cp -r \"{}\"/. .   # pre-run copies of pyproject.toml, uv.lock, Cargo.toml, Cargo.lock, dist/",
+        snap.path().display()
+      ),
+      Undo::ResetCommit { pre_sha, paths, .. } => {
+        format!("git reset --soft {pre_sha} && git reset {pre_sha} -- {}", paths.join(" "))
+      }
       Undo::DeleteLocalTag(t) => format!("git tag -d {t}"),
       Undo::DeleteDevpi { url } => format!("curl -u \"$USER:$PASS\" -X DELETE {url}"),
       Undo::DeleteRemoteTag(t) => format!("git push origin --delete {t}"),
@@ -82,7 +93,7 @@ impl Undo {
   fn apply(&self, deps: &Deps, root: &Path, cfg: &Config) -> Result<()> {
     match self {
       Undo::RestoreFiles(snap) => snap.restore(root),
-      Undo::ResetCommit { bump_sha, pre_sha } => {
+      Undo::ResetCommit { bump_sha, pre_sha, paths } => {
         // The guard that the old `git reset HEAD~1` lacked: refuse to reset if `HEAD` is
         // not the commit we made. `&head[..7]` slices the first seven characters for the
         // message (SHAs are ASCII, so byte slicing is safe).
@@ -90,7 +101,7 @@ impl Undo {
         if head != *bump_sha {
           bail!("HEAD is {} but the bump commit was {}; not resetting", &head[..7], &bump_sha[..7]);
         }
-        git::reset_mixed_to(root, pre_sha)
+        git::reset_commit_keeping_index(root, pre_sha, paths)
       }
       Undo::DeleteLocalTag(t) => git::delete_tag(root, t),
       // `.map(|_| ())` throws away the `DeleteOutcome`: gone is gone, either way.
@@ -129,6 +140,13 @@ pub fn unwind(journal: Vec<Undo>, deps: &Deps, root: &Path, cfg: &Config) -> Vec
         manual: undo.manual_command(),
         error: format!("{e:#}"),
       });
+      // A failed file restore must not take the only copy of the pre-run state with it:
+      // keep the snapshot directory (its path is in `manual`) instead of letting the
+      // `TempDir` delete it on drop.
+      if let Undo::RestoreFiles(snap) = undo {
+        let kept = snap.keep();
+        eprintln!("     pre-run snapshot kept at {}", kept.display());
+      }
     }
   }
   failures
@@ -196,6 +214,7 @@ mod tests {
       Undo::ResetCommit {
         bump_sha: bump.clone(),
         pre_sha: pre.clone(),
+        paths: vec!["pyproject.toml".into()],
       },
       Undo::DeleteLocalTag("v2".into()),
       Undo::DeleteDevpi {
@@ -260,6 +279,7 @@ mod tests {
       vec![Undo::ResetCommit {
         bump_sha: bump,
         pre_sha: pre,
+        paths: vec!["a".into()],
       }],
       &deps,
       root,
