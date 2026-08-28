@@ -173,6 +173,19 @@ impl RecordingRunner {
     self
   }
 
+  /// Like [`script`](Self::script) but with a scripted stderr too, for callers that decide
+  /// what a non-zero exit *means* by reading it (e.g. `gh`'s "release not found").
+  pub fn script_err(&self, program: &str, arg_prefix: &[&str], code: i32, stderr: &str) -> &Self {
+    self.scripts.borrow_mut().push(Script {
+      program: program.to_string(),
+      arg_prefix: arg_prefix.iter().map(|s| s.to_string()).collect(),
+      code,
+      stdout: String::new(),
+      stderr: stderr.to_string(),
+    });
+    self
+  }
+
   /// Make the `nth_call` (1-based, counting both `run_inherit` and `run_capture`) fail with
   /// exit code 1, regardless of scripts. Lets a test inject a failure at a precise step.
   pub fn fail_at(&self, nth_call: usize) {

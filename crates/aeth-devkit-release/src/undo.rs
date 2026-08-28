@@ -30,8 +30,11 @@ pub enum Undo {
     paths: Vec<String>,
   },
   DeleteLocalTag(String),
+  /// `index_name` is only for the manual command, which must name the credential
+  /// variables the user actually has (`UV_INDEX_<NAME>_USERNAME` / `_PASSWORD`).
   DeleteDevpi {
     url: String,
+    index_name: String,
   },
   DeleteRemoteTag(String),
   /// Rewind `origin/<branch>` to `pre_sha`, guarded by a lease on `bump_sha`.
@@ -59,7 +62,7 @@ impl Undo {
       Undo::RestoreFiles(_) => "Restoring pyproject.toml, uv.lock, Cargo.toml, Cargo.lock, and dist/".into(),
       Undo::ResetCommit { .. } => "Resetting the version-bump commit".into(),
       Undo::DeleteLocalTag(t) => format!("Deleting local tag {t}"),
-      Undo::DeleteDevpi { url } => format!("Removing {url} from the index"),
+      Undo::DeleteDevpi { url, .. } => format!("Removing {url} from the index"),
       Undo::DeleteRemoteTag(t) => format!("Deleting remote tag {t}"),
       Undo::ForcePushBranch { branch, .. } => format!("Force-pushing the pre-release {branch} to origin"),
       Undo::DeleteGithubRelease(t) => format!("Deleting GitHub release {t}"),
@@ -80,7 +83,11 @@ impl Undo {
         format!("git reset --soft {pre_sha} && git reset {pre_sha} -- {}", paths.join(" "))
       }
       Undo::DeleteLocalTag(t) => format!("git tag -d {t}"),
-      Undo::DeleteDevpi { url } => format!("curl -u \"$USER:$PASS\" -X DELETE {url}"),
+      Undo::DeleteDevpi { url, index_name } => {
+        // Reference the variables by name; never embed the secret itself in output.
+        let (user_var, pass_var) = crate::config::env_var_names(index_name);
+        format!("curl -u \"${user_var}:${pass_var}\" -X DELETE {url}")
+      }
       Undo::DeleteRemoteTag(t) => format!("git push origin --delete {t}"),
       Undo::ForcePushBranch { branch, bump_sha, pre_sha } => {
         format!("git push --force-with-lease={branch}:{bump_sha} origin {pre_sha}:refs/heads/{branch}")
@@ -105,7 +112,7 @@ impl Undo {
       }
       Undo::DeleteLocalTag(t) => git::delete_tag(root, t),
       // `.map(|_| ())` throws away the `DeleteOutcome`: gone is gone, either way.
-      Undo::DeleteDevpi { url } => deps.devpi.delete(url, &cfg.username, &cfg.password).map(|_| ()),
+      Undo::DeleteDevpi { url, .. } => deps.devpi.delete(url, &cfg.username, &cfg.password).map(|_| ()),
       Undo::DeleteRemoteTag(t) => git::delete_remote_tag(deps.runner, root, t),
       Undo::ForcePushBranch { branch, bump_sha, pre_sha } => git::force_push_with_lease(deps.runner, root, branch, bump_sha, pre_sha),
       Undo::DeleteGithubRelease(t) => {
@@ -219,6 +226,7 @@ mod tests {
       Undo::DeleteLocalTag("v2".into()),
       Undo::DeleteDevpi {
         url: "https://x/i/demo/2".into(),
+        index_name: "I".into(),
       },
       Undo::DeleteRemoteTag("v2".into()),
       Undo::ForcePushBranch {
@@ -232,6 +240,15 @@ mod tests {
     assert_eq!(failures.len(), 1);
     assert!(failures[0].what.contains("GitHub release"));
     assert!(failures[0].manual.contains("gh release delete v2 --yes --cleanup-tag"));
+    let devpi_manual = Undo::DeleteDevpi {
+      url: "https://x/i/demo/2".into(),
+      index_name: "SFTPyPI".into(),
+    }
+    .manual_command();
+    assert!(
+      devpi_manual.contains("$UV_INDEX_SFTPYPI_USERNAME:$UV_INDEX_SFTPYPI_PASSWORD"),
+      "{devpi_manual}"
+    );
     let git_calls = runner.calls_for("git");
     assert_eq!(
       git_calls[0],
