@@ -8,7 +8,7 @@ resolution-markers = [
 
 [[package]]
 name = "aeth-devkit"
-version = "7.0.2"
+version = "7.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "poethepoet" },

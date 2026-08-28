@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aeth-devkit"
-version = "7.0.2"
+version = "7.1.0"
 dependencies = [
  "aeth-devkit-lock",
  "aeth-devkit-release",
@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "aeth-devkit-core"
-version = "7.0.2"
+version = "7.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "aeth-devkit-lock"
-version = "7.0.2"
+version = "7.1.0"
 dependencies = [
  "aeth-devkit-core",
  "anyhow",
@@ -46,7 +46,7 @@ dependencies = [
 
 [[package]]
 name = "aeth-devkit-release"
-version = "7.0.2"
+version = "7.1.0"
 dependencies = [
  "aeth-devkit-core",
  "anyhow",
@@ -58,7 +58,7 @@ dependencies = [
 
 [[package]]
 name = "aeth-devkit-setup"
-version = "7.0.2"
+version = "7.1.0"
 dependencies = [
  "aeth-devkit-core",
  "anyhow",
