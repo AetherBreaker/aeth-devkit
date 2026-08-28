@@ -27,6 +27,8 @@ pub struct Snapshot {
   present: Vec<&'static str>,
   // File names (not paths) of the dist artefacts we copied.
   dist: Vec<String>,
+  // Whether `dist/` existed at all; `clear_dist` creates it, so restore must undo that.
+  had_dist: bool,
 }
 
 /// Wheels and sdists are the only things `uv build` writes to `dist/`; anything else in
@@ -78,6 +80,7 @@ pub fn take(root: &Path) -> Result<Snapshot> {
       present.push(rel);
     }
   }
+  let had_dist = root.join("dist").is_dir();
   std::fs::create_dir(dir.path().join("dist")).context("creating dist snapshot dir")?;
   let mut dist = Vec::new();
   for p in dist_artifacts(root)? {
@@ -86,7 +89,12 @@ pub fn take(root: &Path) -> Result<Snapshot> {
     std::fs::copy(&p, dir.path().join("dist").join(&name)).with_context(|| format!("snapshotting {name}"))?;
     dist.push(name);
   }
-  Ok(Snapshot { dir, present, dist })
+  Ok(Snapshot {
+    dir,
+    present,
+    dist,
+    had_dist,
+  })
 }
 
 impl Snapshot {
@@ -108,6 +116,21 @@ impl Snapshot {
     self.present.contains(&rel)
   }
 
+  /// A paste-able equivalent of [`restore`](Self::restore) for when it failed: delete what
+  /// did not exist before (managed files, built artefacts, `dist/` itself), then copy the
+  /// saved originals back. Uses the snapshot's own bookkeeping so it matches `restore`
+  /// step for step.
+  pub fn manual_restore_command(&self) -> String {
+    let mut rm: Vec<String> = TRACKED.iter().filter(|r| !self.present(r)).map(|r| r.to_string()).collect();
+    rm.push("dist/*.whl".into());
+    rm.push("dist/*.tar.gz".into());
+    let mut s = format!("rm -f {} && cp -r \"{}\"/. .", rm.join(" "), self.dir.path().display());
+    if !self.had_dist {
+      s += " && rmdir dist";
+    }
+    s
+  }
+
   /// Put everything back: tracked files copied over (or deleted if they were absent), and
   /// `dist/` cleared then refilled with the original artefacts.
   pub fn restore(&self, root: &Path) -> Result<()> {
@@ -123,6 +146,12 @@ impl Snapshot {
     for name in &self.dist {
       std::fs::copy(self.dir.path().join("dist").join(name), root.join("dist").join(name))
         .with_context(|| format!("restoring dist/{name}"))?;
+    }
+    // `clear_dist` created `dist/`; if the project had none, take it away again — but only
+    // if it is empty (`remove_dir` refuses otherwise), since anything else in there is not
+    // ours to delete.
+    if !self.had_dist {
+      let _ = std::fs::remove_dir(root.join("dist"));
     }
     Ok(())
   }
@@ -171,11 +200,21 @@ mod tests {
   }
 
   #[test]
-  fn take_works_without_dist_dir() {
+  fn restore_removes_a_dist_dir_that_did_not_exist_before() {
     let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), "pyproject.toml", "x");
-    let snap = take(dir.path()).unwrap();
-    snap.restore(dir.path()).unwrap();
-    assert!(dir.path().join("dist").is_dir());
+    let root = dir.path();
+    write(root, "pyproject.toml", "x");
+    let snap = take(root).unwrap();
+    // A release would create `dist/` and build into it.
+    clear_dist(root).unwrap();
+    write(root, "dist/new-1.0.whl", "w");
+    snap.restore(root).unwrap();
+    assert!(!root.join("dist").exists(), "dist/ must not be left behind");
+    let manual = snap.manual_restore_command();
+    assert!(
+      manual.contains("rm -f uv.lock Cargo.toml Cargo.lock dist/*.whl dist/*.tar.gz"),
+      "{manual}"
+    );
+    assert!(manual.ends_with("&& rmdir dist"), "{manual}");
   }
 }

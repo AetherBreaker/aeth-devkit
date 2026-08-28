@@ -98,37 +98,48 @@ struct TrackedBase {
   path: String,
   /// The committed bytes (`None` if `HEAD` has no such file).
   head: Option<Vec<u8>>,
-  /// The working-tree bytes before the run — the user's version, edits and all.
-  worktree: Vec<u8>,
+  /// The working-tree bytes before the run — the user's version, edits and all — or
+  /// `None` when the file was absent (deleted by the user, or never created yet).
+  worktree: Option<Vec<u8>>,
   /// The index entry before the run, and the bytes it points at (if any).
   index: IndexEntry,
   index_bytes: Option<Vec<u8>>,
 }
 
-/// Capture every existing release-managed file and, where it is dirty, put the `HEAD`
-/// version on disk so `uv version` / `uv lock` / the Cargo edit operate on clean input.
+/// Capture every release-managed file that exists on disk, in `HEAD`, or in the index, and
+/// where the working copy differs from `HEAD` (edited *or deleted*) put the `HEAD` version
+/// on disk so `uv version` / `uv lock` / the Cargo edit operate on clean input.
 ///
 /// The working tree is restored by the snapshot on failure; on success step 5 merges the
 /// user's edits back on top of the bumped content (`commit_release_edits`).
 fn stage_clean_base(root: &Path) -> Result<Vec<TrackedBase>> {
-  let paths: Vec<String> = TRACKED.iter().filter(|p| root.join(p).is_file()).map(|p| p.to_string()).collect();
+  let paths: Vec<String> = TRACKED.iter().map(|p| p.to_string()).collect();
   let entries = git::index_entries(root, &paths)?;
   let mut bases = Vec::with_capacity(paths.len());
   // `zip` pairs each path with its index entry; they were produced in the same order.
   for (path, index) in paths.into_iter().zip(entries) {
-    let worktree = std::fs::read(root.join(&path)).with_context(|| format!("reading {path}"))?;
+    let file = root.join(&path);
+    let worktree = if file.is_file() {
+      Some(std::fs::read(&file).with_context(|| format!("reading {path}"))?)
+    } else {
+      None
+    };
     let head = git::head_blob(root, &path)?;
+    if worktree.is_none() && head.is_none() && index.staged.is_none() {
+      continue; // the project simply does not have this file
+    }
     // `as_ref()` turns `&Option<(String, String)>` into `Option<&(String, String)>` so the
     // closure can borrow the sha without moving it out of the entry.
     let index_bytes = match index.staged.as_ref() {
       Some((_, sha)) => Some(git::blob_bytes(root, sha)?),
       None => None,
     };
-    // A let-chain (edition 2024): bind `h` *and* test it in one condition.
+    // A let-chain (edition 2024): bind `h` *and* test it in one condition. A deleted file
+    // (`worktree == None`) counts as "differs", and gets the HEAD copy back for the tools.
     if let Some(h) = &head
-      && *h != worktree
+      && worktree.as_deref() != Some(h.as_slice())
     {
-      std::fs::write(root.join(&path), h).with_context(|| format!("resetting {path} to HEAD for the bump"))?;
+      std::fs::write(&file, h).with_context(|| format!("resetting {path} to HEAD for the bump"))?;
     }
     bases.push(TrackedBase {
       path,
@@ -150,12 +161,23 @@ fn stage_clean_base(root: &Path) -> Result<Vec<TrackedBase>> {
 /// looks like "what the user had, plus the bump", and `git status` shows exactly the edits
 /// they had before. Overlapping edits (say, the user changed the version line) cannot be
 /// combined, and are an error — the caller rolls back.
-fn commit_release_edits(root: &Path, bases: &[TrackedBase], message: &str) -> Result<String> {
+///
+/// The `ResetCommit` undo is pushed onto `journal` the moment the commit exists, *before*
+/// the index and working tree are touched, so a failure in that last stretch still rolls
+/// the commit back.
+fn commit_release_edits(root: &Path, bases: &[TrackedBase], message: &str, pre_sha: &str, journal: &mut Vec<Undo>) -> Result<String> {
   let mut to_commit = Vec::new();
   let mut new_index = Vec::new();
-  let mut new_worktree = Vec::new();
+  // `Option<Vec<u8>>` per path: `None` means "the user had deleted it; delete it again".
+  let mut new_worktree: Vec<(String, Option<Vec<u8>>)> = Vec::new();
   for b in bases {
-    let bumped = std::fs::read(root.join(&b.path)).with_context(|| format!("reading {}", b.path))?;
+    let file = root.join(&b.path);
+    if !file.is_file() {
+      // Nothing regenerated it (a deleted lockfile the tools did not need): the commit
+      // keeps HEAD's version and the user's deletion stands.
+      continue;
+    }
+    let bumped = std::fs::read(&file).with_context(|| format!("reading {}", b.path))?;
     // Mode: keep the index's if it had one, else a plain file.
     let mode = b.index.staged.as_ref().map_or("100644", |(m, _)| m.as_str()).to_string();
     to_commit.push(IndexEntry {
@@ -182,24 +204,39 @@ fn commit_release_edits(root: &Path, bases: &[TrackedBase], message: &str) -> Re
         )
       })
     };
-    let worktree = replay(&b.worktree, "working-tree")?;
+    // The user's working copy: replay the bump onto it, or keep it deleted.
+    let worktree = match &b.worktree {
+      Some(bytes) => Some(replay(bytes, "working-tree")?),
+      None => None,
+    };
+    // The user's staged copy: replay onto it; a staged deletion (HEAD has the file, the
+    // index does not) stays a deletion.
     let index = match &b.index_bytes {
-      Some(bytes) => replay(bytes, "staged")?,
-      None => bumped.clone(),
+      Some(bytes) => Some((mode, git::hash_object(root, &replay(bytes, "staged")?)?)),
+      None => None,
     };
     new_index.push(IndexEntry {
       path: b.path.clone(),
-      staged: Some((mode, git::hash_object(root, &index)?)),
+      staged: index,
     });
     new_worktree.push((b.path.clone(), worktree));
   }
   // All merges succeeded before anything is mutated, so a conflict leaves no commit behind.
   let sha = git::commit_files_on_head(root, &to_commit, message)?;
+  journal.push(Undo::ResetCommit {
+    bump_sha: sha.clone(),
+    pre_sha: pre_sha.to_string(),
+    index: bases.iter().map(|b| b.index.clone()).collect(),
+  });
   for e in &new_index {
     git::set_index_entry(root, e)?;
   }
   for (path, bytes) in &new_worktree {
-    std::fs::write(root.join(path), bytes).with_context(|| format!("re-applying edits to {path}"))?;
+    let file = root.join(path);
+    match bytes {
+      Some(b) => std::fs::write(&file, b).with_context(|| format!("re-applying edits to {path}"))?,
+      None => std::fs::remove_file(&file).with_context(|| format!("re-deleting {path}"))?,
+    }
   }
   Ok(sha)
 }
@@ -276,7 +313,7 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
         bases.push(TrackedBase {
           path: p.to_string(),
           head: None,
-          worktree: Vec::new(),
+          worktree: None,
           index: IndexEntry {
             path: p.to_string(),
             staged: None,
@@ -285,16 +322,10 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
         });
       }
     }
-    // The undo needs the pre-run index entries; the commit needs everything else.
-    let pre_index: Vec<IndexEntry> = bases.iter().map(|b| b.index.clone()).collect();
-    // The sha is returned by the commit itself, so the push step can reuse it and no
-    // fallible call sits between mutating the remote and journaling its undo.
-    let sha = commit_release_edits(root, &bases, &format!("Bump version to {new}"))?;
-    journal.push(Undo::ResetCommit {
-      bump_sha: sha.clone(),
-      pre_sha: pre_sha.clone(),
-      index: pre_index,
-    });
+    // The sha is returned by the commit itself (which also journals its own undo), so the
+    // push step can reuse it and no fallible call sits between mutating the remote and
+    // journaling that undo either.
+    let sha = commit_release_edits(root, &bases, &format!("Bump version to {new}"), &pre_sha, journal)?;
     bump_sha = Some(sha);
   }
 

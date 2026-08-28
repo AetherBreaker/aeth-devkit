@@ -111,17 +111,38 @@ impl World {
     }
   }
 
-  /// Everything a rollback must restore, as one comparable value.
-  fn state(&self) -> (String, Option<String>, String, String, Vec<PathBuf>) {
+  /// Everything a rollback must restore, as one comparable value: `HEAD`, the tag, every
+  /// managed file (absent ones as `None`), the artefacts, whether `dist/` exists at all,
+  /// and the whole index (`git ls-files -s`, so staged blobs and modes are covered).
+  fn state(&self) -> State {
     let r = self.root();
-    (
-      git::head_sha(r).unwrap(),
-      git::tag_target(r, "v1.0.1").unwrap(),
-      std::fs::read_to_string(r.join("pyproject.toml")).unwrap(),
-      std::fs::read_to_string(r.join("Cargo.toml")).unwrap(),
-      aeth_devkit_release::snapshot::dist_artifacts(r).unwrap(),
-    )
+    let read = |rel: &str| std::fs::read_to_string(r.join(rel)).ok();
+    State {
+      head: git::head_sha(r).unwrap(),
+      tag: git::tag_target(r, "v1.0.1").unwrap(),
+      pyproject: read("pyproject.toml"),
+      uv_lock: read("uv.lock"),
+      cargo_toml: read("Cargo.toml"),
+      cargo_lock: read("Cargo.lock"),
+      dist: aeth_devkit_release::snapshot::dist_artifacts(r).unwrap(),
+      dist_dir_exists: r.join("dist").is_dir(),
+      index: git_out(r, &["ls-files", "-s"]),
+    }
   }
+}
+
+/// See [`World::state`]. `PartialEq` + `Debug` so `assert_eq!` can compare and print it.
+#[derive(Debug, PartialEq, Eq)]
+struct State {
+  head: String,
+  tag: Option<String>,
+  pyproject: Option<String>,
+  uv_lock: Option<String>,
+  cargo_toml: Option<String>,
+  cargo_lock: Option<String>,
+  dist: Vec<PathBuf>,
+  dist_dir_exists: bool,
+  index: String,
 }
 
 fn ok(c: ExitCode) -> bool {
@@ -160,10 +181,10 @@ fn bump_mode_happy_path() {
   let gh = w.runner.calls_for("gh");
   let create = gh.iter().find(|c| starts(c, &["release", "create"])).unwrap();
   assert!(create.contains(&"--generate-notes".to_string()));
-  let (head, tag, _py, cargo, _dist) = w.state();
-  assert_ne!(head, before);
-  assert_eq!(tag.as_deref(), Some(git::short_head(w.root()).unwrap().as_str()));
-  assert!(cargo.contains("version = \"1.0.1\""));
+  let st = w.state();
+  assert_ne!(st.head, before);
+  assert_eq!(st.tag.as_deref(), Some(git::short_head(w.root()).unwrap().as_str()));
+  assert!(st.cargo_toml.unwrap().contains("version = \"1.0.1\""));
   assert!(git::status_porcelain(w.root()).unwrap().is_empty());
 }
 
@@ -452,6 +473,35 @@ fn rollback_restores_user_edits_and_index_exactly() {
     std::fs::read_to_string(root.join("uv.lock")).unwrap(),
     "version = 1\n# staged by user\n"
   );
+}
+
+#[test]
+fn deleted_lockfile_is_regenerated_for_the_commit_but_stays_deleted_for_the_user() {
+  let w = World::new(&[]);
+  let root = w.root();
+  // The user deleted uv.lock (unstaged) and accepts the dirty tree with --force.
+  std::fs::remove_file(root.join("uv.lock")).unwrap();
+  let mut a = w.args(&["patch"]);
+  a.force = true;
+  assert!(ok(run(&a, &w.deps()).unwrap()));
+  // The commit still carries uv.lock (regenerated from HEAD by the scripted `uv lock`)…
+  assert_eq!(git_out(root, &["show", "HEAD:uv.lock"]), "version = 1");
+  // …while the user's working tree shows the same unstaged deletion it showed before.
+  assert!(!root.join("uv.lock").exists());
+  assert_eq!(git_out(root, &["diff", "--name-only"]), "uv.lock");
+  assert_eq!(git_out(root, &["diff", "--cached", "--name-only"]), "");
+}
+
+#[test]
+fn deleted_lockfile_rollback_is_exact() {
+  let w = World::new(&[]);
+  std::fs::remove_file(w.root().join("uv.lock")).unwrap();
+  let before = w.state();
+  w.runner.script("uv", &["publish"], 1, "");
+  let mut a = w.args(&["patch"]);
+  a.force = true;
+  assert!(!ok(run(&a, &w.deps()).unwrap()));
+  assert_eq!(w.state(), before);
 }
 
 #[test]
