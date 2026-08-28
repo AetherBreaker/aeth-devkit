@@ -18,7 +18,6 @@ use crate::Deps;
 use crate::config::Config;
 use crate::prompt::{Prompt, confirm_force};
 use crate::report::Existing;
-use crate::snapshot::TRACKED;
 
 /// What `gh release view` prints on stderr for a missing release. Any *other* non-zero
 /// exit (auth, network, wrong repo) is a real error, not "absent".
@@ -145,28 +144,17 @@ pub fn check_cargo_version(root: &Path, current: &str) -> Result<()> {
 
 /// Show uncommitted changes and require `force` (typed or flagged) to continue.
 ///
-/// The files the release itself rewrites are the exception: `--force` cannot accept edits
-/// to those, because step 5 `git add`s them and any pre-existing change would be swept
-/// into the bump commit — and then reset away on rollback.
+/// Edits to the files the release itself rewrites are fine too: step 5 builds the bump
+/// commit from clean `HEAD` content and re-applies the user's edits around it, so they are
+/// neither swept into the commit nor lost (see `steps::commit_release_edits`).
 pub fn confirm_dirty_tree(root: &Path, force: bool, prompt: &dyn Prompt) -> Result<()> {
   if git::status_porcelain(root)?.is_empty() {
     return Ok(());
   }
-  let mut dirty_tracked = Vec::new();
-  for rel in TRACKED {
-    if root.join(rel).is_file() && git::is_dirty(root, &[rel])? {
-      dirty_tracked.push(rel);
-    }
-  }
-  if !dirty_tracked.is_empty() {
-    bail!(
-      "{} {} uncommitted changes, and the release rewrites {}; commit or stash first (--force does not apply here)",
-      dirty_tracked.join(", "),
-      if dirty_tracked.len() == 1 { "has" } else { "have" },
-      if dirty_tracked.len() == 1 { "it" } else { "them" },
-    );
-  }
-  eprintln!("WARNING: You have uncommitted changes:\n{}", git::status_short(root)?);
+  eprintln!(
+    "WARNING: You have uncommitted changes (edits to the release-managed files are kept out of the bump commit):\n{}",
+    git::status_short(root)?
+  );
   if force {
     eprintln!("WARNING: Proceeding anyway (--force).");
     return Ok(());

@@ -389,19 +389,84 @@ fn gh_view_errors_other_than_not_found_abort_preflight() {
   assert!(w.runner.calls_for("uv").iter().all(|c| c[0] != "build"));
 }
 
-#[test]
-fn dirty_release_files_are_refused_even_with_force() {
+/// `git <args>` in the repo, stdout trimmed. For the assertions that need raw git.
+fn git_out(root: &Path, args: &[&str]) -> String {
+  let out = std::process::Command::new("git").args(args).current_dir(root).output().unwrap();
+  String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// The user has an unstaged note at the top of Cargo.toml and a staged edit in uv.lock,
+/// and runs with `--force`. Only the release's own change (the Cargo.toml version, since
+/// `uv` is scripted) may land in the bump commit; both edits must survive around it.
+fn dirty_release_files_world() -> World {
   let w = World::new(&[]);
-  std::fs::write(w.root().join("pyproject.toml"), format!("{PYPROJECT}# local edit\n")).unwrap();
+  let root = w.root();
+  std::fs::write(root.join("Cargo.toml"), format!("# user note\n{CARGO}")).unwrap();
+  std::fs::write(root.join("uv.lock"), "version = 1\n# staged by user\n").unwrap();
+  assert!(git_out(root, &["add", "uv.lock"]).is_empty());
+  w
+}
+
+#[test]
+fn user_edits_to_release_files_stay_out_of_the_bump_commit() {
+  let w = dirty_release_files_world();
+  let root = w.root();
+  let mut a = w.args(&["patch"]);
+  a.force = true;
+  assert!(ok(run(&a, &w.deps()).unwrap()));
+  // The commit: bumped version, no user note, uv.lock untouched.
+  let committed_cargo = git_out(root, &["show", "HEAD:Cargo.toml"]);
+  assert!(
+    committed_cargo.contains("version = \"1.0.1\"") && !committed_cargo.contains("user note"),
+    "{committed_cargo}"
+  );
+  assert_eq!(git_out(root, &["show", "HEAD:uv.lock"]), "version = 1");
+  // The working tree: the user's note *and* the bump.
+  let cargo = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+  assert!(
+    cargo.starts_with("# user note\n") && cargo.contains("version = \"1.0.1\""),
+    "{cargo}"
+  );
+  // `git status` shows exactly what the user had before: Cargo.toml unstaged, uv.lock staged.
+  assert_eq!(git_out(root, &["diff", "--cached", "--name-only"]), "uv.lock");
+  assert_eq!(git_out(root, &["diff", "--name-only"]), "Cargo.toml");
+  assert_eq!(
+    std::fs::read_to_string(root.join("uv.lock")).unwrap(),
+    "version = 1\n# staged by user\n"
+  );
+}
+
+#[test]
+fn rollback_restores_user_edits_and_index_exactly() {
+  let w = dirty_release_files_world();
+  let root = w.root();
+  let before = w.state();
+  let staged_before = git_out(root, &["ls-files", "-s"]);
+  w.runner.script("uv", &["publish"], 1, "");
+  let mut a = w.args(&["patch"]);
+  a.force = true;
+  assert!(!ok(run(&a, &w.deps()).unwrap()));
+  assert_eq!(w.state(), before);
+  assert_eq!(git_out(root, &["ls-files", "-s"]), staged_before, "index must be byte-identical");
+  assert_eq!(
+    std::fs::read_to_string(root.join("uv.lock")).unwrap(),
+    "version = 1\n# staged by user\n"
+  );
+}
+
+#[test]
+fn overlapping_user_edit_is_an_error_and_rolls_back() {
+  let w = World::new(&[]);
+  let root = w.root();
+  // The user changed the very line the bump rewrites (same version value, so the
+  // Cargo/pyproject pre-flight check still passes; a trailing comment on that line).
+  std::fs::write(root.join("Cargo.toml"), CARGO.replace("\"1.0.0\"", "\"1.0.0\" # pinned")).unwrap();
   let before = w.state();
   let mut a = w.args(&["patch"]);
   a.force = true;
-  // Refusals from the dirty-tree check are a normal exit 1 (printed, not `Err`), same as
-  // a declined prompt.
   assert!(!ok(run(&a, &w.deps()).unwrap()));
   assert_eq!(w.state(), before);
-  assert!(w.prompt.asked.borrow().is_empty());
-  assert!(w.runner.calls_for("uv").iter().all(|c| c[0] != "build"));
+  assert!(w.runner.calls_for("uv").iter().all(|c| c[0] != "publish"));
 }
 
 #[test]
