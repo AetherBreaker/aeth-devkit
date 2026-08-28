@@ -11,13 +11,29 @@
 
 [dependency-groups]
   dev = [
-    "pyright>=1.1.411",
     "poethepoet>=0.46.0",
-  ] # setup-project added: "poethepoet>=0.46.0"
+    "pyright>=1.1.411",
+  ]                        # setup-project added: "poethepoet>=0.46.0"
 
 [build-system]
   requires      = ["maturin>=1.7,<2"]
   build-backend = "maturin"
+
+[tool.coverage.run]
+  data_file   = ".cache/.coverage"
+  source_pkgs = ["aeth_devkit"]
+
+[tool.coverage.report]
+  show_missing = true
+
+[tool.coverage.html]
+  directory = ".cache/htmlcov"
+
+[tool.coverage.xml]
+  output = ".cache/coverage.xml"
+
+[tool.coverage.lcov]
+  output = ".cache/coverage.lcov"
 
 [tool.maturin]
   bindings      = "bin"
@@ -26,7 +42,9 @@
   python-source = "python"
 
 [tool.poe]
-  include_script = [{ script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }]
+  include_script = [
+    { script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }
+  ]
 
 [tool.pyright]
   verboseOutput          = true
@@ -60,9 +78,21 @@
 
   executionEnvironments = [{ root = "python", extraPaths = ["python"] }]
 
-[tool.ruff]
+[tool.pytest.ini_options]
+  addopts      = [
+    "--cov",
+    "--cov-report=term-missing",
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+  ]
+  cache_dir    = ".cache/pytest"
+  testpaths    = ["tests"]
+  xfail_strict = true
+  asyncio_mode = "auto"
 
-  src = ["./python"]
+[tool.ruff]
+  src       = ["./python"]
   cache-dir = ".cache/ruff"
 
   exclude = [
@@ -139,41 +169,6 @@
         standard-library = "Standard library imports"
         third-party      = "Third party imports"
 
-[[tool.uv.index]]
-  name        = "SFTPyPI"
-  url         = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple"
-  publish-url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/"
-  explicit    = true
-
-[tool.coverage.run]
-  data_file   = ".cache/.coverage"
-  source_pkgs = ["aeth_devkit"]
-
-[tool.coverage.report]
-  show_missing = true
-
-[tool.coverage.html]
-  directory = ".cache/htmlcov"
-
-[tool.coverage.xml]
-  output = ".cache/coverage.xml"
-
-[tool.coverage.lcov]
-  output = ".cache/coverage.lcov"
-
-[tool.pytest.ini_options]
-  addopts      = [
-    "--cov",
-    "--cov-report=term-missing",
-    "--strict-markers",
-    "--strict-config",
-    "-ra",
-  ]
-  cache_dir    = ".cache/pytest"
-  testpaths    = ["tests"]
-  xfail_strict = true
-  asyncio_mode = "auto"
-
 [tool.tombi]
   toml-version = "v1.1.0"
 
@@ -206,3 +201,9 @@
     indent-table-key-value-pairs    = true
     key-value-equals-sign-alignment = true
     trailing-comment-alignment      = true
+
+[[tool.uv.index]]
+  name        = "SFTPyPI"
+  url         = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple"
+  publish-url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/"
+  explicit    = true
