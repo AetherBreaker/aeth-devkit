@@ -36,7 +36,12 @@ pub enum Undo {
     url: String,
     index_name: String,
   },
-  DeleteRemoteTag(String),
+  /// Delete `refs/tags/<tag>` on `origin`, guarded by a lease on `expected` (the tag
+  /// object this release created) so a concurrently replaced tag is refused, not deleted.
+  DeleteRemoteTag {
+    tag: String,
+    expected: String,
+  },
   /// Rewind `origin/<branch>` to `pre_sha`, guarded by a lease on `bump_sha`.
   ForcePushBranch {
     branch: String,
@@ -63,7 +68,7 @@ impl Undo {
       Undo::ResetCommit { .. } => "Resetting the version-bump commit".into(),
       Undo::DeleteLocalTag(t) => format!("Deleting local tag {t}"),
       Undo::DeleteDevpi { url, .. } => format!("Removing {url} from the index"),
-      Undo::DeleteRemoteTag(t) => format!("Deleting remote tag {t}"),
+      Undo::DeleteRemoteTag { tag, .. } => format!("Deleting remote tag {tag}"),
       Undo::ForcePushBranch { branch, .. } => format!("Force-pushing the pre-release {branch} to origin"),
       Undo::DeleteGithubRelease(t) => format!("Deleting GitHub release {t}"),
     }
@@ -93,7 +98,11 @@ impl Undo {
         let (user_var, pass_var) = crate::config::env_var_names(index_name);
         format!("curl -u \"${user_var}:${pass_var}\" -X DELETE {url}")
       }
-      Undo::DeleteRemoteTag(t) => format!("git push origin --delete {t}"),
+      // The same lease `apply` uses, so even the hand-run command cannot delete a tag
+      // that is no longer the one this release created.
+      Undo::DeleteRemoteTag { tag, expected } => {
+        format!("git push --force-with-lease=refs/tags/{tag}:{expected} origin :refs/tags/{tag}")
+      }
       Undo::ForcePushBranch { branch, bump_sha, pre_sha } => {
         format!("git push --force-with-lease={branch}:{bump_sha} origin {pre_sha}:refs/heads/{branch}")
       }
@@ -122,7 +131,7 @@ impl Undo {
       Undo::DeleteLocalTag(t) => git::delete_tag(root, t),
       // `.map(|_| ())` throws away the `DeleteOutcome`: gone is gone, either way.
       Undo::DeleteDevpi { url, .. } => deps.devpi.delete(url, &cfg.username, &cfg.password).map(|_| ()),
-      Undo::DeleteRemoteTag(t) => git::delete_remote_tag(deps.runner, root, t),
+      Undo::DeleteRemoteTag { tag, expected } => git::delete_remote_tag_leased(deps.runner, root, tag, expected),
       Undo::ForcePushBranch { branch, bump_sha, pre_sha } => git::force_push_with_lease(deps.runner, root, branch, bump_sha, pre_sha),
       Undo::DeleteGithubRelease(t) => {
         let args: Vec<String> = ["release", "delete", t, "--yes", "--cleanup-tag"]
@@ -212,6 +221,7 @@ mod tests {
     git::commit_paths(root, &["pyproject.toml".into()], "bump").unwrap();
     let bump = git::head_sha(root).unwrap();
     git::create_annotated_tag(root, "v2", "Version 2").unwrap();
+    let tag_sha = git::tag_object_sha(root, "v2").unwrap();
 
     let runner = RecordingRunner::new(0);
     // The GitHub delete is scripted to fail: it must be reported but not stop the rest.
@@ -239,7 +249,10 @@ mod tests {
         url: "https://x/i/demo/2".into(),
         index_name: "I".into(),
       },
-      Undo::DeleteRemoteTag("v2".into()),
+      Undo::DeleteRemoteTag {
+        tag: "v2".into(),
+        expected: tag_sha.clone(),
+      },
       Undo::ForcePushBranch {
         branch: "main".into(),
         bump_sha: bump.clone(),
@@ -270,7 +283,15 @@ mod tests {
         &format!("{pre}:refs/heads/main")
       ]
     );
-    assert_eq!(git_calls[1], vec!["push", "origin", "--delete", "v2"]);
+    assert_eq!(
+      git_calls[1],
+      vec![
+        "push".to_string(),
+        format!("--force-with-lease=refs/tags/v2:{tag_sha}"),
+        "origin".into(),
+        ":refs/tags/v2".into()
+      ]
+    );
     assert_eq!(*devpi.calls.borrow(), vec!["DELETE https://x/i/demo/2"]);
     assert_eq!(git::tag_target(root, "v2").unwrap(), None);
     assert_eq!(git::head_sha(root).unwrap(), pre);

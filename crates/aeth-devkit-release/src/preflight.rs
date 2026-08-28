@@ -142,6 +142,47 @@ pub fn check_cargo_version(root: &Path, current: &str) -> Result<()> {
   }
 }
 
+/// Release-critical configuration must come from *committed* state; refuse otherwise.
+///
+/// `cfg` was resolved from the working tree's `pyproject.toml`, but a bump release builds
+/// from `HEAD`'s copy of that file. An uncommitted edit to `[project].name` or the publish
+/// index would therefore build and upload one thing while `cfg` (the publish target, the
+/// devpi URLs, the rollback compensations) says another — the release could publish to, or
+/// later delete, the wrong place. Rather than silently prefer either copy, require the
+/// two to agree: all values a release depends on must be committed first.
+pub fn check_config_committed(root: &Path, cfg: &Config, index: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Result<()> {
+  let Some(bytes) = git::head_blob(root, "pyproject.toml")? else {
+    bail!("pyproject.toml is not committed; commit it before releasing");
+  };
+  let text = String::from_utf8(bytes).context("committed pyproject.toml is not valid UTF-8")?;
+  let doc: DocumentMut = text.parse().context("parsing the committed pyproject.toml (HEAD)")?;
+  // Re-run the exact resolution `run` did on the worktree copy. A committed file this
+  // fails on (missing name, missing publish-url) means the required values exist only as
+  // uncommitted edits — the case that must refuse.
+  let committed =
+    crate::config::resolve(&doc, index, env).context("resolving release configuration from the committed pyproject.toml (HEAD)")?;
+  // Credentials come from the environment, not the file, so only the file-borne values
+  // can disagree between the two copies.
+  let mut differ = Vec::new();
+  if committed.package != cfg.package {
+    differ.push("the project name");
+  }
+  if committed.index_name != cfg.index_name {
+    differ.push("the publish index");
+  }
+  if committed.publish_url != cfg.publish_url {
+    differ.push("the index publish-url");
+  }
+  if differ.is_empty() {
+    Ok(())
+  } else {
+    bail!(
+      "uncommitted pyproject.toml edits change {}; the release would build from the committed values but publish and roll back with the edited ones — commit or revert those edits first",
+      differ.join(", ")
+    )
+  }
+}
+
 /// Refuse if any release-managed file is mid merge-conflict. Unlike a merely dirty tree
 /// (which the release works around and `--force` may wave through), unmerged index entries
 /// have no automatic resolution — three competing versions of the file exist and only the

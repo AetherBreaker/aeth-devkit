@@ -85,8 +85,13 @@ tasks.add(
       "poe release-and-pin minor 'first minor release'"
     ),
     "envfile": ".env",
+    # `devkit release --dry-run` prints its plan and exits 0, so a bare `&&` would still
+    # run the pin script and edit the compose file. The `case` guard keeps a dry run dry:
+    # if --dry-run is among the forwarded args, skip the pin step entirely.
     "shell": (
-      f'devkit release $POE_EXTRA_ARGS && bash "{_script_path("docker-pin-latest.sh")}" "$(uv version --short)"'
+      f'devkit release $POE_EXTRA_ARGS && case " $POE_EXTRA_ARGS " in *" --dry-run "*) '
+      f'echo "Dry run: skipping docker pin." ;; *) '
+      f'bash "{_script_path("docker-pin-latest.sh")}" "$(uv version --short)" ;; esac'
     ),
     "interpreter": "bash",
   },

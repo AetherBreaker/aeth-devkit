@@ -255,7 +255,12 @@ fn github_failure_unwinds_everything_with_lease() {
       .iter()
       .any(|c| c[0] == "push" && c[1].starts_with("--force-with-lease=main:"))
   );
-  assert!(git_calls.contains(&vec!["push".to_string(), "origin".into(), "--delete".into(), "v1.0.1".into()]));
+  // The remote tag is deleted with a lease on the tag object this run created, so only
+  // *our* tag can be the one removed.
+  assert!(git_calls.iter().any(|c| c.len() == 4
+    && c[0] == "push"
+    && c[1].starts_with("--force-with-lease=refs/tags/v1.0.1:")
+    && c[3] == ":refs/tags/v1.0.1"));
   // The GitHub release was never created, so nothing tries to delete it.
   assert!(w.runner.calls_for("gh").iter().all(|c| !starts(c, &["release", "delete"])));
 }
@@ -581,11 +586,11 @@ fn unmerged_managed_file_is_refused_before_anything() {
 }
 
 #[test]
-fn ambiguous_push_failure_probes_and_compensates_what_landed() {
-  // The push reports failure, but the remote actually applied it and only the response
-  // was lost: the post-failure probe finds refs/tags/v1.0.1 on the remote. (The same
-  // script answers the pre-flight probe, so the run first reports the "leaked" tag and
-  // removes it — hence the scripted "force" answer.)
+fn ambiguous_push_failure_leaves_foreign_refs_alone() {
+  // The push fails, and a same-named tag exists on the remote — but its object id ("abc")
+  // is not the tag object this run created: it belongs to a concurrent publisher, and the
+  // rollback must leave it. (The same script answers the pre-flight probe, so the run
+  // first reports the "leaked" tag and removes it with consent — hence the "force".)
   let w = World::new(&["force"]);
   let before = w.state();
   w.runner.script("git", &["push", "--atomic"], 1, "");
@@ -598,18 +603,85 @@ fn ambiguous_push_failure_probes_and_compensates_what_landed() {
   assert!(!ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
   assert_eq!(w.state(), before);
   let git_calls = w.runner.calls_for("git");
-  // Two deletes: pre-flight removing the scripted "existing" tag, then the rollback
-  // compensating for the tag the failed-but-landed push left behind.
+  // Exactly one delete: pre-flight's consented removal (plain `--delete`). The rollback
+  // journals no tag compensation, because the probed object id is not ours.
   assert_eq!(
     git_calls
       .iter()
       .filter(|c| starts(c, &["push", "origin", "--delete", "v1.0.1"]))
       .count(),
-    2
+    1
   );
-  // The branch probe (the broad `ls-remote` script answers "") saw no bump sha on the
-  // remote, so the rollback must not force-push someone's branch on a hunch.
+  // No leased deletes and no branch rewind either: the branch probe (the broad
+  // `ls-remote` script answers "") saw no bump sha on the remote.
   assert!(git_calls.iter().all(|c| !c.iter().any(|arg| arg.starts_with("--force-with-lease"))));
+}
+
+/// A devpi holding this version with a file this run never built — a concurrent
+/// publisher's release. `exists` answers `false` for the pre-flight probe, modelling the
+/// concurrent upload landing *between* pre-flight and our failed publish.
+struct ForeignDevpi {
+  calls: std::cell::RefCell<Vec<String>>,
+}
+
+impl DevpiClient for ForeignDevpi {
+  fn exists(&self, url: &str, _u: &str, _p: &str) -> anyhow::Result<bool> {
+    self.calls.borrow_mut().push(format!("GET {url}"));
+    Ok(false)
+  }
+  fn delete(&self, url: &str, _u: &str, _p: &str) -> anyhow::Result<DeleteOutcome> {
+    self.calls.borrow_mut().push(format!("DELETE {url}"));
+    Ok(DeleteOutcome::Deleted)
+  }
+  fn files(&self, _url: &str, _u: &str, _p: &str) -> anyhow::Result<Option<Vec<(String, String)>>> {
+    Ok(Some(vec![("demo-1.0.1-py3-none-any.whl".into(), "https://x/f.whl".into())]))
+  }
+  fn fetch(&self, _href: &str, _u: &str, _p: &str) -> anyhow::Result<Vec<u8>> {
+    Ok(b"someone else's wheel".to_vec())
+  }
+}
+
+#[test]
+fn foreign_devpi_version_is_not_deleted_on_rollback() {
+  let w = World::new(&[]);
+  let devpi = ForeignDevpi {
+    calls: std::cell::RefCell::new(Vec::new()),
+  };
+  let deps = Deps {
+    runner: &w.runner,
+    devpi: &devpi,
+    prompt: &w.prompt,
+    env: &env,
+    interrupted: &w.flag,
+  };
+  let before = w.state();
+  w.runner.script("uv", &["publish"], 1, "");
+  assert!(!ok(run(&w.args(&["patch"]), &deps).unwrap()));
+  assert_eq!(w.state(), before);
+  // Everything local was rolled back, but the foreign index version was left alone.
+  assert!(
+    devpi.calls.borrow().iter().all(|c| !c.starts_with("DELETE")),
+    "{:?}",
+    devpi.calls.borrow()
+  );
+}
+
+#[test]
+fn uncommitted_config_edit_is_refused() {
+  let w = World::new(&[]);
+  let root = w.root();
+  // The user edited [project].name and did not commit. The release would build from the
+  // committed name but publish (and roll back) under the edited one, so it must refuse —
+  // even under --force.
+  std::fs::write(root.join("pyproject.toml"), PYPROJECT.replace("\"demo\"", "\"other\"")).unwrap();
+  let before = w.state();
+  let mut a = w.args(&["patch"]);
+  a.force = true;
+  let err = run(&a, &w.deps()).unwrap_err().to_string();
+  assert!(err.contains("project name"), "{err}");
+  assert_eq!(w.state(), before);
+  // Refused before pre-flight ever asked uv anything beyond the tool check.
+  assert!(w.runner.calls_for("uv").iter().all(|c| c[0] == "--version"));
 }
 
 #[test]
