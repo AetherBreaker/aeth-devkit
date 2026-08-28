@@ -74,11 +74,9 @@ impl Undo {
     match self {
       // `git checkout` would restore `HEAD`, not the pre-run tree (which may have held
       // accepted dirty changes, and `dist/` is not tracked at all). The snapshot directory
-      // is the real pre-run state; `unwind` keeps it on disk when this undo fails.
-      Undo::RestoreFiles(snap) => format!(
-        "cp -r \"{}\"/. .   # pre-run copies of pyproject.toml, uv.lock, Cargo.toml, Cargo.lock, dist/",
-        snap.path().display()
-      ),
+      // is the real pre-run state; `unwind` keeps it on disk when this undo fails, and the
+      // snapshot renders the exact delete-then-copy sequence `restore` would have done.
+      Undo::RestoreFiles(snap) => snap.manual_restore_command(),
       Undo::ResetCommit { pre_sha, index, .. } => {
         let mut s = format!("git reset --soft {pre_sha}");
         for e in index {
