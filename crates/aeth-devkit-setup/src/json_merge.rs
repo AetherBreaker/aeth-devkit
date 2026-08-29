@@ -276,3 +276,165 @@ mod tests {
     assert!(out.starts_with("{\n    // hello\n    \"a\": 1,\n    \"b\": 2\n}"), "{out}");
   }
 }
+
+/// Merge the `hooks` object of `.claude/settings.json`: groups keyed by `matcher`, entries
+/// within a group keyed by the `hook <name>` token in the command.
+pub fn merge_hooks(target: &mut Value, template: &Value, log: &mut Vec<String>) {
+  let Some(tmpl) = template.as_object() else { return };
+  if !target.is_object() {
+    *target = Value::Object(Map::new());
+  }
+  let tobj = target.as_object_mut().unwrap();
+  for (event, groups) in tmpl {
+    let Some(groups) = groups.as_array() else { continue };
+    let existing = tobj.entry(event.clone()).or_insert_with(|| Value::Array(Vec::new()));
+    // A hand-written non-array here is the user's problem to notice; never clobber it.
+    let Some(arr) = existing.as_array_mut() else { continue };
+    for group in groups {
+      // `matcher` is absent for events like Stop; `Option<&Value>` equality treats two
+      // absences as equal, which is exactly "the one group with no matcher".
+      let matcher = group.get("matcher");
+      let Some(existing_group) = arr.iter_mut().find(|g| g.get("matcher") == matcher) else {
+        arr.push(group.clone());
+        log.push(format!(
+          "hooks.{event}: added {}",
+          matcher.and_then(Value::as_str).unwrap_or("group")
+        ));
+        continue;
+      };
+      let Some(entries) = group.get("hooks").and_then(Value::as_array) else {
+        continue;
+      };
+      let hooks = existing_group
+        .as_object_mut()
+        .map(|g| g.entry("hooks").or_insert_with(|| Value::Array(Vec::new())));
+      let Some(hooks) = hooks.and_then(Value::as_array_mut) else {
+        continue;
+      };
+      for entry in entries {
+        // Only entries carrying a `hook <name>` token are ours to manage.
+        let Some(key) = hook_key(entry) else { continue };
+        match hooks.iter_mut().find(|e| hook_key(e) == Some(key)) {
+          Some(e) if e == entry => {}
+          Some(e) => {
+            *e = entry.clone();
+            log.push(format!("hooks.{event}: updated {key}"));
+          }
+          None => {
+            hooks.push(entry.clone());
+            log.push(format!("hooks.{event}: added {key}"));
+          }
+        }
+      }
+    }
+  }
+}
+
+/// The `<name>` in a `… hook <name> …` command, which identifies a devkit-owned entry
+/// regardless of which binary path precedes it.
+fn hook_key(entry: &Value) -> Option<&str> {
+  let (_, rest) = entry.get("command")?.as_str()?.split_once(" hook ")?;
+  rest.split_whitespace().next()
+}
+
+/// `.claude/settings.json`: `hooks` via [`merge_hooks`], everything else via [`deep_merge`].
+pub fn merge_claude_settings(original: Option<&str>, template: &str, log: &mut Vec<String>) -> Result<String> {
+  let mut tpl = parse(template)?;
+  let Some(original) = original else {
+    log.push("created from template".into());
+    return render(&tpl, &header_comments(template), None);
+  };
+  let mut doc = parse(original)?;
+  // Pull `hooks` out so `deep_merge` (whole-value array union, which would duplicate a
+  // hand-edited hook) never sees it.
+  let hooks = tpl.as_object_mut().and_then(|t| t.remove("hooks"));
+  deep_merge(&mut doc, &tpl, "", log);
+  if let Some(hooks) = hooks {
+    let target = doc
+      .as_object_mut()
+      .context("settings.json root is not an object")?
+      .entry("hooks")
+      .or_insert_with(|| Value::Object(Map::new()));
+    merge_hooks(target, &hooks, log);
+  }
+  if log.is_empty() {
+    return Ok(original.to_string());
+  }
+  render(&doc, &header_comments(original), Some(original))
+}
+
+#[cfg(test)]
+mod hooks_tests {
+  use super::*;
+  use serde_json::json;
+
+  fn tpl() -> Value {
+    json!({
+      "PreToolUse": [
+        {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "\"$D/devkit\" hook pre-edit-protect", "shell": "bash"}]}
+      ],
+      "Stop": [
+        {"hooks": [
+          {"type": "command", "command": "\"$D/devkit\" hook stop-ruff", "shell": "bash", "timeout": 30},
+          {"type": "command", "command": "\"$D/devkit\" hook stop-pyright", "shell": "bash", "timeout": 60}
+        ]}
+      ]
+    })
+  }
+
+  #[test]
+  fn fresh_insert_copies_the_template() {
+    let mut target = json!({});
+    let mut log = vec![];
+    merge_hooks(&mut target, &tpl(), &mut log);
+    assert_eq!(target, tpl());
+    assert!(!log.is_empty());
+  }
+
+  #[test]
+  fn second_merge_is_a_no_op() {
+    let mut target = tpl();
+    let mut log = vec![];
+    merge_hooks(&mut target, &tpl(), &mut log);
+    assert_eq!(target, tpl());
+    assert!(log.is_empty(), "{log:?}");
+  }
+
+  #[test]
+  fn hand_edited_entry_is_updated_in_place_not_duplicated() {
+    let mut target = tpl();
+    target["Stop"][0]["hooks"][0]["timeout"] = json!(99);
+    target["Stop"][0]["hooks"][0]["command"] = json!("python old/stop_ruff.py hook stop-ruff");
+    let mut log = vec![];
+    merge_hooks(&mut target, &tpl(), &mut log);
+    assert_eq!(target["Stop"][0]["hooks"].as_array().unwrap().len(), 2);
+    assert_eq!(target["Stop"][0]["hooks"][0]["timeout"], 30);
+    assert_eq!(target["Stop"][0]["hooks"][0]["command"], "\"$D/devkit\" hook stop-ruff");
+    assert!(log.iter().any(|l| l.contains("stop-ruff")), "{log:?}");
+  }
+
+  #[test]
+  fn hand_written_hooks_survive_and_template_entries_are_added_alongside() {
+    let mine = json!({"type": "command", "command": "echo mine"});
+    let mut target = json!({"Stop": [{"hooks": [mine.clone()]}], "SessionStart": [{"hooks": [mine.clone()]}]});
+    let mut log = vec![];
+    merge_hooks(&mut target, &tpl(), &mut log);
+    let stop = target["Stop"][0]["hooks"].as_array().unwrap();
+    assert_eq!(stop.len(), 3);
+    assert_eq!(stop[0], mine);
+    assert_eq!(target["SessionStart"], json!([{"hooks": [mine]}]));
+    assert_eq!(target["PreToolUse"], tpl()["PreToolUse"]);
+  }
+
+  #[test]
+  fn claude_settings_merges_hooks_by_key_and_the_rest_deeply() {
+    let template = r#"{"permissions": {"allow": ["WebSearch"]}, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "devkit hook stop-ruff", "timeout": 30}]}]}}"#;
+    let original = r#"{"permissions": {"allow": ["Bash(git diff *)"]}, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "devkit hook stop-ruff", "timeout": 99}]}]}}"#;
+    let mut log = vec![];
+    let out = merge_claude_settings(Some(original), template, &mut log).unwrap();
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["permissions"]["allow"], json!(["Bash(git diff *)", "WebSearch"]));
+    assert_eq!(v["hooks"]["Stop"][0]["hooks"].as_array().unwrap().len(), 1, "{out}");
+    assert_eq!(v["hooks"]["Stop"][0]["hooks"][0]["timeout"], 30);
+  }
+}

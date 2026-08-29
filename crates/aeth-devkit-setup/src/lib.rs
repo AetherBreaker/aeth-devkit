@@ -130,6 +130,42 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
     changes.record_optional(&path, original.as_deref(), &merged, log)?;
   }
 
+  // 10. Create-if-missing files: `.claude/CLAUDE.md` (the project's hook for Claude-only
+  //     text; the shared content is one `@../AGENTS.md` import away) and the Claude GitHub
+  //     workflow (a project may have customized it; a routine run must not revert that).
+  for (rel, template_name) in [
+    (".claude/CLAUDE.md", "claude/CLAUDE.md"),
+    (".github/workflows/claude.yml", "github/workflows/claude.yml"),
+  ] {
+    let path = ctx.root.join(rel);
+    if path.is_file() {
+      continue;
+    }
+    let template = templates::load(templates_dir, template_name, &ctx, templates::Escape::None)?;
+    changes.record_optional(&path, None, &template, vec!["created from template".into()])?;
+  }
+
+  // 11. .claude/settings.json — deep merge, except `hooks`, which merges by hook name so a
+  //     hand-edited entry is updated in place rather than duplicated.
+  {
+    let path = ctx.root.join(".claude").join("settings.json");
+    let template = templates::load(templates_dir, "claude/settings.json", &ctx, templates::Escape::Json)?;
+    let original = read_optional(&path)?;
+    let mut log = Vec::new();
+    let merged = json_merge::merge_claude_settings(original.as_deref(), &template, &mut log)?;
+    changes.record_optional(&path, original.as_deref(), &merged, log)?;
+  }
+
+  // 12. .mcp.json — deep merge.
+  {
+    let path = ctx.root.join(".mcp.json");
+    let template = templates::load(templates_dir, ".mcp.json", &ctx, templates::Escape::Json)?;
+    let original = read_optional(&path)?;
+    let mut log = Vec::new();
+    let merged = json_merge::merge_json_file(original.as_deref(), &template, &mut log)?;
+    changes.record_optional(&path, original.as_deref(), &merged, log)?;
+  }
+
   Ok(changes)
 }
 
