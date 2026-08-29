@@ -434,6 +434,17 @@ mod hooks_tests {
   }
 
   #[test]
+  fn a_users_own_hook_script_is_not_claimed_by_the_fallback() {
+    let mine = json!({"type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_custom_check.py\"", "timeout": 5});
+    let mut target = json!({"Stop": [{"hooks": [mine.clone()]}]});
+    let mut log = vec![];
+    merge_hooks(&mut target, &tpl(), &mut log);
+    let stop = target["Stop"][0]["hooks"].as_array().unwrap();
+    assert_eq!(stop[0], mine, "a non-devkit hook script must survive untouched");
+    assert_eq!(stop.len(), 3, "template entries added alongside it: {stop:?}");
+  }
+
+  #[test]
   fn legacy_python_hook_entries_are_replaced_not_duplicated() {
     // The fleet's pre-devkit wiring: `python "$CLAUDE_PROJECT_DIR/.claude/hooks/stop_ruff.py"`.
     let mut target = json!({"Stop": [{"hooks": [
