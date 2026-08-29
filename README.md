@@ -11,6 +11,7 @@ plus the `devkit` CLI (Rust) they call.
 | `poe lock [-U] [--all-extras] [-p PKG] [--dry-run] [--no-commit]` | `devkit lock` | Bump the `aeth-devkit` pin to the latest stable release on its index, `uv sync`, commit `uv.lock`. |
 | `poe release [-f] [--dry-run] [bump …] ["notes"]` | `devkit release` | Bump version, build, tag, publish to the index and GitHub; rolls back on failure. |
 | `poe docker-pin-latest` | `scripts/docker-pin-latest.sh` | Pin the compose file's package version. |
+| — | `devkit complete` | Shell completion for `poe` served from Rust (~13 ms per Tab instead of ~200 ms). `devkit complete script --powershell \| Out-String \| Invoke-Expression` in `$PROFILE`, or `source <(devkit complete script --bash)`. |
 | `poe rescind-release` | `scripts/rescind-release.sh` | Undo a release. |
 
 `devkit --help` lists the Rust subcommands. Each lives in its own crate under `crates/`;

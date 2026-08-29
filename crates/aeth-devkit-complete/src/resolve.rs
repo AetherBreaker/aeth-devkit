@@ -83,7 +83,9 @@ pub fn resolve(root: &Path, runner: &dyn Runner) -> Result<Resolved> {
 /// Append every task under `poe["tasks"]` not yet seen. Hidden `_`-prefixed tasks are
 /// skipped the way `poe _list_tasks` skips them.
 fn add_tasks(tasks: &mut Vec<Task>, poe: &Value, seen: &mut HashSet<String>) {
-  let Some(table) = poe.get("tasks").and_then(Value::as_object) else { return };
+  let Some(table) = poe.get("tasks").and_then(Value::as_object) else {
+    return;
+  };
   for (name, def) in table {
     if name.is_empty() || name.starts_with('_') || !seen.insert(name.clone()) {
       continue;
@@ -105,7 +107,10 @@ fn normalize_args(args: &Value) -> Vec<TaskArg> {
     let (options, kind) = match &positional {
       // `positional = "WHERE"` names the placeholder; `positional = true` uses the name.
       Value::String(s) => (vec![s.clone()], "positional".to_string()),
-      Value::Bool(true) => (vec![if stripped.is_empty() { name } else { stripped }.to_string()], "positional".to_string()),
+      Value::Bool(true) => (
+        vec![if stripped.is_empty() { name } else { stripped }.to_string()],
+        "positional".to_string(),
+      ),
       _ => {
         let options = match params.get("options").and_then(Value::as_array) {
           Some(a) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
@@ -179,7 +184,9 @@ fn load_include(
   seen: &mut HashSet<String>,
   ancestors: &mut HashSet<PathBuf>,
 ) {
-  let Some(rel) = item.get("path").and_then(Value::as_str) else { return };
+  let Some(rel) = item.get("path").and_then(Value::as_str) else {
+    return;
+  };
   // `${POE_ROOT}` and `${POE_CONF_DIR}` are the two path variables poe expands here.
   let rel = rel
     .replace("${POE_ROOT}", &root.to_string_lossy())
@@ -247,7 +254,11 @@ fn run_include_script(root: &Path, item: &Value, runner: &dyn Runner) -> Option<
   let spec = item.get("script")?.as_str()?;
   let (module, call) = spec.split_once(':')?;
   // `pkg:tasks` means call `tasks()`; `pkg:tasks(x)` is already a call expression.
-  let call = if call.contains('(') { call.to_string() } else { format!("{call}()") };
+  let call = if call.contains('(') {
+    call.to_string()
+  } else {
+    format!("{call}()")
+  };
   let src = root.join("src");
   let src_append = if src.is_dir() {
     format!("sys.path.append({});", py_repr(&src.to_string_lossy()))

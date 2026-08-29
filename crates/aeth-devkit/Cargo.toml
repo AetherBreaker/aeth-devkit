@@ -9,6 +9,7 @@
   path = "src/main.rs"
 
 [dependencies]
+  aeth-devkit-complete = { workspace = true }
   aeth-devkit-lock  = { workspace = true }
   aeth-devkit-release = { workspace = true }
   aeth-devkit-setup = { workspace = true }

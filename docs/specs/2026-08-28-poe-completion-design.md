@@ -130,15 +130,32 @@ behavioural difference from poe and is documented rather than hidden.
 | `devkit complete --bash` | a completion script to source from `.bashrc` |
 | `devkit complete --no-cache` | modifier: bypass and rewrite the cache |
 
-The emitted scripts are adapted from poe's generated ones — same global option list, same
+The emitted scripts are poe's generated ones, captured and transformed by
+`scratchpad/gen_scripts.py` into `src/scripts.rs` — same global option list, same
 option-exclusion behaviour, same `-C`/`--directory` target-path handling — with the two
 `& poe _*` invocations swapped for `& devkit complete *`. They register against the `poe`
 command name so they replace poe's registration in the user's profile.
 
 ## Result
 
-**203 ms → 16 ms warm, 73 ms cold**, and the common case (no `include_script`) never starts
-Python.
+Measured on 2026-08-29 against this repo (which has an `include_script`), debug build,
+10 runs averaged:
+
+| path | per call |
+| --- | --- |
+| `poe _list_tasks` | 198 ms |
+| `devkit complete --no-cache tasks` (cold: runs the Python one-liner) | 62 ms |
+| `devkit complete tasks` (warm: fingerprint check + cache read) | 13 ms |
+
+**198 ms → 13 ms warm, 62 ms cold** — 15x on the path every Tab press takes — and a project
+with no `include_script` never starts Python at all.
+
+Output parity, verified: `devkit complete tasks` prints the same task list as
+`poe _list_tasks`, and `devkit complete args lock` matches `poe _describe_task_args lock`
+byte-for-byte except that poe emits CRLF on Windows and devkit emits LF. LF is the safer
+choice: the bash script's `read -r` would otherwise keep a stray `` in the last field.
+The parity test in `tests/format_cache.rs` runs against the real venv `poe` and skips (with
+a note) when it is absent.
 
 ## Testing
 
