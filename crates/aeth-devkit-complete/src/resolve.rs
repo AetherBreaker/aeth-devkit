@@ -197,10 +197,10 @@ fn load_include(
     return;
   }
   // A missing include is a warning in poe, not an error: keep going with what we have.
+  out.sources.push(path.clone());
   if let Ok(text) = std::fs::read_to_string(&path)
     && let Ok(doc) = text.parse::<toml_edit::DocumentMut>()
   {
-    out.sources.push(path.clone());
     let poe = doc
       .get("tool")
       .and_then(|t| t.get("poe"))
