@@ -166,6 +166,46 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
     changes.record_optional(&path, original.as_deref(), &merged, log)?;
   }
 
+  // 13. Gitignored managed files: write them anyway (done above) and un-ignore them, so a
+  //     project rule like `*.json` cannot silently keep `.claude/settings.json` out of git.
+  //     Env files are exempt — `.env` is ignored by design.
+  if git::is_git_tracked(&ctx.root) {
+    let mut negations = Vec::new();
+    for f in &changes.files {
+      let rel = f
+        .path
+        .strip_prefix(&ctx.root)
+        .unwrap_or(&f.path)
+        .to_string_lossy()
+        .replace('\\', "/");
+      if git::is_env_file(&rel) || rel == ".gitignore" {
+        continue;
+      }
+      if git::is_ignored(&ctx.root, &rel) {
+        negations.push(format!("!{rel}"));
+      }
+    }
+    if !negations.is_empty() {
+      let path = ctx.root.join(".gitignore");
+      let original = read_optional(&path)?;
+      let merged = lines::append_rules(original.as_deref(), &negations);
+      let log = vec![format!("un-ignored {}", negations.join(", "))];
+      changes.record_optional(&path, original.as_deref(), &merged, log)?;
+    }
+  }
+
+  // 14. Obsolete artifacts: reported, never removed.
+  if !ctx.has_docker && read_optional(&ctx.root.join("pyproject.toml"))?.is_some_and(|t| t.contains("[tool.docker]")) {
+    changes
+      .notes
+      .push("pyproject.toml has a [tool.docker] table but the project has no Docker setup; safe to delete.".into());
+  }
+  if ctx.root.join(".github").join("copilot-instructions.md").is_file() {
+    changes
+      .notes
+      .push(".github/copilot-instructions.md is superseded by AGENTS.md (chat.useAgentsMdFile is on); safe to delete.".into());
+  }
+
   Ok(changes)
 }
 

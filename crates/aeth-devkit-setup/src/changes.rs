@@ -15,6 +15,8 @@ pub struct FileChange {
 pub struct Changes {
   dry_run: bool,
   pub files: Vec<FileChange>,
+  /// Advisory `note:` lines — things the user may want to clean up by hand. Never written.
+  pub notes: Vec<String>,
 }
 
 impl Changes {
@@ -22,6 +24,7 @@ impl Changes {
     Self {
       dry_run,
       files: Vec::new(),
+      notes: Vec::new(),
     }
   }
 

@@ -39,6 +39,7 @@
   [tool.coverage.lcov]
     output = ".cache/coverage.lcov"
 
+# setup-project: if-docker
 [tool.docker]
   # Paths relative to /app that the entrypoint will chown to nonroot:nonroot.
   # Typically these are directories that will be bind-mounted as Docker volumes.

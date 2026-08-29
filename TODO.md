@@ -26,8 +26,8 @@ design exists. Check items off in place; delete them once released.
   - `docker-pin-latest.sh` already knows how to set `GIT_TAG`; the scaffold should leave
     `GIT_TAG` unset/placeholder and let `poe docker-pin-latest` fill it.
   - Tests: e2e case for a fresh project with `--docker`; idempotency on re-run.
-- [ ] `if-docker` conditional marker for template tables (mirrors `if-dep`; drives the
-      `[tool.docker]` item above).
+- [x] `if-docker` conditional marker for template tables (mirrors `if-dep`; drives the
+      `[tool.docker]` item above). Done on `feat/agent-config`.
 - [ ] Vendored gitignore refresh: a `poe` task or script that re-fetches
       `Python.gitignore` / `Rust.gitignore` from GitHub into the templates.
 - [ ] Consider a `--python-dir` override for projects whose Python package is neither in
