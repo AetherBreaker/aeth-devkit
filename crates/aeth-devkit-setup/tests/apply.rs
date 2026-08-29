@@ -318,3 +318,43 @@ fn agents_md_gets_a_managed_block_and_keeps_project_text() {
     again.report(root)
   );
 }
+
+#[test]
+fn claude_config_files_are_created_and_create_if_missing_ones_are_never_rewritten() {
+  let dir = make_project();
+  let root = dir.path();
+  write(root, ".claude/CLAUDE.md", "my own claude notes\n");
+  write(root, ".github/workflows/claude.yml", "name: mine\n");
+
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let report = changes.report(root);
+  for rel in [".claude/settings.json", ".mcp.json"] {
+    assert!(report.contains(&format!("{rel}: created")), "{report}");
+  }
+  assert_eq!(read(root, ".claude/CLAUDE.md"), "my own claude notes\n");
+  assert_eq!(read(root, ".github/workflows/claude.yml"), "name: mine\n");
+
+  let settings: serde_json::Value = serde_json::from_str(&read(root, ".claude/settings.json")).unwrap();
+  let cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
+  assert!(cmd.ends_with(" hook stop-ruff"), "{cmd}");
+  assert!(cmd.starts_with("uv run devkit"), "no venv in fixture → uv fallback: {cmd}");
+  assert!(settings.get("enabledPlugins").is_none());
+  assert!(settings["env"]["PYTHONPYCACHEPREFIX"].as_str().unwrap().contains(".cache"));
+
+  let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  assert!(again.is_empty(), "second run must be a no-op:\n{}", again.report(root));
+}
+
+#[test]
+fn claude_md_and_workflow_are_created_when_missing_and_devkit_bin_prefers_the_venv() {
+  let dir = make_project();
+  let root = dir.path();
+  write(root, ".venv/Scripts/devkit.exe", "");
+
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  assert!(read(root, ".claude/CLAUDE.md").starts_with("@../AGENTS.md\n"));
+  assert!(read(root, ".github/workflows/claude.yml").contains("claude-code-action@v1"));
+  let settings: serde_json::Value = serde_json::from_str(&read(root, ".claude/settings.json")).unwrap();
+  let cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
+  assert_eq!(cmd, "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/devkit.exe\" hook pre-edit-protect");
+}

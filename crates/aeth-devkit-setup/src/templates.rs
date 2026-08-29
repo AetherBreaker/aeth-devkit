@@ -61,6 +61,20 @@ pub fn substitute(text: &str, ctx: &ProjectContext, escape: Escape) -> String {
     .replace("{project_root}", &esc(&root))
     .replace("{package}", &esc(&ctx.package))
     .replace("{python_dir}", &esc(&ctx.python_dir))
+    .replace("{devkit_bin}", &esc(&devkit_bin(&ctx.root)))
+}
+
+/// How a hook should invoke `devkit`: the venv's own console script when one exists
+/// (quoted, and via `$CLAUDE_PROJECT_DIR` so the file stays valid if the repo moves),
+/// else `uv run devkit`. The direct path skips `uv run`'s ~140 ms environment check on
+/// every hook invocation.
+fn devkit_bin(root: &Path) -> String {
+  for rel in [".venv/Scripts/devkit.exe", ".venv/bin/devkit"] {
+    if root.join(rel).is_file() {
+      return format!("\"$CLAUDE_PROJECT_DIR/{rel}\"");
+    }
+  }
+  "uv run devkit".to_string()
 }
 
 /// Resolve the templates directory: explicit flag, env var, the Python package next to
@@ -131,5 +145,41 @@ mod tests {
     assert_eq!(template_file_name("vscode/settings.json"), "vscode/settings.template.jsonc");
     assert_eq!(template_file_name("gitignore"), "template.gitignore");
     assert_eq!(template_file_name("env"), "template.env");
+  }
+}
+
+#[cfg(test)]
+mod devkit_bin_tests {
+  use super::*;
+  use std::collections::HashSet;
+
+  fn ctx(root: &Path) -> ProjectContext {
+    ProjectContext {
+      root: root.to_path_buf(),
+      package: "proj".into(),
+      dependencies: HashSet::new(),
+      has_docker: false,
+      python_dir: "src".into(),
+      has_rust: false,
+    }
+  }
+
+  #[test]
+  fn devkit_bin_falls_back_to_uv_run_without_a_venv() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+      substitute("{devkit_bin} hook x", &ctx(dir.path()), Escape::None),
+      "uv run devkit hook x"
+    );
+  }
+
+  #[test]
+  fn devkit_bin_uses_the_venv_script_quoted_and_json_escaped() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join(".venv").join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("devkit"), "").unwrap();
+    let out = substitute(r#""cmd": "{devkit_bin} hook x""#, &ctx(dir.path()), Escape::Json);
+    assert_eq!(out, r#""cmd": "\"$CLAUDE_PROJECT_DIR/.venv/bin/devkit\" hook x""#);
   }
 }
