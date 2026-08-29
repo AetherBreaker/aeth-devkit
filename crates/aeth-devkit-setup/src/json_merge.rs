@@ -314,7 +314,7 @@ pub fn merge_hooks(target: &mut Value, template: &Value, log: &mut Vec<String>) 
       for entry in entries {
         // Only entries carrying a `hook <name>` token are ours to manage.
         let Some(key) = hook_key(entry) else { continue };
-        match hooks.iter_mut().find(|e| hook_key(e) == Some(key)) {
+        match hooks.iter_mut().find(|e| hook_key(e).as_deref() == Some(key.as_str())) {
           Some(e) if e == entry => {}
           Some(e) => {
             *e = entry.clone();
@@ -332,9 +332,16 @@ pub fn merge_hooks(target: &mut Value, template: &Value, log: &mut Vec<String>) 
 
 /// The `<name>` in a `… hook <name> …` command, which identifies a devkit-owned entry
 /// regardless of which binary path precedes it.
-fn hook_key(entry: &Value) -> Option<&str> {
-  let (_, rest) = entry.get("command")?.as_str()?.split_once(" hook ")?;
-  rest.split_whitespace().next()
+fn hook_key(entry: &Value) -> Option<String> {
+  let cmd = entry.get("command")?.as_str()?;
+  if let Some((_, rest)) = cmd.split_once(" hook ") {
+    return rest.split_whitespace().next().map(str::to_string);
+  }
+  // The pre-devkit wiring copied the hooks as `.claude/hooks/<snake_name>.py` scripts;
+  // `stop_ruff.py` is the same hook as `hook stop-ruff`, so it is updated, not duplicated.
+  let (_, file) = cmd.split_once("/.claude/hooks/")?;
+  let stem = file.split('"').next()?.strip_suffix(".py")?;
+  Some(stem.replace('_', "-"))
 }
 
 /// `.claude/settings.json`: `hooks` via [`merge_hooks`], everything else via [`deep_merge`].
@@ -424,6 +431,21 @@ mod hooks_tests {
     assert_eq!(stop[0], mine);
     assert_eq!(target["SessionStart"], json!([{"hooks": [mine]}]));
     assert_eq!(target["PreToolUse"], tpl()["PreToolUse"]);
+  }
+
+  #[test]
+  fn legacy_python_hook_entries_are_replaced_not_duplicated() {
+    // The fleet's pre-devkit wiring: `python "$CLAUDE_PROJECT_DIR/.claude/hooks/stop_ruff.py"`.
+    let mut target = json!({"Stop": [{"hooks": [
+      {"type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_ruff.py\"", "shell": "bash", "timeout": 30},
+      {"type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_pyright.py\"", "shell": "bash", "timeout": 60}
+    ]}]});
+    let mut log = vec![];
+    merge_hooks(&mut target, &tpl(), &mut log);
+    let stop = target["Stop"][0]["hooks"].as_array().unwrap();
+    assert_eq!(stop.len(), 2, "{stop:?}");
+    assert_eq!(stop[0]["command"], "\"$D/devkit\" hook stop-ruff");
+    assert_eq!(stop[1]["command"], "\"$D/devkit\" hook stop-pyright");
   }
 
   #[test]
