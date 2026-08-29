@@ -6,6 +6,7 @@ venv active (it needs `poe` on PATH); re-run when poethepoet's generator changes
 
     uv run python crates/aeth-devkit-complete/gen_scripts.py
 """
+import os
 import subprocess
 from pathlib import Path
 
@@ -14,9 +15,11 @@ OUT = HERE / "src" / "scripts.rs"
 
 
 def poe(*args: str) -> str:
-    # Decode as UTF-8 explicitly: a console redirect on Windows would otherwise hand back
-    # cp1252 and mangle the em dashes in poe's comments.
-    return subprocess.run(["poe", *args], check=True, capture_output=True, encoding="utf-8").stdout.replace("\r\n", "\n")
+    # poe writes to a pipe in the console codepage (cp1252 on Windows), which mangles the em
+    # dashes in its comments; PYTHONIOENCODING makes the child emit UTF-8 instead.
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    out = subprocess.run(["poe", *args], check=True, capture_output=True, encoding="utf-8", env=env).stdout
+    return out.replace("\r\n", "\n")
 
 
 ps = poe("_powershell_completion")
