@@ -1,6 +1,6 @@
 {
     "env": {
-        "PYTHONPYCACHEPREFIX": "{project_root}\\.cache\\pycache"
+        "PYTHONPYCACHEPREFIX": "{project_root}/.cache/pycache"
     },
     "permissions": {
         "allow": [
