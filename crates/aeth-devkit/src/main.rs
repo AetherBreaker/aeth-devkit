@@ -22,15 +22,20 @@ enum Command {
   Release(aeth_devkit_release::Args),
   /// Shell-completion data for poe tasks (fast replacement for poe's `_list_tasks`).
   Complete(aeth_devkit_complete::Args),
+  /// Run a Claude Code hook (payload on stdin, decision on stdout). Always exits 0.
+  Hook(aeth_devkit_hooks::Args),
 }
 
 impl Command {
   /// Whether to append the outdated-devkit nag after this command. The completion data and
   /// script subcommands run on every Tab press and their output must stay pure and fast, so
-  /// only `complete install` — an ordinary, interactive command — gets it.
+  /// only `complete install` — an ordinary, interactive command — gets it. Hooks are the
+  /// same story: Claude runs them on every tool call, nobody is watching their stderr, and
+  /// the nag's once-a-day index fetch would put a network timeout in that path.
   fn wants_update_check(&self) -> bool {
     match self {
       Command::Complete(args) => matches!(args.command, aeth_devkit_complete::Command::Install { .. }),
+      Command::Hook(_) => false,
       _ => true,
     }
   }
@@ -43,6 +48,7 @@ fn main() -> ExitCode {
     Command::Lock(args) => aeth_devkit_lock::run_real(args),
     Command::Release(args) => aeth_devkit_release::run_real(args),
     Command::Complete(args) => Ok(aeth_devkit_complete::run_real(args)),
+    Command::Hook(args) => Ok(aeth_devkit_hooks::run_real(args)),
   };
   // Last thing printed, so it is what the user sees; runs even after a failure, since an
   // outdated devkit may be the reason for it.
