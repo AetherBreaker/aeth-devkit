@@ -8,6 +8,7 @@ pub mod format;
 pub mod git;
 pub mod json_merge;
 pub mod lines;
+pub mod md_block;
 pub mod templates;
 pub mod toml_merge;
 
@@ -115,6 +116,17 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
     let original = read_optional(&path)?;
     let mut log = Vec::new();
     let merged = lines::line_union(original.as_deref(), &template, &mut log);
+    changes.record_optional(&path, original.as_deref(), &merged, log)?;
+  }
+
+  // 9. AGENTS.md — devkit-managed block; text outside the markers belongs to the project.
+  {
+    let path = ctx.root.join("AGENTS.md");
+    let template = templates::load(templates_dir, "AGENTS.md", &ctx, templates::Escape::None)?;
+    let original = read_optional(&path)?;
+    let mut log = Vec::new();
+    let block = md_block::apply_if_dep(&template, &ctx, &mut log);
+    let merged = md_block::merge_managed_block(original.as_deref(), &block, &mut log)?;
     changes.record_optional(&path, original.as_deref(), &merged, log)?;
   }
 

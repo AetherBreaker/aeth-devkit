@@ -292,3 +292,29 @@ fn replaces_legacy_poe_tasks_include_script() {
   assert_eq!(code.matches("aeth_devkit:tasks").count(), 1, "{out}");
   assert!(out.contains("include_script = [{ script"), "no stray space after '[': {out}");
 }
+
+#[test]
+fn agents_md_gets_a_managed_block_and_keeps_project_text() {
+  let dir = make_project();
+  let root = dir.path();
+  write(root, "AGENTS.md", "# My Project\n\nProject-specific notes.\n");
+
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let agents = read(root, "AGENTS.md");
+  assert!(agents.starts_with("# My Project\n\nProject-specific notes.\n"), "{agents}");
+  assert!(
+    agents.contains("<!-- devkit:begin -->") && agents.contains("<!-- devkit:end -->"),
+    "{agents}"
+  );
+  assert!(agents.contains("## Environment"), "{agents}");
+  assert!(!agents.contains("if-dep"), "markers must not leak: {agents}");
+  let has_aeth_ext = read(root, "pyproject.toml").contains("aeth-ext");
+  assert_eq!(agents.contains("## Pydantic Dataclass Conventions"), has_aeth_ext, "{agents}");
+
+  let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  assert!(
+    !again.files.iter().any(|f| f.path.ends_with("AGENTS.md")),
+    "second run must not touch AGENTS.md: {}",
+    again.report(root)
+  );
+}
