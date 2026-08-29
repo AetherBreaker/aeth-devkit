@@ -19,7 +19,16 @@ fn arg(name: &str, options: &[&str], kind: &str, help: &str, choices: &[&str]) -
 
 #[test]
 fn list_tasks_is_one_space_separated_line() {
-  let tasks = vec![Task { name: "a".into(), args: vec![] }, Task { name: "b-c".into(), args: vec![] }];
+  let tasks = vec![
+    Task {
+      name: "a".into(),
+      args: vec![],
+    },
+    Task {
+      name: "b-c".into(),
+      args: vec![],
+    },
+  ];
   assert_eq!(list_tasks(&tasks), "a b-c\n");
   assert_eq!(list_tasks(&[]), "\n");
 }
@@ -77,7 +86,13 @@ fn choices_with_quotes_use_shell_quote_splicing() {
 
 #[test]
 fn a_task_with_no_args_describes_as_nothing() {
-  assert_eq!(describe_task_args(&Task { name: "t".into(), args: vec![] }), "");
+  assert_eq!(
+    describe_task_args(&Task {
+      name: "t".into(),
+      args: vec![]
+    }),
+    ""
+  );
 }
 
 // ---- cache ---------------------------------------------------------------------------------
@@ -90,7 +105,12 @@ fn project_with_tasks(names: &[&str]) -> tempfile::TempDir {
 }
 
 fn cached_names(root: &Path, runner: &RecordingRunner, bypass: bool) -> Vec<String> {
-  cache::resolve_cached(root, runner, bypass).unwrap().tasks.into_iter().map(|t| t.name).collect()
+  cache::resolve_cached(root, runner, bypass)
+    .unwrap()
+    .tasks
+    .into_iter()
+    .map(|t| t.name)
+    .collect()
 }
 
 #[test]
@@ -172,13 +192,24 @@ fn a_corrupt_cache_file_is_ignored() {
 fn resolved_tasks_match_poe_list_tasks_for_this_repo() {
   let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
   let poe = root.join(".venv").join("Scripts").join("poe.exe");
-  let poe = if poe.is_file() { poe } else { root.join(".venv").join("bin").join("poe") };
+  let poe = if poe.is_file() {
+    poe
+  } else {
+    root.join(".venv").join("bin").join("poe")
+  };
   if !poe.is_file() {
     eprintln!("skipping parity test: no venv poe at {}", poe.display());
     return;
   }
-  let out = std::process::Command::new(&poe).arg("_list_tasks").current_dir(&root).output().unwrap();
-  let mut expected: Vec<String> = String::from_utf8_lossy(&out.stdout).split_whitespace().map(str::to_string).collect();
+  let out = std::process::Command::new(&poe)
+    .arg("_list_tasks")
+    .current_dir(&root)
+    .output()
+    .unwrap();
+  let mut expected: Vec<String> = String::from_utf8_lossy(&out.stdout)
+    .split_whitespace()
+    .map(str::to_string)
+    .collect();
   expected.sort();
   assert!(!expected.is_empty(), "poe listed no tasks");
 
