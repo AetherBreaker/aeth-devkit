@@ -1,0 +1,160 @@
+# `devkit complete` — fast shell completion for poe tasks
+
+Status: **APPROVED 2026-08-28.**
+
+Implementation note: by explicit request there is **no separate implementation plan**; this
+spec is written to be implemented directly.
+
+Independent of `2026-08-28-agent-config-design.md` — different trigger, different crate, no
+shared code. Either can be built first.
+
+## Problem
+
+Every Tab press against `poe` costs ~203 ms. That is squarely in the range where completion
+feels sticky rather than instant.
+
+The cost is not the work; it is three layers of process startup. The generated PowerShell
+script (`poe _powershell_completion`, lines 87–118) calls `& poe _list_tasks` and
+`& poe _describe_task_args` live on each completion. Each of those starts Python, imports the
+poethepoet framework, and then — because this project uses
+`include_script = [{ script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }]`
+(`pyproject.toml:55`) — spawns a *second* process through `uv run` to obtain the task table.
+
+Measured on this machine, 10 runs averaged (single runs are unusable: Windows Defender's
+first-touch scan dominated an initial reading by 10x):
+
+| path | per call |
+| --- | --- |
+| `poe _list_tasks` (today) | 203 ms |
+| poe's own include_script one-liner, run directly against `.venv/Scripts/python.exe` | 57 ms |
+| `python -c pass` | 33 ms |
+| `devkit --version` (Rust floor) | 16 ms |
+
+## What poe's resolution actually does
+
+Read before designing, because it determines what can and cannot be mirrored. There are two
+mechanisms and they are not alike.
+
+**`include` (TOML files)** — plain config. `Config._load_included_config` resolves the path,
+loads the file, merges it, recurses into child includes when `recursive` is not false, and
+guards against cycles by tracking ancestors. Straightforwardly mirrorable in Rust.
+
+**`include_script` — not mirrorable.** `Config._load_include_script` builds a Python source
+string and executes it:
+
+```python
+script = ("import os,sys,json;environ=os.environ;"
+          "from importlib import import_module as _i;"
+          f"{src_path_append}"
+          "_o=sys.stdout;sys.stdout=sys.stderr;"
+          f"_m = _i('{target_module}');"
+          "sys.stdout=_o;"
+          f"print(json.dumps(_m.{function_call.expression}));")
+subproc = await executor.execute(("python", "-c", script))
+```
+
+There is no static declaration to mirror. The task table *is* the return value of a Python
+program: `python/aeth_devkit/__init__.py` builds a `TaskCollection` at import time and
+interpolates absolute paths through `_script_path()`. Reimplementing that "logically" in Rust
+would mean reimplementing `aeth_devkit/__init__.py` in Rust and keeping the two in lockstep
+forever — the drift trap this toolkit exists to avoid.
+
+What the script *returns*, however, is plain JSON containing everything completion needs:
+
+```json
+{"env": {}, "envfile": [], "config_path": "...", "tasks": {"release": {"help": "...", ...}, ...}}
+```
+
+So the design splits along that line: Rust owns resolution, and Python is demoted from a
+framework dependency to a cached data source.
+
+## Design
+
+New workspace member `crates/aeth-devkit-complete`, wired into
+`crates/aeth-devkit/src/main.rs` as `Command::Complete(aeth_devkit_complete::Args)`.
+
+### 1. Rust resolves the TOML layers
+
+Parse `[tool.poe.tasks]` from `pyproject.toml` with `toml_edit` (already a workspace
+dependency), then walk the `include` chain: resolve each path relative to its source config
+dir, load, merge, recurse when `recursive` is not false, and skip a path already in the
+ancestor set (cycle guard), mirroring `_load_included_config`.
+
+Most projects in the fleet stop here — no Python process at all, ~16 ms.
+
+### 2. `include_script` runs poe's own one-liner, without poe or uv
+
+When `[tool.poe] include_script` is present, build the same script string poe builds and run
+it against the resolved interpreter directly:
+
+1. `<root>/.venv/Scripts/python.exe` (Windows)
+2. `<root>/.venv/bin/python` (Unix)
+3. `python` on PATH
+
+This skips the poethepoet framework import *and* the `uv run` executor, which is where the
+203 ms goes: 57 ms measured for the same JSON.
+
+Parse the result per poe's own normalization in `_load_include_script`: a `tool.poe` key, or
+a flat `tool.poe` string key, or otherwise treat the whole object as the poe config body. Pop
+`config_path` before merging.
+
+Failure — interpreter missing, non-zero exit, unparseable JSON — degrades to the TOML-only
+task list rather than erroring. A completer that prints a stack trace into the user's prompt
+is worse than one that offers a short list.
+
+### 3. Cache
+
+Store the resolved table at `.cache/devkit-completions.json` alongside a fingerprint:
+
+- `pyproject.toml` mtime and size
+- mtime and size of every included TOML file
+- mtime and size of the `include_script` target module resolved from `config_path` in the
+  script output
+- the devkit version string
+
+Warm path — essentially every Tab press — is a fingerprint check plus a JSON read: ~16 ms.
+Cold path, once after editing `pyproject.toml` or reinstalling devkit: ~73 ms.
+
+**Stated limitation.** A project whose `include_script` returns *dynamic* tasks (reading env
+vars, a database, the clock) will see a stale cache, because the fingerprint is file-based.
+Nothing in the fleet does this today. `--no-cache` forces regeneration. This is a real
+behavioural difference from poe and is documented rather than hidden.
+
+### 4. Subcommands
+
+| command | output |
+| --- | --- |
+| `devkit complete tasks [dir]` | task names, one per line — replaces `poe _list_tasks` |
+| `devkit complete args <task> [dir]` | that task's option/arg names — replaces `poe _describe_task_args` |
+| `devkit complete --powershell` | a completion script to add to `$PROFILE` |
+| `devkit complete --bash` | a completion script to source from `.bashrc` |
+| `devkit complete --no-cache` | modifier: bypass and rewrite the cache |
+
+The emitted scripts are adapted from poe's generated ones — same global option list, same
+option-exclusion behaviour, same `-C`/`--directory` target-path handling — with the two
+`& poe _*` invocations swapped for `& devkit complete *`. They register against the `poe`
+command name so they replace poe's registration in the user's profile.
+
+## Result
+
+**203 ms → 16 ms warm, 73 ms cold**, and the common case (no `include_script`) never starts
+Python.
+
+## Testing
+
+- Resolution unit tests: `[tool.poe.tasks]` only; a single `include`; nested includes; a
+  cyclic include terminating instead of hanging; `recursive = false` honoured.
+- `include_script` tests against a fixture module: correct JSON parsed; each of poe's three
+  config-shape normalizations; non-zero exit falls back to the TOML-only list; unparseable
+  output falls back rather than erroring.
+- Cache tests: cold populates; warm hits; a touched `pyproject.toml` invalidates; a touched
+  include target invalidates; a changed devkit version invalidates; `--no-cache` bypasses.
+- A parity test asserting `devkit complete tasks` returns the same set as `poe _list_tasks`
+  for this repo — the one guard against the Rust resolver silently diverging from poe.
+
+## Out of scope
+
+- Completing task *values* (file paths, choices) — poe does not do this either.
+- zsh/fish scripts. Add them when someone needs one.
+- Replacing `poe` itself. This changes only how completion obtains its data; running a task
+  still goes through poe.
