@@ -12,7 +12,7 @@ pub mod format;
 pub mod resolve;
 pub mod scripts;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -35,14 +35,14 @@ pub struct Args {
 pub enum Command {
   /// Print task names on one line (replaces `poe _list_tasks`).
   Tasks {
-    /// Project directory (defaults to the current directory).
-    dir: Option<PathBuf>,
+    /// Project directory (defaults to the current directory; an empty string means the same).
+    dir: Option<String>,
   },
   /// Print a task's arguments, tab-separated (replaces `poe _describe_task_args`).
   Args {
     task: String,
-    /// Project directory (defaults to the current directory).
-    dir: Option<PathBuf>,
+    /// Project directory (defaults to the current directory; an empty string means the same).
+    dir: Option<String>,
   },
   /// Print a shell completion script that registers for the `poe` command.
   Script {
@@ -75,11 +75,12 @@ pub fn output(command: &Command, no_cache: bool) -> String {
   }
 }
 
-/// The completion scripts pass an empty string when no `-C` was given; treat that, and a
-/// missing argument, as "here".
-fn project_dir(dir: Option<&Path>) -> PathBuf {
+/// The bash completion script always passes `"$target_path"`, which is the empty string when
+/// no `-C` was given; treat that, and a missing argument, as "here". (`dir` is a `String`
+/// rather than a `PathBuf` because clap's `PathBuf` parser rejects an empty value outright.)
+fn project_dir(dir: Option<&str>) -> PathBuf {
   match dir {
-    Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+    Some(d) if !d.is_empty() => PathBuf::from(d),
     _ => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
   }
 }

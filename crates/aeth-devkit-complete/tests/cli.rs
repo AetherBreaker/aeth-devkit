@@ -55,7 +55,7 @@ fn tasks_and_args_print_nothing_for_a_directory_without_a_pyproject() {
   assert_eq!(
     output(
       &Command::Tasks {
-        dir: Some(dir.path().to_path_buf())
+        dir: Some(dir.path().to_string_lossy().into_owned())
       },
       false
     ),
@@ -65,7 +65,7 @@ fn tasks_and_args_print_nothing_for_a_directory_without_a_pyproject() {
     output(
       &Command::Args {
         task: "x".into(),
-        dir: Some(dir.path().to_path_buf())
+        dir: Some(dir.path().to_string_lossy().into_owned())
       },
       false
     ),
@@ -81,7 +81,7 @@ fn tasks_and_args_for_a_real_project_directory() {
     "[tool.poe.tasks]\nlint = \"ruff\"\n[tool.poe.tasks.t]\ncmd = \"x\"\nargs = [{ name = \"n\", type = \"integer\", help = \"count\" }]\n",
   )
   .unwrap();
-  let d = Some(dir.path().to_path_buf());
+  let d = Some(dir.path().to_string_lossy().into_owned());
   assert_eq!(output(&Command::Tasks { dir: d.clone() }, true), "lint t\n");
   assert_eq!(
     output(
@@ -103,4 +103,15 @@ fn tasks_and_args_for_a_real_project_directory() {
     ),
     ""
   );
+}
+
+/// The bash script always passes `"$target_path"`, which is the empty string when no `-C`
+/// was given; clap must accept it (and `output` treats it as the current directory).
+#[test]
+fn an_empty_dir_argument_parses() {
+  use clap::Parser as _;
+  let args = aeth_devkit_complete::Args::try_parse_from(["devkit-complete", "tasks", ""]).expect("empty dir must parse");
+  assert!(matches!(args.command, Command::Tasks { dir: Some(ref d) } if d.is_empty()));
+  let args = aeth_devkit_complete::Args::try_parse_from(["devkit-complete", "args", "lock", ""]).expect("empty dir must parse");
+  assert!(matches!(args.command, Command::Args { ref task, dir: Some(ref d) } if task == "lock" && d.is_empty()));
 }
