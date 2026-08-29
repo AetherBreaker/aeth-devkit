@@ -46,7 +46,8 @@ pub fn patch_profile(original: Option<&str>) -> (String, Vec<String>) {
   let mut present = false;
   for line in original.lines() {
     let t = line.trim();
-    if t.to_lowercase().contains(POE_POWERSHELL_LINE) {
+    let drop = t.trim_start_matches('&').trim_start().to_ascii_lowercase();
+    if drop.starts_with(POE_POWERSHELL_LINE) {
       log.push(format!("removed poe's own registration: {t}"));
       continue;
     }
