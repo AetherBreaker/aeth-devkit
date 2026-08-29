@@ -103,7 +103,7 @@ fn applies_and_is_idempotent() {
   assert!(env.starts_with("SECRET=\"abc\"\n"), "{env}");
   assert!(
     env.contains(&format!(
-      "PYTHONPYCACHEPREFIX=\"{}\\.cache\\pycache\"",
+      "PYTHONPYCACHEPREFIX=\"{}/.cache/pycache\"",
       root.canonicalize().unwrap().to_string_lossy().trim_start_matches(r"\\?\")
     )),
     "{env}"
