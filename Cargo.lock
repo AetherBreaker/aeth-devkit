@@ -20,6 +20,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aeth-devkit-complete"
+version = "7.1.0"
+dependencies = [
+ "aeth-devkit-core",
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml_edit",
+]
+
+[[package]]
 name = "aeth-devkit-core"
 version = "7.1.0"
 dependencies = [
