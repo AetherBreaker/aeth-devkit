@@ -107,7 +107,8 @@
 
 [tool.ruff]
   cache-dir = ".cache/ruff"
-  src       = ["./{python_dir}"]
+  # Sister projects' packages count as first-party (ruff `src` supports globs).
+  src       = ["./{python_dir}", "../*/src", "../*/python"]
 
   exclude = [
     ".bzr",
@@ -148,6 +149,7 @@
       "B",
       "C4",
       "C90",
+      "D",
       "DTZ",
       "FBT003",
       "LOG",
@@ -160,6 +162,7 @@
       "RUF",
       "T10",
       "TC",
+      "TID",
       "UP",
     ]
     ignore        = [
@@ -171,6 +174,13 @@
       "PLW0603",
       "PIE790",
     ]
+
+    [tool.ruff.lint.flake8-tidy-imports.banned-api]
+      # Delivered by ruff exactly when violated, so the reasoning costs no context otherwise.
+      "__future__.annotations".msg = "Python 3.14 evaluates all annotations lazily (PEP 649) with or without this import. What it adds is PEP 563 stringification, which breaks pydantic, dataclasses.fields() introspection, and typing.get_type_hints."
+
+    [tool.ruff.lint.pydocstyle]
+      convention = "google"
 
     [tool.ruff.lint.isort]
       combine-as-imports = true

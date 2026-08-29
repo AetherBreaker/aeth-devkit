@@ -199,7 +199,7 @@ fn mixed_rust_python_project_uses_python_dir_and_rust_overlays() {
   aeth_devkit_setup::run(root, &templates(), false).unwrap();
 
   let py = read(root, "pyproject.toml");
-  assert!(py.contains("src       = [\"./python\"]"), "{py}");
+  assert!(py.contains("src       = [\"./python\", \"../*/src\", \"../*/python\"]"), "{py}");
   assert!(py.contains("root = \"python\", extraPaths = [\"python\"]"), "{py}");
   assert!(py.contains("source_pkgs = [\"mixed_tool\"]"), "{py}");
   let launch = read(root, ".vscode/launch.json");
@@ -225,7 +225,7 @@ fn plain_python_project_gets_no_rust_overlays() {
   );
   write(root, "src/plain/__init__.py", "");
   aeth_devkit_setup::run(root, &templates(), false).unwrap();
-  assert!(read(root, "pyproject.toml").contains("src       = [\"./src\"]"));
+  assert!(read(root, "pyproject.toml").contains("src       = [\"./src\", \"../*/src\", \"../*/python\"]"));
   assert!(!read(root, ".vscode/extensions.json").contains("rust-analyzer"));
   assert!(!read(root, ".vscode/settings.json").contains("[rust]"));
 }
@@ -357,4 +357,28 @@ fn claude_md_and_workflow_are_created_when_missing_and_devkit_bin_prefers_the_ve
   let settings: serde_json::Value = serde_json::from_str(&read(root, ".claude/settings.json")).unwrap();
   let cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
   assert_eq!(cmd, "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/devkit.exe\" hook pre-edit-protect");
+}
+
+#[test]
+fn pyproject_gets_sister_src_globs_future_annotations_ban_and_google_docstrings() {
+  let dir = make_project();
+  let root = dir.path();
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let py = read(root, "pyproject.toml");
+  let doc: toml_edit::DocumentMut = py.parse().unwrap();
+  let ruff = &doc["tool"]["ruff"];
+  let src: Vec<&str> = ruff["src"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
+  assert!(src.contains(&"../*/src") && src.contains(&"../*/python"), "{src:?}");
+  let select: Vec<&str> = ruff["lint"]["extend-select"]
+    .as_array()
+    .unwrap()
+    .iter()
+    .filter_map(|v| v.as_str())
+    .collect();
+  assert!(select.contains(&"TID") && select.contains(&"D"), "{select:?}");
+  let msg = ruff["lint"]["flake8-tidy-imports"]["banned-api"]["__future__.annotations"]["msg"]
+    .as_str()
+    .unwrap();
+  assert!(msg.contains("PEP 649"), "{msg}");
+  assert_eq!(ruff["lint"]["pydocstyle"]["convention"].as_str(), Some("google"));
 }
