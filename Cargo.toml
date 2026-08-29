@@ -25,6 +25,7 @@
   aeth-devkit-lock  = { path = "crates/aeth-devkit-lock" }
   aeth-devkit-release = { path = "crates/aeth-devkit-release" }
   aeth-devkit-complete = { path = "crates/aeth-devkit-complete" }
+  aeth-devkit-hooks = { path = "crates/aeth-devkit-hooks" }
 
 [profile.release]
   strip       = true

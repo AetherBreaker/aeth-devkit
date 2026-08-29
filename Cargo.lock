@@ -14,6 +14,7 @@ version = "7.1.0"
 dependencies = [
  "aeth-devkit-complete",
  "aeth-devkit-core",
+ "aeth-devkit-hooks",
  "aeth-devkit-lock",
  "aeth-devkit-release",
  "aeth-devkit-setup",
@@ -48,6 +49,19 @@ dependencies = [
  "tempfile",
  "toml_edit",
  "ureq",
+]
+
+[[package]]
+name = "aeth-devkit-hooks"
+version = "7.1.0"
+dependencies = [
+ "aeth-devkit-core",
+ "anyhow",
+ "clap",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
