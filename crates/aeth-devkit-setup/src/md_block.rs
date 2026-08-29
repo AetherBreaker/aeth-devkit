@@ -92,7 +92,8 @@ pub fn apply_if_dep(template: &str, ctx: &ProjectContext, log: &mut Vec<String>)
         continue;
       }
       // Gate at the level of the heading that follows; a marker with no heading under it
-      // gates until *any* heading (level 1 is the highest, so every heading closes it).
+      // gates until *any* heading. The skip loop closes on `l <= level`, so the loosest
+      // gate is 6 — every heading (1..=6) satisfies it.
       let level = match lines.peek().and_then(|l| heading_level(l)) {
         Some(level) => {
           // Consume the gated heading here; otherwise the skip loop above would see a
@@ -100,7 +101,7 @@ pub fn apply_if_dep(template: &str, ctx: &ProjectContext, log: &mut Vec<String>)
           lines.next();
           level
         }
-        None => 1,
+        None => 6,
       };
       log.push(format!("skipped if-dep {dep} section"));
       skipping = Some(level);
@@ -210,6 +211,31 @@ mod tests {
     let out = apply_if_dep(GATED, &ctx(&[]), &mut log);
     assert_eq!(out, "## Always\n\na\n\n## Also always\n\nc\n");
     assert!(log.iter().any(|l| l.contains("Pydantic") || l.contains("aeth-ext")), "{log:?}");
+  }
+
+  #[test]
+  fn if_dep_marker_without_heading_closes_at_any_heading() {
+    // No heading under the marker: drop only the bare paragraph, not everything up to the next H1.
+    let tpl = "## A
+
+a
+
+<!-- setup-project: if-dep nope -->
+loose text
+
+### B
+
+b
+";
+    let mut log = vec![];
+    assert_eq!(apply_if_dep(tpl, &ctx(&[]), &mut log), "## A
+
+a
+
+### B
+
+b
+");
   }
 
   #[test]

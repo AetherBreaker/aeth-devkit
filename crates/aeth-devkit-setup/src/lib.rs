@@ -181,9 +181,22 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
       if git::is_env_file(&rel) || rel == ".gitignore" {
         continue;
       }
-      if git::is_ignored(&ctx.root, &rel) {
-        negations.push(format!("!{rel}"));
+      if !git::is_ignored(&ctx.root, &rel) {
+        continue;
       }
+      // Git never descends into an ignored directory, so `!.claude/settings.json` is dead
+      // under a `.claude/` rule: un-ignore every ignored ancestor first, outermost inward.
+      // `match_indices('/')` yields each prefix up to a separator, i.e. each ancestor dir.
+      for (i, _) in rel.match_indices('/') {
+        let dir = format!("{}/", &rel[..i]);
+        if git::is_ignored(&ctx.root, &dir) {
+          let rule = format!("!{dir}");
+          if !negations.contains(&rule) {
+            negations.push(rule);
+          }
+        }
+      }
+      negations.push(format!("!{rel}"));
     }
     if !negations.is_empty() {
       let path = ctx.root.join(".gitignore");
