@@ -134,8 +134,9 @@ An empty `[dir]` argument — which the scripts pass when no `-C` was given — 
 current directory. Any failure prints nothing and exits 0: a completer that errors breaks
 the shell.
 
-The emitted scripts are poe's generated ones, captured and transformed by
-`scratchpad/gen_scripts.py` into `src/scripts.rs` — same global option list, same
+The emitted scripts are poe's generated ones, transformed by
+`crates/aeth-devkit-complete/gen_scripts.py` into `src/scripts.rs` (re-run it when
+poethepoet's generator changes) — same global option list, same
 option-exclusion behaviour, same `-C`/`--directory` target-path handling — with the two
 `& poe _*` invocations swapped for `& devkit complete *`. They register against the `poe`
 command name so they replace poe's registration in the user's profile.
