@@ -115,3 +115,18 @@ fn an_empty_dir_argument_parses() {
   let args = aeth_devkit_complete::Args::try_parse_from(["devkit-complete", "args", "lock", ""]).expect("empty dir must parse");
   assert!(matches!(args.command, Command::Args { ref task, dir: Some(ref d) } if task == "lock" && d.is_empty()));
 }
+
+#[test]
+fn install_requires_at_least_one_shell_flag() {
+  use clap::Parser as _;
+  assert!(aeth_devkit_complete::Args::try_parse_from(["devkit-complete", "install"]).is_err());
+  let a = aeth_devkit_complete::Args::try_parse_from(["devkit-complete", "install", "--powershell", "--bash", "--dry-run"]).unwrap();
+  assert!(matches!(
+    a.command,
+    Command::Install {
+      powershell: true,
+      bash: true,
+      dry_run: true
+    }
+  ));
+}
