@@ -48,6 +48,9 @@ pub fn run(args: &Args) -> Result<ExitCode> {
       }
     }
   }
+  for note in &changes.notes {
+    println!("note: {note}");
+  }
   if changes.is_empty() {
     println!("Nothing to do — project already matches the templates.");
     return Ok(ExitCode::SUCCESS);

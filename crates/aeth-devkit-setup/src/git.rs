@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 
 pub use aeth_devkit_core::git::is_git_tracked;
 
@@ -12,9 +12,19 @@ use crate::changes::Changes;
 pub const COMMIT_SUBJECT: &str = "Standardize project configuration with devkit";
 
 /// Env files carry secrets: never auto-commit them, even if the repo happens to track one.
-fn is_env_file(rel: &str) -> bool {
+pub fn is_env_file(rel: &str) -> bool {
   let name = rel.rsplit('/').next().unwrap_or(rel);
   name == ".env" || name.ends_with(".env")
+}
+
+/// Whether git would ignore `rel` (a root-relative, `/`-separated path). The file need
+/// not exist: `check-ignore` matches patterns, so this also answers for a dry run.
+pub fn is_ignored(root: &Path, rel: &str) -> bool {
+  Command::new("git")
+    .current_dir(root)
+    .args(["check-ignore", "-q", "--", rel])
+    .status()
+    .is_ok_and(|s| s.success())
 }
 
 /// Files from `changes` that should be committed: never env files, and not gitignored.
@@ -25,13 +35,7 @@ fn trackable(root: &Path, changes: &Changes) -> Result<Vec<String>> {
     if is_env_file(&rel) {
       continue;
     }
-    let ignored = Command::new("git")
-      .current_dir(root)
-      .args(["check-ignore", "-q", "--", &rel])
-      .status()
-      .context("running git check-ignore")?
-      .success();
-    if !ignored {
+    if !is_ignored(root, &rel) {
       out.push(rel);
     }
   }

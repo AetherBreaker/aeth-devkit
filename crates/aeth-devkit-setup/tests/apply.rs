@@ -382,3 +382,77 @@ fn pyproject_gets_sister_src_globs_future_annotations_ban_and_google_docstrings(
   assert!(msg.contains("PEP 649"), "{msg}");
   assert_eq!(ruff["lint"]["pydocstyle"]["convention"].as_str(), Some("google"));
 }
+
+/// The fixture pyproject with its `[tool.docker]` table removed.
+fn strip_tool_docker(py: &str) -> String {
+  let mut doc: toml_edit::DocumentMut = py.parse().unwrap();
+  doc["tool"].as_table_mut().unwrap().remove("docker");
+  doc.to_string()
+}
+
+#[test]
+fn docker_less_project_gets_no_tool_docker_and_no_dockerignore() {
+  let dir = make_project();
+  let root = dir.path();
+  fs::remove_dir_all(root.join("docker")).unwrap();
+  write(root, "pyproject.toml", &strip_tool_docker(&read(root, "pyproject.toml")));
+  // A stray empty `docker/` dir must not count either.
+  fs::create_dir_all(root.join("docker")).unwrap();
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  assert!(!read(root, "pyproject.toml").contains("[tool.docker]"));
+  assert!(!root.join(".dockerignore").exists());
+}
+
+fn git_init(root: &Path) {
+  for args in [&["init", "-q"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"]] {
+    let out = std::process::Command::new("git").current_dir(root).args(args).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+  }
+}
+
+#[test]
+fn gitignored_managed_files_get_negation_lines_appended() {
+  let dir = make_project();
+  let root = dir.path();
+  git_init(root);
+  let gi = read(root, ".gitignore");
+  write(root, ".gitignore", &format!("{gi}\n# project rule\n*.json\n"));
+
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let gi = read(root, ".gitignore");
+  assert!(gi.contains("\n!.claude/settings.json\n"), "{gi}");
+  assert!(gi.contains("\n!.mcp.json\n"), "{gi}");
+  assert!(gi.contains("\n!.vscode/settings.json\n"), "{gi}");
+  assert!(!gi.contains("!.env"), ".env must stay ignored: {gi}");
+  let ignored = std::process::Command::new("git")
+    .current_dir(root)
+    .args(["check-ignore", "-q", ".mcp.json"])
+    .status()
+    .unwrap();
+  assert!(!ignored.success(), ".mcp.json must no longer be ignored");
+
+  let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  assert!(again.is_empty(), "second run must be a no-op:\n{}", again.report(root));
+}
+
+#[test]
+fn obsolete_artifacts_are_reported_not_removed() {
+  let dir = make_project();
+  let root = dir.path();
+  fs::remove_dir_all(root.join("docker")).unwrap();
+  write(root, ".github/copilot-instructions.md", "old\n");
+  assert!(
+    read(root, "pyproject.toml").contains("[tool.docker]"),
+    "fixture is expected to carry the table"
+  );
+
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  assert!(
+    changes.notes.iter().any(|n| n.contains("copilot-instructions.md")),
+    "{:?}",
+    changes.notes
+  );
+  assert!(changes.notes.iter().any(|n| n.contains("[tool.docker]")), "{:?}", changes.notes);
+  assert_eq!(read(root, ".github/copilot-instructions.md"), "old\n");
+  assert!(read(root, "pyproject.toml").contains("[tool.docker]"));
+}

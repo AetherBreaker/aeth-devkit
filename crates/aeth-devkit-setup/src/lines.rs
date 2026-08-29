@@ -172,6 +172,26 @@ pub fn line_union(original: Option<&str>, template: &str, log: &mut Vec<String>)
   join(&lines, eol)
 }
 
+/// Append `rules` to a line-based file (`.gitignore`), skipping any already present, and
+/// keeping the file's line-ending style. `None` creates the file.
+pub fn append_rules(original: Option<&str>, rules: &[String]) -> String {
+  let eol = line_ending(original);
+  let mut out = original.unwrap_or("").to_string();
+  let existing: HashSet<String> = split_lines(&out).iter().map(|l| norm(l)).collect();
+  let new: Vec<&String> = rules.iter().filter(|r| !existing.contains(&norm(r))).collect();
+  if new.is_empty() {
+    return out;
+  }
+  if !out.is_empty() && !out.ends_with('\n') {
+    out.push_str(eol);
+  }
+  for r in new {
+    out.push_str(r);
+    out.push_str(eol);
+  }
+  out
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

@@ -76,10 +76,9 @@ impl ProjectContext {
       }
     }
 
-    let has_docker = root.join("docker").is_dir()
-      || std::fs::read_dir(&root)?
-        .flatten()
-        .any(|e| e.file_name().to_string_lossy().starts_with("Dockerfile"));
+    // A bare `docker/` directory (empty, or a stray leftover) is not a Docker setup; it
+    // has to hold a Dockerfile or a compose file, or the root has to have a Dockerfile.
+    let has_docker = dir_has_docker_content(&root) || dir_has_docker_content(&root.join("docker"));
 
     Ok(Self {
       root,
@@ -100,6 +99,15 @@ impl ProjectContext {
     let replaced = value.replace("${workspaceFolder}", &self.root.to_string_lossy());
     PathBuf::from(replaced.replace('/', std::path::MAIN_SEPARATOR_STR))
   }
+}
+
+/// Whether `dir` directly contains a `Dockerfile*` or a `compose.yml`/`compose.yaml`.
+fn dir_has_docker_content(dir: &Path) -> bool {
+  let Ok(entries) = std::fs::read_dir(dir) else { return false };
+  entries.flatten().any(|e| {
+    let name = e.file_name().to_string_lossy().to_string();
+    e.path().is_file() && (name.starts_with("Dockerfile") || matches!(name.as_str(), "compose.yml" | "compose.yaml"))
+  })
 }
 
 /// The sole package directory under `dir` (has `__init__.py`), if unambiguous.
@@ -154,5 +162,41 @@ mod tests {
     assert_eq!(dependency_name("aeth-ext[sftp, async]>=8.0.2"), "aeth-ext");
     assert_eq!(dependency_name("Mypy"), "mypy");
     assert_eq!(dependency_name("pandas_stubs >= 3"), "pandas-stubs");
+  }
+}
+
+#[cfg(test)]
+mod docker_detection {
+  use super::*;
+
+  fn project(files: &[&str]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("pyproject.toml"), "[project]\nname = \"p\"\n").unwrap();
+    for f in files {
+      let p = dir.path().join(f);
+      std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+      std::fs::write(p, "").unwrap();
+    }
+    dir
+  }
+
+  #[test]
+  fn a_bare_docker_directory_is_not_a_docker_setup() {
+    let dir = project(&["docker/.keep"]);
+    assert!(!ProjectContext::discover(dir.path()).unwrap().has_docker);
+  }
+
+  #[test]
+  fn real_docker_content_is() {
+    for files in [
+      &["Dockerfile"][..],
+      &["Dockerfile.dev"],
+      &["docker/Dockerfile"],
+      &["docker/compose.yaml"],
+      &["docker/compose.yml"],
+    ] {
+      let dir = project(files);
+      assert!(ProjectContext::discover(dir.path()).unwrap().has_docker, "{files:?}");
+    }
   }
 }

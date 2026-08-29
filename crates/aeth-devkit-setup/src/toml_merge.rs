@@ -7,6 +7,7 @@ use crate::context::{ProjectContext, dependency_name};
 
 const ADDED_COMMENT_PREFIX: &str = " # setup-project added: ";
 const IF_DEP_MARKER: &str = "setup-project: if-dep ";
+const IF_DOCKER_MARKER: &str = "setup-project: if-docker";
 
 pub fn merge_pyproject(original: &str, template: &str, ctx: &ProjectContext, log: &mut Vec<String>) -> Result<String> {
   let mut doc: DocumentMut = original.parse().context("parsing project pyproject.toml")?;
@@ -79,6 +80,9 @@ impl Merger<'_> {
       if let Some(dep) = conditional_dep(template, key)
         && !self.ctx.has_dependency(&dep)
       {
+        continue;
+      }
+      if conditional_docker(template, key) && !self.ctx.has_docker {
         continue;
       }
       let tkey = template.key(key).expect("iterating template keys").clone();
@@ -155,20 +159,31 @@ impl Merger<'_> {
   }
 }
 
+/// The comment lines directly above a template table, with `#` and whitespace stripped.
+fn marker_lines(template: &Table, key: &str) -> Vec<String> {
+  let Some(Item::Table(t)) = template.get(key) else {
+    return Vec::new();
+  };
+  let Some(prefix) = t.decor().prefix().and_then(|p| p.as_str()) else {
+    return Vec::new();
+  };
+  prefix
+    .lines()
+    .map(|l| l.trim().trim_start_matches('#').trim().to_string())
+    .collect()
+}
+
 /// `# setup-project: if-dep NAME` in the comment block directly above a template table.
 fn conditional_dep(template: &Table, key: &str) -> Option<String> {
-  let item = template.get(key)?;
-  let prefix = match item {
-    Item::Table(t) => t.decor().prefix()?.as_str()?.to_string(),
-    _ => return None,
-  };
-  prefix.lines().find_map(|l| {
-    l.trim()
-      .trim_start_matches('#')
-      .trim()
-      .strip_prefix(IF_DEP_MARKER)
-      .map(|d| d.trim().to_string())
-  })
+  marker_lines(template, key)
+    .iter()
+    .find_map(|l| l.strip_prefix(IF_DEP_MARKER).map(|d| d.trim().to_string()))
+}
+
+/// `# setup-project: if-docker` above a template table: merge only into projects that
+/// actually have a Docker setup (see `ProjectContext::has_docker`).
+fn conditional_docker(template: &Table, key: &str) -> bool {
+  marker_lines(template, key).iter().any(|l| l == IF_DOCKER_MARKER)
 }
 
 fn has_only_subtables(t: &Table) -> bool {
@@ -351,5 +366,39 @@ mod tests {
     assert!(!out.contains("\"pyright>=1.1.400\""), "{out}");
     assert!(out.contains("\"poe-tasks>=4.0.0\""));
     assert!(out.contains("\"poethepoet>=0.46.0\""));
+  }
+}
+
+#[cfg(test)]
+mod docker_tests {
+  use super::*;
+  use std::collections::HashSet;
+
+  fn ctx(has_docker: bool) -> ProjectContext {
+    ProjectContext {
+      root: std::path::PathBuf::from("D:/proj"),
+      package: "proj".into(),
+      dependencies: HashSet::new(),
+      has_docker,
+      python_dir: "src".into(),
+      has_rust: false,
+    }
+  }
+
+  const TPL: &str = "[tool.pyright]\n  strict = true\n\n# setup-project: if-docker\n[tool.docker]\n  mkdirs = []\n";
+
+  #[test]
+  fn if_docker_table_is_skipped_without_a_docker_setup() {
+    let mut log = vec![];
+    let out = merge_pyproject("[project]\nname = \"p\"\n", TPL, &ctx(false), &mut log).unwrap();
+    assert!(!out.contains("[tool.docker]"), "{out}");
+    assert!(out.contains("[tool.pyright]"), "{out}");
+  }
+
+  #[test]
+  fn if_docker_table_is_merged_with_a_docker_setup() {
+    let mut log = vec![];
+    let out = merge_pyproject("[project]\nname = \"p\"\n", TPL, &ctx(true), &mut log).unwrap();
+    assert!(out.contains("[tool.docker]"), "{out}");
   }
 }
