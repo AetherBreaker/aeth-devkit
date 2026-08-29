@@ -9,12 +9,14 @@
 
 pub mod cache;
 pub mod format;
+pub mod install;
 pub mod resolve;
 pub mod scripts;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use aeth_devkit_core::process::SystemRunner;
@@ -51,10 +53,24 @@ pub enum Command {
     #[arg(long)]
     bash: bool,
   },
+  /// Install the completion into your shell profile(s), replacing poe's own registration.
+  #[command(group = clap::ArgGroup::new("shell").required(true).multiple(true))]
+  Install {
+    /// Add a line to $PROFILE (and remove poe's `_powershell_completion` line).
+    #[arg(long, group = "shell")]
+    powershell: bool,
+    /// Write ~/bash_completion.d/poe.bash (Git Bash) and
+    /// ~/.local/share/bash-completion/completions/poe (bash-completion package).
+    #[arg(long, group = "shell")]
+    bash: bool,
+    /// Report what would change without writing.
+    #[arg(long)]
+    dry_run: bool,
+  },
 }
 
-/// What to print for `args`, given a fully resolved directory. Separated from the I/O so it
-/// can be tested without a shell.
+/// What to print for the data and script subcommands. Separated from the I/O so it can be
+/// tested without a shell. (`install` has side effects and goes through [`run_install`].)
 pub fn output(command: &Command, no_cache: bool) -> String {
   match command {
     Command::Tasks { dir } => {
@@ -72,6 +88,7 @@ pub fn output(command: &Command, no_cache: bool) -> String {
         .unwrap_or_default()
     }
     Command::Script { bash, .. } => if *bash { scripts::BASH } else { scripts::POWERSHELL }.to_string(),
+    Command::Install { .. } => String::new(),
   }
 }
 
@@ -85,8 +102,66 @@ fn project_dir(dir: Option<&str>) -> PathBuf {
   }
 }
 
-/// Production entry: never exits non-zero — a completer that errors breaks the shell.
+/// The bash completion files, in the order they are written. Both hold the same script;
+/// see the module doc in [`install`] for why there are two.
+fn bash_targets(home: &std::path::Path) -> Vec<PathBuf> {
+  vec![
+    home.join("bash_completion.d").join("poe.bash"),
+    home
+      .join(".local")
+      .join("share")
+      .join("bash-completion")
+      .join("completions")
+      .join("poe"),
+  ]
+}
+
+/// `install`: print every change, and the warning or refusal from the PATH preflight.
+pub fn run_install(powershell: bool, bash: bool, dry_run: bool) -> Result<()> {
+  let path_var = std::env::var("PATH").unwrap_or_default();
+  if let Some(warning) = install::preflight(&path_var)? {
+    eprintln!("{warning}");
+  }
+  let mut log = Vec::new();
+  if powershell {
+    let profile = install::powershell_profile(&SystemRunner)?;
+    log.extend(install::install_powershell(&profile, dry_run)?);
+  }
+  if bash {
+    let home = std::env::var_os("HOME")
+      .or_else(|| std::env::var_os("USERPROFILE"))
+      .map(PathBuf::from)
+      .ok_or_else(|| anyhow::anyhow!("neither HOME nor USERPROFILE is set"))?;
+    log.extend(install::install_bash(&bash_targets(&home), scripts::BASH, dry_run)?);
+  }
+  if log.is_empty() {
+    println!("Nothing to do — completion is already installed.");
+  } else {
+    println!("{}", if dry_run { "Would change:" } else { "Changed:" });
+    for l in &log {
+      println!("  - {l}");
+    }
+    if !dry_run {
+      println!("Open a new shell for it to take effect. Re-run this after upgrading devkit if the script changes.");
+    }
+  }
+  Ok(())
+}
+
+/// Production entry. The data/script subcommands never exit non-zero — a completer that
+/// errors breaks the shell — but `install` is an ordinary command and may.
 pub fn run_real(args: &Args) -> ExitCode {
-  print!("{}", output(&args.command, args.no_cache));
-  ExitCode::SUCCESS
+  match &args.command {
+    Command::Install { powershell, bash, dry_run } => match run_install(*powershell, *bash, *dry_run) {
+      Ok(()) => ExitCode::SUCCESS,
+      Err(e) => {
+        eprintln!("error: {e:#}");
+        ExitCode::from(1)
+      }
+    },
+    other => {
+      print!("{}", output(other, args.no_cache));
+      ExitCode::SUCCESS
+    }
+  }
 }
