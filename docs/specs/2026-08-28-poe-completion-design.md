@@ -124,11 +124,15 @@ behavioural difference from poe and is documented rather than hidden.
 
 | command | output |
 | --- | --- |
-| `devkit complete tasks [dir]` | task names, one per line — replaces `poe _list_tasks` |
-| `devkit complete args <task> [dir]` | that task's option/arg names — replaces `poe _describe_task_args` |
-| `devkit complete --powershell` | a completion script to add to `$PROFILE` |
-| `devkit complete --bash` | a completion script to source from `.bashrc` |
-| `devkit complete --no-cache` | modifier: bypass and rewrite the cache |
+| `devkit complete tasks [dir]` | task names on one space-separated line — replaces `poe _list_tasks` |
+| `devkit complete args <task> [dir]` | that task's arguments, tab-separated — replaces `poe _describe_task_args` |
+| `devkit complete script --powershell` | a completion script to add to `$PROFILE` (the default shell) |
+| `devkit complete script --bash` | a completion script to source from `.bashrc` |
+| `devkit complete --no-cache …` | global modifier: bypass and rewrite the cache |
+
+An empty `[dir]` argument — which the scripts pass when no `-C` was given — means the
+current directory. Any failure prints nothing and exits 0: a completer that errors breaks
+the shell.
 
 The emitted scripts are poe's generated ones, captured and transformed by
 `scratchpad/gen_scripts.py` into `src/scripts.rs` — same global option list, same
@@ -153,7 +157,8 @@ with no `include_script` never starts Python at all.
 Output parity, verified: `devkit complete tasks` prints the same task list as
 `poe _list_tasks`, and `devkit complete args lock` matches `poe _describe_task_args lock`
 byte-for-byte except that poe emits CRLF on Windows and devkit emits LF. LF is the safer
-choice: the bash script's `read -r` would otherwise keep a stray `` in the last field.
+choice: the bash script's `read -r` would otherwise keep a stray carriage return in the last
+field.
 The parity test in `tests/format_cache.rs` runs against the real venv `poe` and skips (with
 a note) when it is absent.
 
