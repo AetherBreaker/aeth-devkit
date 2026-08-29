@@ -74,12 +74,24 @@ pub fn parse_simple_html(body: &str, package: &str) -> Vec<String> {
 }
 
 /// Fetches the project page over HTTP, preferring PEP 691 JSON and falling back to HTML.
-pub struct HttpIndexClient;
+/// `timeout` bounds the whole request; `None` means ureq's default (no limit).
+#[derive(Default)]
+pub struct HttpIndexClient {
+  pub timeout: Option<std::time::Duration>,
+}
+
+impl HttpIndexClient {
+  pub fn with_timeout(timeout: std::time::Duration) -> Self {
+    Self { timeout: Some(timeout) }
+  }
+}
 
 impl IndexClient for HttpIndexClient {
   fn versions(&self, simple_url: &str, package: &str) -> Result<Vec<String>> {
     let url = project_url(simple_url, package);
-    let mut resp = ureq::get(&url)
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(self.timeout).build().into();
+    let mut resp = agent
+      .get(&url)
       .header("Accept", &format!("{PEP691_JSON}, text/html;q=0.1"))
       .call()
       .with_context(|| format!("fetching {url}"))?;

@@ -24,6 +24,18 @@ enum Command {
   Complete(aeth_devkit_complete::Args),
 }
 
+impl Command {
+  /// Whether to append the outdated-devkit nag after this command. The completion data and
+  /// script subcommands run on every Tab press and their output must stay pure and fast, so
+  /// only `complete install` — an ordinary, interactive command — gets it.
+  fn wants_update_check(&self) -> bool {
+    match self {
+      Command::Complete(args) => matches!(args.command, aeth_devkit_complete::Command::Install { .. }),
+      _ => true,
+    }
+  }
+}
+
 fn main() -> ExitCode {
   let cli = Cli::parse();
   let result = match &cli.command {
@@ -32,6 +44,11 @@ fn main() -> ExitCode {
     Command::Release(args) => aeth_devkit_release::run_real(args),
     Command::Complete(args) => Ok(aeth_devkit_complete::run_real(args)),
   };
+  // Last thing printed, so it is what the user sees; runs even after a failure, since an
+  // outdated devkit may be the reason for it.
+  if cli.command.wants_update_check() {
+    aeth_devkit_core::update::nag(env!("CARGO_PKG_VERSION"));
+  }
   match result {
     Ok(code) => code,
     Err(e) => {

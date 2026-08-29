@@ -13,11 +13,13 @@ name = "aeth-devkit"
 version = "7.1.0"
 dependencies = [
  "aeth-devkit-complete",
+ "aeth-devkit-core",
  "aeth-devkit-lock",
  "aeth-devkit-release",
  "aeth-devkit-setup",
  "anyhow",
  "clap",
+ "tempfile",
 ]
 
 [[package]]
@@ -41,6 +43,7 @@ dependencies = [
  "base64 0.22.1",
  "pep440_rs",
  "regex",
+ "serde",
  "serde_json",
  "tempfile",
  "toml_edit",

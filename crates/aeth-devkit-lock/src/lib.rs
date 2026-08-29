@@ -113,7 +113,7 @@ pub fn run(args: &Args, index: &dyn IndexClient, runner: &dyn Runner) -> Result<
 pub fn run_real(args: &Args) -> Result<ExitCode> {
   run(
     args,
-    &aeth_devkit_core::index::HttpIndexClient,
+    &aeth_devkit_core::index::HttpIndexClient::default(),
     &aeth_devkit_core::process::SystemRunner,
   )
 }
