@@ -87,9 +87,17 @@ fn resolve(project_dir: &Path, tool: &Tool) -> (String, Vec<String>) {
 pub fn scope(project_dir: &Path, runner: &dyn Runner) -> Option<Vec<String>> {
   // A tiny closure over the runner: yields captured stdout only for a clean exit, so
   // "git is missing", "not a repo", and "that ref does not exist" all collapse to `None`.
+  //
+  // `-c core.quotePath=false` matters more than it looks: the setting defaults to *on*, and
+  // with it git wraps a non-ASCII path in quotes and octal-escapes the bytes, so `cafe.py`
+  // with an accented `e` arrives as a quoted, escaped string that no longer ends in `.py`.
+  // Such a file fails the suffix test below and vanishes from the scope; a branch touching
+  // only non-ASCII paths would lint nothing while the hook stayed silent. Setting it here
+  // ignores whatever the user has configured.
   let git = |args: &[&str]| -> Option<String> {
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    let out = runner.run_capture("git", &args, project_dir).ok()?;
+    let mut full: Vec<String> = vec!["-c".to_string(), "core.quotePath=false".to_string()];
+    full.extend(args.iter().map(|s| s.to_string()));
+    let out = runner.run_capture("git", &full, project_dir).ok()?;
     out.success().then_some(out.stdout)
   };
 
@@ -101,22 +109,36 @@ pub fn scope(project_dir: &Path, runner: &dyn Runner) -> Option<Vec<String>> {
 
   // Prefer the remote's view of the default branch: a stale local `main` would otherwise
   // widen the diff to include everything merged since it was last pulled.
-  let base = ["origin/main", "origin/master", "main", "master"]
+  let base_rev = ["origin/main", "origin/master", "main", "master"]
     .into_iter()
     .find_map(|candidate| git(&["merge-base", "HEAD", candidate]))
     .map(|s| s.trim().to_string())
     .filter(|s| !s.is_empty())?;
 
+  // Every source below names paths from the *repo root*, which is the directory the checker
+  // runs in only when Claude was opened at the repo root. Resolving through the root first
+  // is what lets the three sources be compared to each other and handed to ruff safely.
+  let toplevel = git(&["rev-parse", "--show-toplevel"])
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+    .map(PathBuf::from)
+    .unwrap_or_else(|| project_dir.to_path_buf());
+  // Canonicalize both sides so the `strip_prefix` below compares like with like: on Windows
+  // that also settles the verbatim `\\?\` prefix and 8.3 short names, which would never match otherwise.
+  let base = std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
+
   let mut files: Vec<String> = Vec::new();
   // `--diff-filter=d` drops deletions: ruff errors out when handed a path that is gone.
-  let three_dot = format!("{base}...HEAD");
+  let three_dot = format!("{base_rev}...HEAD");
   let sources: [Vec<&str>; 3] = [
     // Committed work on this branch, measured from where it diverged.
     vec!["diff", "--name-only", "--diff-filter=d", &three_dot],
     // Staged and unstaged edits not yet committed.
     vec!["diff", "--name-only", "--diff-filter=d", "HEAD"],
-    // Brand-new files git is not tracking yet.
-    vec!["ls-files", "--others", "--exclude-standard"],
+    // Brand-new files git is not tracking yet. `--full-name` makes these repo-root-relative
+    // like the two diffs; without it they come back relative to the cwd and the three
+    // sources silently disagree about what the same path means.
+    vec!["ls-files", "--others", "--exclude-standard", "--full-name"],
   ];
   for args in sources {
     let Some(out) = git(&args) else { continue };
@@ -126,9 +148,23 @@ pub fn scope(project_dir: &Path, runner: &dyn Runner) -> Option<Vec<String>> {
       if !(path.ends_with(".py") || path.ends_with(".pyi")) {
         continue;
       }
+      let abs = toplevel.join(path);
+      // `--diff-filter=d` only drops files deleted *in the commits being compared*. A file
+      // added earlier on the branch and then removed from the worktree without committing is
+      // still listed by the commit-to-commit diff, and handing ruff a path that is gone earns
+      // an `E902 ... (os error 2)` that Claude is then asked to fix -- on every turn, with no
+      // fix available, until the deletion is committed.
+      if !abs.is_file() {
+        continue;
+      }
+      // Name the file the way the directory ruff runs in names it, and drop anything outside
+      // that directory: a path ruff cannot resolve is worse than a file left unchecked.
+      let abs = std::fs::canonicalize(&abs).unwrap_or(abs);
+      let Ok(rel) = abs.strip_prefix(&base) else { continue };
+      let rel = rel.to_string_lossy().replace('\\', "/");
       // The three sources overlap: a file can be committed on the branch and since re-edited.
-      if !files.iter().any(|f| f == path) {
-        files.push(path.to_string());
+      if !files.contains(&rel) {
+        files.push(rel);
       }
     }
   }

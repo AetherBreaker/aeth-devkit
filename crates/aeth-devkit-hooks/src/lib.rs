@@ -10,6 +10,7 @@
 mod pre;
 mod stop;
 
+use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -46,6 +47,12 @@ pub struct Args {
 pub struct Payload {
   #[serde(default)]
   pub tool_input: ToolInput,
+  /// Set by Claude when this Stop hook is firing on a turn a previous Stop hook already
+  /// continued. Without it the checkers re-run on every continuation and report the same
+  /// findings again, which continues the turn again -- a loop that only ends when the
+  /// findings do. Claude Code's own guidance is to return success while this is true.
+  #[serde(default)]
+  pub stop_hook_active: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -65,6 +72,12 @@ pub fn run(hook: Hook, payload: &str, project_dir: &Path, runner: &dyn Runner) -
   // Unparseable stdin → silence, per the module doc. `unwrap_or_default` turns the `Err`
   // into an all-empty `Payload`, which every hook below treats as "nothing to see".
   let payload: Payload = serde_json::from_str(payload).unwrap_or_default();
+  // A Stop hook that already continued the turn must not continue it again: the checkers
+  // are deterministic, so a second run reports exactly what the first one did. The Pre
+  // hooks are unaffected -- they decide one tool call and never continue a turn.
+  if payload.stop_hook_active && matches!(hook, Hook::StopRuff | Hook::StopPyright | Hook::StopClean) {
+    return None;
+  }
   let decision = match hook {
     Hook::PreEditProtect => pre::edit_protect(&payload.tool_input.file_path),
     Hook::PreBashProtectDeps => pre::bash_protect_deps(&payload.tool_input.command),
@@ -90,7 +103,10 @@ pub fn run_real(args: &Args) -> ExitCode {
     .or_else(|_| std::env::current_dir())
     .unwrap_or_else(|_| std::path::PathBuf::from("."));
   if let Some(decision) = run(args.hook, &payload, &project_dir, &aeth_devkit_core::process::SystemRunner) {
-    println!("{decision}");
+    // `println!` *panics* when stdout is gone -- Claude killing the hook at its configured
+    // timeout, or a session interrupt, both do that. A panic exits 101, which is the hook
+    // error this crate exists to avoid, so the write failure is swallowed instead.
+    let _ = writeln!(std::io::stdout(), "{decision}");
   }
   ExitCode::SUCCESS
 }
