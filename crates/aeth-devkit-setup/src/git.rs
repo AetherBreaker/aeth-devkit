@@ -31,11 +31,18 @@ pub fn is_ignored(root: &Path, rel: &str) -> bool {
     .is_ok_and(|s| s.success())
 }
 
-/// Files from `changes` that should be committed: never env files, and not gitignored.
+/// Files from `changes` that should be committed: never env files, never anything outside
+/// the repository, and not gitignored.
 fn trackable(root: &Path, changes: &Changes) -> Result<Vec<String>> {
   let mut out = Vec::new();
   for f in &changes.files {
-    let rel = f.path.strip_prefix(root).unwrap_or(&f.path).to_string_lossy().replace('\\', "/");
+    // A path that does not sit under `root` cannot be committed to this repo — a
+    // `launch.json` naming `${workspaceFolder}/../shared.env` produces one. Passing it on
+    // makes `git check-ignore` exit 128 ("outside repository"), which reads as "not
+    // ignored", and then `git add` refuses the whole invocation, so every run ends
+    // "applied but not committed".
+    let Ok(rel) = f.path.strip_prefix(root) else { continue };
+    let rel = rel.to_string_lossy().replace('\\', "/");
     if is_env_file(&rel) {
       continue;
     }

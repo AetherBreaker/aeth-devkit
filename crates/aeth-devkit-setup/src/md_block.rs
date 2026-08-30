@@ -71,38 +71,74 @@ pub fn merge_managed_block(original: Option<&str>, block: &str, log: &mut Vec<St
 ///
 /// A marker governs from the heading below it to the next heading of the same or a higher
 /// level (fewer `#`s), or to the end of the text.
+///
+/// Three things make this fiddlier than it looks, and each one used to make the gate a
+/// silent no-op — the marker was stripped either way, so the output *looked* right while the
+/// gated section shipped to a project that should never have seen it:
+///
+/// * the heading may not be on the very next line (a blank line between them is natural
+///   Markdown), so blank lines are skipped when looking for it;
+/// * a second marker can appear while the first section is still being dropped, so markers
+///   are recognised inside the skip loop rather than only outside it;
+/// * a `# ` at column 0 inside a fenced code block is a shell comment, not a heading, and
+///   letting it close a section leaks the rest plus an unbalanced fence.
 pub fn apply_if_dep(template: &str, ctx: &ProjectContext, log: &mut Vec<String>) -> String {
   let mut out = String::with_capacity(template.len());
   // `Some(level)` while we are inside a section being dropped; `None` otherwise.
   let mut skipping: Option<usize> = None;
-  // `peekable` lets us look at the line *after* a marker (its heading) without consuming it.
+  // Set while inside a ``` or ~~~ fence, where no line is a heading.
+  let mut fence: Option<String> = None;
+  // `peekable` lets us look past a marker for its heading without consuming the lines.
   let mut lines = template.lines().peekable();
+
   while let Some(line) = lines.next() {
+    // Track fences first: it decides whether the lines below count as headings at all. A
+    // fence inside a section being dropped still has to be tracked, or its closing ``` would
+    // be read as opening a new one.
+    let fence_token = fence_delimiter(line);
+    match (&fence, fence_token) {
+      (None, Some(t)) => fence = Some(t),
+      // A fence closes only on a delimiter at least as long, and of the same character.
+      (Some(open), Some(t)) if t.starts_with(open.as_str()) => fence = None,
+      _ => {}
+    }
+    let level_here = if fence.is_some() { None } else { heading_level(line) };
+
     if let Some(level) = skipping {
-      // Still dropping — until a heading that closes the gated section appears.
-      match heading_level(line) {
+      match level_here {
+        // A heading at this level or higher closes the gated section; fall through so the
+        // heading itself is examined and emitted.
         Some(l) if l <= level => skipping = None,
+        // Another marker while still dropping: gate it independently rather than swallowing
+        // it as body text, which would leave its own section ungated.
+        _ if marker_dep(line).is_some() => {}
         _ => continue,
       }
     }
-    if let Some(dep) = line.trim().strip_prefix(IF_DEP_MARKER).and_then(|r| r.strip_suffix("-->")) {
-      let dep = dep.trim();
+
+    if let Some(dep) = marker_dep(line) {
       // The marker line itself never survives into the output, kept or dropped.
-      if ctx.has_dependency(dep) {
+      if ctx.has_dependency(&dep) {
         continue;
       }
-      // Gate at the level of the heading that follows; a marker with no heading under it
-      // gates until *any* heading. The skip loop closes on `l <= level`, so the loosest
-      // gate is 6 — every heading (1..=6) satisfies it.
-      let level = match lines.peek().and_then(|l| heading_level(l)) {
-        Some(level) => {
+      // Gate at the level of the heading this marker introduces, looking past blank lines.
+      // A marker with no heading under it gates until *any* heading: the skip loop closes on
+      // `l <= level`, so the loosest gate is 6 — every heading (1..=6) satisfies it.
+      let mut level = 6;
+      while let Some(next) = lines.peek() {
+        if next.trim().is_empty() {
+          // Part of the gated section's own spacing; drop it with the section.
+          lines.next();
+          continue;
+        }
+        if let Some(l) = heading_level(next) {
+          level = l;
           // Consume the gated heading here; otherwise the skip loop above would see a
           // heading at its own level and close the section it was just asked to drop.
           lines.next();
-          level
         }
-        None => 6,
-      };
+        break;
+      }
       log.push(format!("skipped if-dep {dep} section"));
       skipping = Some(level);
       continue;
@@ -115,6 +151,26 @@ pub fn apply_if_dep(template: &str, ctx: &ProjectContext, log: &mut Vec<String>)
     out.pop();
   }
   out
+}
+
+/// The dependency named by an `<!-- setup-project: if-dep NAME -->` line, if this is one.
+fn marker_dep(line: &str) -> Option<String> {
+  let rest = line.trim().strip_prefix(IF_DEP_MARKER)?.strip_suffix("-->")?;
+  Some(rest.trim().to_string())
+}
+
+/// The run of ``` or ~~~ opening or closing a fenced code block, if this line is one.
+/// Returned rather than a bool because a fence closes only on a run at least as long as the
+/// one that opened it — ```` ```` inside a ``` block is content, not a close.
+fn fence_delimiter(line: &str) -> Option<String> {
+  let t = line.trim_start();
+  for c in ['`', '~'] {
+    let n = t.chars().take_while(|&x| x == c).count();
+    if n >= 3 {
+      return Some(c.to_string().repeat(n));
+    }
+  }
+  None
 }
 
 /// `Some(n)` for an ATX heading line with `n` leading `#`s, `None` otherwise.
@@ -246,5 +302,60 @@ b
     let tpl = "## A\n\na\n\n<!-- setup-project: if-dep nope -->\n## Z\n\nz\n";
     let mut log = vec![];
     assert_eq!(apply_if_dep(tpl, &ctx(&[]), &mut log), "## A\n\na\n");
+  }
+
+  #[test]
+  fn a_blank_line_between_marker_and_heading_does_not_disable_the_gate() {
+    // The marker used to have to sit on the very line above its heading. With a blank line
+    // between them the lookahead saw "no heading", gated at level 6, and the heading below
+    // immediately closed the section — so the gated content shipped while the log still
+    // claimed it had been dropped. Invisible, because the marker is stripped either way.
+    let tpl = "## A\n\na\n\n<!-- setup-project: if-dep nope -->\n\n## Gated\n\nsecret\n\n## Tail\n\nt\n";
+    let mut log = vec![];
+    let out = apply_if_dep(tpl, &ctx(&[]), &mut log);
+    assert!(!out.contains("Gated"), "gated section leaked:\n{out}");
+    assert!(!out.contains("secret"), "gated body leaked:\n{out}");
+    assert!(out.contains("## Tail"), "{out}");
+  }
+
+  #[test]
+  fn adjacent_if_dep_sections_are_gated_independently() {
+    // While skipping, a second marker line is not a heading, so it used to be swallowed as
+    // body text — and its own heading then closed the *first* skip and was emitted ungated.
+    let tpl = "## Always\n\na\n\n<!-- setup-project: if-dep alpha -->\n## Alpha\n\nx\n\n<!-- setup-project: if-dep beta -->\n## Beta\n\ny\n\n## Tail\n\nt\n";
+    let mut log = vec![];
+    let out = apply_if_dep(tpl, &ctx(&[]), &mut log);
+    assert!(!out.contains("## Alpha"), "{out}");
+    assert!(!out.contains("## Beta"), "second gate ignored:\n{out}");
+    assert!(out.contains("## Always") && out.contains("## Tail"), "{out}");
+    assert_eq!(log.len(), 2, "both gates must be recorded: {log:?}");
+
+    // With only `beta` present, exactly that one survives.
+    let mut log2 = vec![];
+    let out2 = apply_if_dep(tpl, &ctx(&["beta"]), &mut log2);
+    assert!(!out2.contains("## Alpha"), "{out2}");
+    assert!(out2.contains("## Beta"), "{out2}");
+  }
+
+  #[test]
+  fn a_hash_inside_a_code_fence_does_not_close_a_gated_section() {
+    // `# install` at column 0 in a shell snippet is a comment, not a heading. Treating it as
+    // one ended the section early and leaked the rest — including a closing fence whose
+    // opener had already been dropped.
+    let tpl = "## A\n\na\n\n<!-- setup-project: if-dep nope -->\n## Gated\n\n```bash\n# install\nuv sync\n```\n\nmore secret text\n\n## Tail\n\nt\n";
+    let mut log = vec![];
+    let out = apply_if_dep(tpl, &ctx(&[]), &mut log);
+    assert!(!out.contains("# install"), "fence content leaked:\n{out}");
+    assert!(!out.contains("more secret text"), "section tail leaked:\n{out}");
+    assert!(!out.contains("```"), "unbalanced fence left behind:\n{out}");
+    assert!(out.contains("## Tail"), "{out}");
+  }
+
+  #[test]
+  fn a_code_fence_is_preserved_when_the_dependency_is_present() {
+    let tpl = "<!-- setup-project: if-dep keep -->\n## Gated\n\n```bash\n# install\nuv sync\n```\n";
+    let mut log = vec![];
+    let out = apply_if_dep(tpl, &ctx(&["keep"]), &mut log);
+    assert_eq!(out, "## Gated\n\n```bash\n# install\nuv sync\n```\n");
   }
 }

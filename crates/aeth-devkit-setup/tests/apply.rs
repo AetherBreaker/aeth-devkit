@@ -520,3 +520,105 @@ fn obsolete_artifacts_are_reported_not_removed() {
   assert_eq!(read(root, ".github/copilot-instructions.md"), "old\n");
   assert!(read(root, "pyproject.toml").contains("[tool.docker]"));
 }
+
+#[test]
+fn a_path_is_reported_once_even_when_two_steps_touch_it() {
+  // Step 6 merges the .gitignore template; step 13 appends un-ignore lines to the same
+  // file. Two `FileChange` entries for one path listed it twice in the report, twice in the
+  // commit body, and twice in the `git add` argument list.
+  let dir = make_project();
+  let root = dir.path();
+  git_init(root);
+  let gi = read(root, ".gitignore");
+  write(root, ".gitignore", &format!("{gi}\n.claude/\n"));
+
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let n = changes.files.iter().filter(|f| f.path.ends_with(".gitignore")).count();
+  assert_eq!(n, 1, "one entry per path: {}", changes.report(root));
+  // Both steps' details still show up, on the single entry.
+  let entry = changes.files.iter().find(|f| f.path.ends_with(".gitignore")).unwrap();
+  assert!(
+    entry.details.iter().any(|d| d.contains("un-ignored")),
+    "step 13 detail lost: {:?}",
+    entry.details
+  );
+}
+
+#[test]
+fn a_gitignore_tightened_after_setup_still_un_ignores_managed_files() {
+  // The negation list used to be built from the files this run *changed*. Once setup has
+  // succeeded, a later run changes nothing — so a project that adds `.claude/` to its
+  // .gitignore afterwards would keep its managed files invisible to git forever.
+  let dir = make_project();
+  let root = dir.path();
+  git_init(root);
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+
+  // Now the project tightens its own .gitignore, after everything is already in place.
+  let gi = read(root, ".gitignore");
+  write(root, ".gitignore", &format!("{gi}\n.claude/\n"));
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+
+  let ignored = std::process::Command::new("git")
+    .current_dir(root)
+    .args(["check-ignore", "-q", ".claude/settings.json"])
+    .status()
+    .unwrap();
+  assert!(
+    !ignored.success(),
+    ".claude/settings.json must be un-ignored on the later run too:\n{}",
+    read(root, ".gitignore")
+  );
+}
+
+#[test]
+fn dry_run_reports_exactly_what_a_real_run_writes() {
+  // Two identical projects: one inspected, one applied. The change sets must agree, and the
+  // dry run must leave the tree byte-for-byte as it found it.
+  let a = make_project();
+  let b = make_project();
+  git_init(a.path());
+  git_init(b.path());
+
+  fn snapshot(root: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+      for e in fs::read_dir(&d).unwrap().flatten() {
+        let p = e.path();
+        if p.file_name().is_some_and(|n| n == ".git") {
+          continue;
+        }
+        if p.is_dir() {
+          stack.push(p);
+        } else {
+          let rel = p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+          out.push((rel, fs::read(&p).unwrap()));
+        }
+      }
+    }
+    out.sort();
+    out
+  }
+
+  let before = snapshot(a.path());
+  let dry = aeth_devkit_setup::run(a.path(), &templates(), true).unwrap();
+  assert_eq!(snapshot(a.path()), before, "--dry-run must not write anything");
+
+  let real = aeth_devkit_setup::run(b.path(), &templates(), false).unwrap();
+
+  fn rels(c: &aeth_devkit_setup::changes::Changes, root: &Path) -> Vec<String> {
+    let mut v: Vec<String> = c
+      .files
+      .iter()
+      .map(|f| f.path.strip_prefix(root).unwrap_or(&f.path).to_string_lossy().replace('\\', "/"))
+      .collect();
+    v.sort();
+    v
+  }
+  assert_eq!(
+    rels(&dry, a.path()),
+    rels(&real, b.path()),
+    "dry run and apply must agree on the file list"
+  );
+}
