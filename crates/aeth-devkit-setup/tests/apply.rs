@@ -572,10 +572,21 @@ fn dry_run_reports_exactly_what_a_real_run_writes() {
   let real = aeth_devkit_setup::run(b.path(), &templates(), false).unwrap();
 
   fn rels(c: &aeth_devkit_setup::changes::Changes, root: &Path) -> Vec<String> {
+    // `run` records paths under the *canonicalized* root, which on Windows need not be the
+    // spelling `tempdir()` handed us — so strip against the canonical form, or the fallback
+    // silently compares absolute paths that can never match between two temp dirs.
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let root = aeth_devkit_core::paths::strip_verbatim(root);
     let mut v: Vec<String> = c
       .files
       .iter()
-      .map(|f| f.path.strip_prefix(root).unwrap_or(&f.path).to_string_lossy().replace('\\', "/"))
+      .map(|f| {
+        f.path
+          .strip_prefix(&root)
+          .unwrap_or_else(|_| panic!("recorded path outside the project root: {}", f.path.display()))
+          .to_string_lossy()
+          .replace('\\', "/")
+      })
       .collect();
     v.sort();
     v
@@ -585,4 +596,33 @@ fn dry_run_reports_exactly_what_a_real_run_writes() {
     rels(&real, b.path()),
     "dry run and apply must agree on the file list"
   );
+}
+
+#[test]
+fn commit_works_when_the_caller_spells_the_root_differently() {
+  // `run` records every path under the *canonicalized* root, which need not match the
+  // spelling a caller passes to `commit_changes`. On Windows CI that difference is real
+  // (8.3 short names, drive-letter case, a `\?\` prefix); here it is reproduced with a
+  // redundant `sub/..` segment, which `strip_prefix` will not normalise but
+  // `canonicalize` will. A literal comparison drops every file and commits nothing.
+  let dir = make_project();
+  let root = dir.path();
+  git_init(root);
+  let out = std::process::Command::new("git")
+    .current_dir(root)
+    .args(["add", "-A"])
+    .output()
+    .unwrap();
+  assert!(out.status.success());
+  let out = std::process::Command::new("git")
+    .current_dir(root)
+    .args(["commit", "-q", "-m", "init"])
+    .output()
+    .unwrap();
+  assert!(out.status.success());
+
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let odd_root = root.join("src").join("..");
+  let hash = aeth_devkit_setup::git::commit_changes(&odd_root, &changes).unwrap();
+  assert!(hash.is_some(), "a differently-spelled root must still commit the managed files");
 }
