@@ -58,6 +58,12 @@
   module-name   = "aeth_devkit"
   python-source = "python"
 
+  # `_tasks_source.py` imports poethepoet_tasks, which is a build requirement rather than a
+  # runtime one, so in an installed wheel it would be a module that cannot be imported.
+  # Nothing imports it at runtime, but it should not ship. The sdist keeps it: that is what
+  # build.rs regenerates the baked table from during a source build.
+  exclude = [{ path = "python/aeth_devkit/_tasks_source.py", format = "wheel" }]
+
 [tool.poe]
   include_script = [
     { script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }
