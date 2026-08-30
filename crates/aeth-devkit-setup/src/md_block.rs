@@ -228,14 +228,17 @@ loose text
 b
 ";
     let mut log = vec![];
-    assert_eq!(apply_if_dep(tpl, &ctx(&[]), &mut log), "## A
+    assert_eq!(
+      apply_if_dep(tpl, &ctx(&[]), &mut log),
+      "## A
 
 a
 
 ### B
 
 b
-");
+"
+    );
   }
 
   #[test]
