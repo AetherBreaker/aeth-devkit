@@ -7,9 +7,19 @@
 # for mixed Rust/Python projects where src/ belongs to cargo.
 
 [dependency-groups]
+  # Every tool this template writes config for below, so a fresh project can actually run the
+  # thing it was just configured for. The pytest entries are not optional: [tool.pytest]
+  # sets --strict-config, which turns a missing plugin into a hard failure, so a bare `pytest`
+  # errors out without pytest-cov (addopts passes --cov) and pytest-asyncio (asyncio_mode).
+  # mypy is deliberately absent -- [tool.mypy] is `if-dep mypy` gated and stays opt-in.
   dev = [
     "poethepoet>=0.46.0",
     "pyright>=1.1.411",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "ruff>=0.15",
+    "tombi>=1.5",
   ]
 
 [tool.coverage]

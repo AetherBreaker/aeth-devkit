@@ -23,7 +23,9 @@
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
-  ]                        # setup-project added: "poethepoet>=0.46.0"
+    "ruff>=0.15",
+    "tombi>=1.5",
+  ]                             # setup-project added: "poethepoet>=0.46.0"
 
 [build-system]
   # poethepoet-tasks is a build requirement because `crates/aeth-devkit/build.rs` regenerates
@@ -71,9 +73,7 @@
   exclude = [{ path = "python/aeth_devkit/_tasks_source.py", format = "wheel" }]
 
 [tool.poe]
-  include_script = [
-    { script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }
-  ]
+  include_script = [{ script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }]
 
 [tool.pyright]
   verboseOutput          = true
