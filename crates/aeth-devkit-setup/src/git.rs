@@ -38,18 +38,33 @@ pub fn is_ignored(root: &Path, rel: &str) -> bool {
     .is_ok_and(|s| s.success())
 }
 
+/// `path` named relative to `root`, or `None` when it does not live under it.
+///
+/// `run` works from a *canonicalized* root, so every recorded path is in that spelling —
+/// which need not be the spelling a caller passes here. On Windows the same directory can
+/// arrive as an 8.3 short name, with a `\\?\` prefix, or with different drive-letter case,
+/// and a plain `strip_prefix` then fails on paths that are genuinely inside the repo. Trying
+/// the caller's spelling first and the canonical one second keeps the "outside the
+/// repository" answer meaning only that.
+fn relative_to(root: &Path, path: &Path) -> Option<String> {
+  let rel = path.strip_prefix(root).ok().or_else(|| {
+    let canon = aeth_devkit_core::paths::strip_verbatim(std::fs::canonicalize(root).ok()?);
+    path.strip_prefix(&canon).ok()
+  })?;
+  Some(rel.to_string_lossy().replace('\\', "/"))
+}
+
 /// Files from `changes` that should be committed: never env files, never anything outside
 /// the repository, and not gitignored.
 fn trackable(root: &Path, changes: &Changes) -> Result<Vec<String>> {
   let mut out = Vec::new();
   for f in &changes.files {
-    // A path that does not sit under `root` cannot be committed to this repo — a
+    // A path that really does not sit under `root` cannot be committed to this repo — a
     // `launch.json` naming `${workspaceFolder}/../shared.env` produces one. Passing it on
     // makes `git check-ignore` exit 128 ("outside repository"), which reads as "not
     // ignored", and then `git add` refuses the whole invocation, so every run ends
     // "applied but not committed".
-    let Ok(rel) = f.path.strip_prefix(root) else { continue };
-    let rel = rel.to_string_lossy().replace('\\', "/");
+    let Some(rel) = relative_to(root, &f.path) else { continue };
     if is_intentionally_local(&rel) {
       continue;
     }
@@ -69,7 +84,7 @@ pub fn commit_changes(root: &Path, changes: &Changes) -> Result<Option<String>> 
   }
   let mut body = String::new();
   for f in &changes.files {
-    let rel = f.path.strip_prefix(root).unwrap_or(&f.path).to_string_lossy().replace('\\', "/");
+    let rel = relative_to(root, &f.path).unwrap_or_default();
     if files.contains(&rel) {
       body.push_str(&format!("- {rel}: {}\n", if f.created { "created" } else { "updated" }));
     }
