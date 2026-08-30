@@ -84,8 +84,16 @@ fn check_interrupt(deps: &Deps) -> Result<()> {
 
 /// Run a tool with inherited stdio (the user sees its output) and require exit code 0.
 fn run_ok(deps: &Deps, root: &Path, program: &str, args: &[&str]) -> Result<()> {
+  run_ok_env(deps, root, program, args, &[])
+}
+
+/// Like [`run_ok`] but with extra variables set on the child.
+///
+/// Note what the error message does *not* contain: `env`. Only `args` is interpolated, so a
+/// secret passed this way cannot reach a log, a terminal, or an `anyhow` chain.
+fn run_ok_env(deps: &Deps, root: &Path, program: &str, args: &[&str], env: &[(&str, &str)]) -> Result<()> {
   let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-  match deps.runner.run_inherit(program, &owned, root)? {
+  match deps.runner.run_inherit_env(program, &owned, root, env)? {
     Some(0) => Ok(()),
     Some(code) => bail!("{program} {} exited with {code}", args.join(" ")),
     None => bail!("{program} was terminated by a signal"),
@@ -395,12 +403,22 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
 
   check_interrupt(deps)?;
   println!("[7/9] Publishing to {}...", plan.cfg.index_name);
-  // Credentials are deliberately *not* on the command line: uv reads
-  // `UV_INDEX_<NAME>_USERNAME` / `_PASSWORD` from the environment it inherits (the same
-  // variables `config::resolve` required), and argv would leak the password into process
-  // listings and into `run_ok`'s error text.
+  // Credentials go in the child's *environment*, never on the command line — argv would put
+  // the password in every process listing and in `run_ok`'s error text.
+  //
+  // The variable names matter, and are not the ones `config::resolve` reads. uv keeps two
+  // separate sets: `UV_INDEX_<NAME>_USERNAME` / `_PASSWORD` authenticate *reads* from an
+  // index during resolution, while `uv publish` looks for `UV_PUBLISH_USERNAME` /
+  // `_PASSWORD`. Passing only the first pair left uv with no publish credentials, so it
+  // stopped and prompted on the terminal at step 7 of 9 — after the commit and tag were
+  // already made — and only reached the index pair as a fallback once the prompt came back
+  // empty. Handing it the names it actually documents removes the prompt.
   let devpi_url = plan.cfg.devpi_url(new);
-  if let Err(e) = run_ok(deps, root, "uv", &["publish", "--index", &plan.cfg.index_name]) {
+  let publish_env = [
+    ("UV_PUBLISH_USERNAME", plan.cfg.username.as_str()),
+    ("UV_PUBLISH_PASSWORD", plan.cfg.password.as_str()),
+  ];
+  if let Err(e) = run_ok_env(deps, root, "uv", &["publish", "--index", &plan.cfg.index_name], &publish_env) {
     // A non-zero exit is not proof nothing landed: the wheel can upload before the sdist
     // fails. But existence alone is not proof it was *us*, either — a concurrent release
     // of the same version could have won the race after pre-flight, and deleting theirs

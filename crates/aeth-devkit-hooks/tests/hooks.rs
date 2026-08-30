@@ -217,7 +217,7 @@ fn stop_output_is_truncated_to_4000_chars_on_a_char_boundary() {
 /// A runner whose spawn itself fails — the tool is not installed at all.
 struct FailingRunner;
 impl aeth_devkit_core::process::Runner for FailingRunner {
-  fn run_inherit(&self, _: &str, _: &[String], _: &Path) -> anyhow::Result<Option<i32>> {
+  fn run_inherit_env(&self, _: &str, _: &[String], _: &Path, _: &[(&str, &str)]) -> anyhow::Result<Option<i32>> {
     anyhow::bail!("program not found")
   }
   fn run_capture(&self, _: &str, _: &[String], _: &Path) -> anyhow::Result<aeth_devkit_core::process::CapturedOutput> {

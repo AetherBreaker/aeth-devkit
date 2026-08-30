@@ -58,7 +58,7 @@ mod tests {
   /// Fails every spawn the way `Command::status` does when the program is not on PATH.
   struct MissingRunner;
   impl Runner for MissingRunner {
-    fn run_inherit(&self, program: &str, _: &[String], _: &Path) -> Result<Option<i32>> {
+    fn run_inherit_env(&self, program: &str, _: &[String], _: &Path, _: &[(&str, &str)]) -> Result<Option<i32>> {
       use anyhow::Context as _;
       Err(std::io::Error::from(std::io::ErrorKind::NotFound)).with_context(|| format!("running {program}"))
     }
@@ -75,7 +75,7 @@ mod tests {
     exit_code: i32,
   }
   impl Runner for RewritingRunner {
-    fn run_inherit(&self, _: &str, _: &[String], cwd: &Path) -> Result<Option<i32>> {
+    fn run_inherit_env(&self, _: &str, _: &[String], cwd: &Path, _: &[(&str, &str)]) -> Result<Option<i32>> {
       std::fs::write(cwd.join("pyproject.toml"), self.content)?;
       Ok(Some(self.exit_code))
     }

@@ -2,8 +2,13 @@
 //!
 //! The old script hard-coded the devpi URL and the two env-var names. Here everything is
 //! derived from `pyproject.toml`: the `[[tool.uv.index]]` entry that has a `publish-url` is
-//! the publish target, and its `name` decides the env vars uv itself would look for
+//! the publish target, and its `name` decides which credential variables to read
 //! (`UV_INDEX_<NAME>_USERNAME` / `_PASSWORD`). Nothing project-specific remains in code.
+//!
+//! Those are uv's variables for *reading* from an index, and they are what a developer
+//! already has set in order to install from it — which is why they are the ones asked for.
+//! `uv publish` reads a different pair (`UV_PUBLISH_USERNAME` / `_PASSWORD`); `steps.rs`
+//! translates into those when it spawns the publish, so a project needs only one set.
 
 use anyhow::{Result, bail};
 use toml_edit::DocumentMut;
