@@ -15,6 +15,13 @@ pub struct FileChange {
 pub struct Changes {
   dry_run: bool,
   pub files: Vec<FileChange>,
+  /// Every path devkit manages, whether or not this run changed it.
+  ///
+  /// `files` only holds what changed, which is the right list to report and to commit. It is
+  /// the wrong list to decide what to un-ignore: a project that tightens its `.gitignore`
+  /// *after* a successful run changes nothing on the next one, so the managed files would
+  /// stay invisible to git forever.
+  pub managed: Vec<PathBuf>,
   /// Advisory `note:` lines — things the user may want to clean up by hand. Never written.
   pub notes: Vec<String>,
 }
@@ -24,6 +31,7 @@ impl Changes {
     Self {
       dry_run,
       files: Vec::new(),
+      managed: Vec::new(),
       notes: Vec::new(),
     }
   }
@@ -39,6 +47,10 @@ impl Changes {
 
   /// Record a change to a possibly-absent file.
   pub fn record_optional(&mut self, path: &Path, original: Option<&str>, merged: &str, details: Vec<String>) -> Result<()> {
+    // Tracked even when nothing changed: this is the list of files devkit owns.
+    if !self.managed.iter().any(|p| p == path) {
+      self.managed.push(path.to_path_buf());
+    }
     if original == Some(merged) {
       return Ok(());
     }
@@ -54,11 +66,17 @@ impl Changes {
       }
       std::fs::write(path, merged).with_context(|| format!("writing {}", path.display()))?;
     }
-    self.files.push(FileChange {
-      path: path.to_path_buf(),
-      created,
-      details,
-    });
+    // One entry per path. Two steps can touch the same file — `.gitignore` is merged from the
+    // template and then given un-ignore lines — and two entries would list it twice in the
+    // report, twice in the commit body, and twice in the `git add` argument list.
+    match self.files.iter_mut().find(|f| f.path == path) {
+      Some(existing) => existing.details.extend(details),
+      None => self.files.push(FileChange {
+        path: path.to_path_buf(),
+        created,
+        details,
+      }),
+    }
     Ok(())
   }
 

@@ -156,13 +156,13 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
     changes.record_optional(&path, original.as_deref(), &merged, log)?;
   }
 
-  // 12. .mcp.json — deep merge.
+  // 12. .mcp.json — add missing servers, never edit one the project already defines.
   {
     let path = ctx.root.join(".mcp.json");
     let template = templates::load(templates_dir, ".mcp.json", &ctx, templates::Escape::Json)?;
     let original = read_optional(&path)?;
     let mut log = Vec::new();
-    let merged = json_merge::merge_json_file(original.as_deref(), &template, &mut log)?;
+    let merged = json_merge::merge_mcp_file(original.as_deref(), &template, &mut log)?;
     changes.record_optional(&path, original.as_deref(), &merged, log)?;
   }
 
@@ -171,13 +171,16 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
   //     Env files are exempt — `.env` is ignored by design.
   if git::is_git_tracked(&ctx.root) {
     let mut negations = Vec::new();
-    for f in &changes.files {
-      let rel = f
-        .path
-        .strip_prefix(&ctx.root)
-        .unwrap_or(&f.path)
-        .to_string_lossy()
-        .replace('\\', "/");
+    // Every managed file, not just the ones this run changed: a project that adds `.claude/`
+    // to its `.gitignore` after a successful setup would otherwise never get a negation,
+    // because the following run finds nothing to change and never looks.
+    for managed in &changes.managed {
+      let Ok(rel) = managed.strip_prefix(&ctx.root) else {
+        // Written outside the project root (a `launch.json` envFile pointing at `../`).
+        // git has no opinion on it and `git add` would refuse it, so leave it alone.
+        continue;
+      };
+      let rel = rel.to_string_lossy().replace('\\', "/");
       if git::is_env_file(&rel) || rel == ".gitignore" {
         continue;
       }
