@@ -68,6 +68,13 @@ def placehold(value):
         return {k: placehold(v) for k, v in value.items()}
     if isinstance(value, list):
         return [placehold(v) for v in value]
+    # Anything else is emitted verbatim, so a container this does not descend into could carry
+    # an unplaceheld absolute path straight through. Rejected rather than passed silently;
+    # build.rs treats the failure as "keep the committed table".
+    assert isinstance(value, (bool, int, float, type(None))), (
+        f"unsupported value type in a task config: {type(value).__name__}. Add it to "
+        "placehold() and to _resolve() in the emitted module, which must stay symmetric."
+    )
     return value
 
 
@@ -143,34 +150,40 @@ fn main() {
     return;
   }
 
-  let Some(python) = find_python(root) else {
-    println!("cargo:warning=no Python found to regenerate the poe task table; using the committed one");
-    return;
-  };
-
-  // stdin is closed rather than inherited: a build script has no console to prompt at, and an
-  // interpreter that blocked on a read would hang the build indefinitely instead of failing.
-  let output = match Command::new(&python)
-    .arg("-c")
-    .arg(GENERATOR)
-    .arg(&source)
-    .stdin(Stdio::null())
-    .output()
-  {
-    Ok(output) => output,
-    Err(err) => {
-      println!("cargo:warning=could not run {}: {err}", python.display());
-      return;
+  // Each candidate is tried until one actually produces a table, rather than committing to the
+  // first interpreter that merely exists: an interpreter can be present and still lack
+  // poethepoet_tasks, and giving up there would fall back to the committed table for a reason
+  // the next candidate would have solved.
+  let mut last_failure = None;
+  let output = python_candidates(root).into_iter().find_map(|python| {
+    // stdin is closed rather than inherited: a build script has no console to prompt at, and
+    // an interpreter that blocked on a read would hang the build instead of failing.
+    let result = Command::new(&python)
+      .arg("-c")
+      .arg(GENERATOR)
+      .arg(&source)
+      .stdin(Stdio::null())
+      .output();
+    match result {
+      Ok(output) if output.status.success() => Some(output),
+      // Spawn failure means "no such interpreter", which is expected while walking candidates.
+      Err(_) => None,
+      Ok(output) => {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().replace('\n', "; ");
+        last_failure = Some(format!("{}: {stderr}", python.display()));
+        None
+      }
     }
-  };
-  if !output.status.success() {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    println!(
-      "cargo:warning=generating the poe task table failed: {}",
-      stderr.trim().replace('\n', "; ")
-    );
+  });
+
+  let Some(output) = output else {
+    match last_failure {
+      Some(failure) => println!("cargo:warning=generating the poe task table failed: {failure}"),
+      None => println!("cargo:warning=no Python found to regenerate the poe task table"),
+    }
+    println!("cargo:warning=using the committed _tasks_generated.py instead");
     return;
-  }
+  };
 
   let body = String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n");
   let body = body.trim();
@@ -206,10 +219,12 @@ fn main() {
   }
 
   // Written via a temporary and renamed into place so a reader never sees a half-written
-  // module. rust-analyzer runs `cargo check` on its own schedule, so two build scripts can
-  // be in here at once; `rename` replaces atomically on both Windows and Unix, which turns a
-  // concurrent overwrite into "last writer wins" rather than a truncated file.
-  let temp = out.with_extension("py.tmp");
+  // module. rust-analyzer runs `cargo check` on its own schedule, so two build scripts can be
+  // in here at once; `rename` replaces atomically on both Windows and Unix, which turns a
+  // concurrent overwrite into "last writer wins" rather than a truncated file. The temp name
+  // carries the process id so two concurrent runs cannot instead corrupt each other's
+  // temporary before either gets to rename it.
+  let temp = out.with_extension(format!("py.{}.tmp", std::process::id()));
   if let Err(err) = std::fs::write(&temp, rendered) {
     println!("cargo:warning=could not write {}: {err}", temp.display());
     return;
@@ -220,32 +235,33 @@ fn main() {
   }
 }
 
-/// The interpreter to run the generator with, most specific first.
+/// Interpreters to try the generator with, in order of how much this project controls them.
 ///
-/// The generator imports poethepoet_tasks, so the interpreter has to be one that has it.
-fn find_python(root: &Path) -> Option<PathBuf> {
-  let mut candidates = Vec::new();
-
-  // A PEP 517 build runs in an isolated venv holding exactly `[build-system] requires` —
-  // which lists poethepoet-tasks for this reason. maturin passes that environment down to
-  // cargo as VIRTUAL_ENV, so it is the only interpreter guaranteed to have the dependency
-  // during a packaging build.
+/// The generator imports poethepoet_tasks, so only an interpreter that has it will succeed;
+/// the caller walks this list until one does.
+///
+/// The project's own `.venv` deliberately comes first. `VIRTUAL_ENV` is whatever venv happens
+/// to be active in the calling shell, which during a packaging build is the isolated PEP 517
+/// environment holding `[build-system] requires` — but during an ordinary `cargo build` is
+/// just as likely to be an unrelated project the developer had activated. Preferring the
+/// checked-out `.venv` keeps a normal build reproducible regardless of ambient environment,
+/// and costs the packaging case nothing: an sdist has no `.venv` to find, so it falls through
+/// to `VIRTUAL_ENV` on its own.
+fn python_candidates(root: &Path) -> Vec<PathBuf> {
+  let mut venvs = vec![root.join(".venv")];
   if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
-    candidates.push(PathBuf::from(venv));
+    venvs.push(PathBuf::from(venv));
   }
-  // A plain `cargo build`/`cargo test` has no build venv; the project's own has the dev deps.
-  candidates.push(root.join(".venv"));
 
-  for venv in candidates {
+  let mut candidates: Vec<PathBuf> = venvs
+    .iter()
     // Joined component-by-component so the result keeps native separators throughout.
-    for exe in [venv.join("Scripts").join("python.exe"), venv.join("bin").join("python")] {
-      if exe.is_file() {
-        return Some(exe);
-      }
-    }
-  }
+    .flat_map(|venv| [venv.join("Scripts").join("python.exe"), venv.join("bin").join("python")])
+    .filter(|exe| exe.is_file())
+    .collect();
 
-  // Last resort: whatever `python` resolves to. May well lack poethepoet_tasks, in which case
-  // the generator fails and the caller degrades to the committed table.
-  Some(PathBuf::from("python"))
+  // Last resort: whatever `python` resolves to. It may lack poethepoet_tasks, in which case
+  // the caller degrades to the committed table.
+  candidates.push(PathBuf::from("python"));
+  candidates
 }

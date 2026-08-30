@@ -12,11 +12,17 @@
   ]
 
 [dependency-groups]
+  # The pytest plugins are declared rather than relied on transitively, because `--strict-config`
+  # plus the template's `[tool.pytest.ini_options]` makes a bare `pytest` *fail* without them:
+  # addopts passes --cov (pytest-cov) and the config sets asyncio_mode (pytest-asyncio).
   dev = [
     "maturin>=1.7,<2",
     "poethepoet>=0.46.0",
     "poethepoet-tasks>=0.3.0",
     "pyright>=1.1.411",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
   ]                        # setup-project added: "poethepoet>=0.46.0"
 
 [build-system]
