@@ -11,12 +11,17 @@
 
 [dependency-groups]
   dev = [
+    "maturin>=1.7,<2",
     "poethepoet>=0.46.0",
+    "poethepoet-tasks>=0.3.0",
     "pyright>=1.1.411",
   ]                        # setup-project added: "poethepoet>=0.46.0"
 
 [build-system]
-  requires      = ["maturin>=1.7,<2"]
+  # poethepoet-tasks is a build requirement because `crates/aeth-devkit/build.rs` regenerates
+  # the baked poe task table during the build, and the generator imports it. A PEP 517 build
+  # runs in an isolated environment holding only what is listed here.
+  requires      = ["maturin>=1.7,<2", "poethepoet-tasks>=0.3.0"]
   build-backend = "maturin"
 
 [tool.coverage.run]
@@ -127,6 +132,10 @@
     "dist",
     "node_modules",
     "venv",
+    # Written by crates/aeth-devkit/build.rs, whose output is pprint's wrapping rather than
+    # ruff's. Excluded so a build needs no formatter (a PEP 517 build environment has none)
+    # and so the file stays byte-stable for the staleness test.
+    "python/aeth_devkit/_tasks_generated.py",
   ]
 
   fix = true

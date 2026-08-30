@@ -253,3 +253,8 @@ persisted_data/
 # ---- project-specific ----
 # Templates shipped in the wheel must never be ignored (template.env matches *.env above)
 !python/aeth_devkit/templates/**
+
+# crates/aeth-devkit/build.rs writes the baked task table through a temporary in this
+# directory before renaming it into place. It only survives a build killed mid-write, but it
+# sits inside the packaged python source tree, so keep it out of commits and sdists.
+python/aeth_devkit/*.py.tmp
