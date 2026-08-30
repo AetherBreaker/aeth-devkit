@@ -16,6 +16,9 @@ REPO = Path(__file__).resolve().parent.parent
 GENERATED = REPO / "python" / "aeth_devkit" / "_tasks_generated.py"
 PYPROJECT = REPO / "pyproject.toml"
 
+# Kept in step with PLACEHOLDER in crates/aeth-devkit/build.rs.
+PLACEHOLDER = "@@AETH_DEVKIT_SCRIPTS@@"
+
 
 def test_importing_aeth_devkit_does_not_import_poethepoet_tasks():
   """The entire point of the codegen: poethepoet_tasks costs ~24 ms of import time."""
@@ -43,12 +46,24 @@ def test_poethepoet_tasks_is_a_build_dependency_only():
 def test_generated_file_holds_no_absolute_paths():
   """Script paths must be a placeholder in the file, resolved from __file__ at import.
 
-  Baking the generation machine's absolute paths would ship dead paths to every consumer,
+  Baking the generating machine's absolute paths would ship dead paths to every consumer,
   since the package installs into each project's own site-packages.
+
+  Matched against this checkout's actual scripts directory rather than a pattern for what an
+  absolute path looks like. A drive-letter heuristic (`":/"`, `":\\"`) passes silently on
+  Linux and macOS, where the path that would leak contains no colon at all — so it would have
+  guarded nothing on exactly the platforms it was not developed on.
   """
   text = GENERATED.read_text(encoding="utf-8")
-  offenders = [line for line in text.splitlines() if ":/" in line or ":\\\\" in line]
-  assert not offenders, f"absolute paths frozen into the generated file: {offenders}"
+  scripts_dir = REPO / "python" / "aeth_devkit" / "scripts"
+
+  # Both separator styles: _script_path() emits forward slashes, but a future change might not.
+  for form in {str(scripts_dir), scripts_dir.as_posix()}:
+    assert form not in text, f"absolute script path frozen into {GENERATED.name}: {form}"
+
+  # The converse: if substitution stopped happening entirely there would be nothing to leak
+  # and the check above would pass vacuously.
+  assert PLACEHOLDER in text, f"no {PLACEHOLDER} in {GENERATED.name}; did placeholding stop running?"
 
 
 def test_script_paths_resolve_next_to_the_installed_package():
