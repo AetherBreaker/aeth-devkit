@@ -21,6 +21,13 @@ pub fn is_env_file(rel: &str) -> bool {
   name == ".env" || name.ends_with(".env") || name.starts_with(".env.")
 }
 
+/// Managed files that are *supposed* to stay out of git, so neither the commit nor the
+/// "this is gitignored" warning should ever consider them: env files carry secrets, and
+/// `.claude/settings.local.json` holds absolute paths and this machine's venv layout.
+pub fn is_intentionally_local(rel: &str) -> bool {
+  is_env_file(rel) || rel == ".claude/settings.local.json"
+}
+
 /// Whether git would ignore `rel` (a root-relative, `/`-separated path). The file need
 /// not exist: `check-ignore` matches patterns, so this also answers for a dry run.
 pub fn is_ignored(root: &Path, rel: &str) -> bool {
@@ -43,7 +50,7 @@ fn trackable(root: &Path, changes: &Changes) -> Result<Vec<String>> {
     // "applied but not committed".
     let Ok(rel) = f.path.strip_prefix(root) else { continue };
     let rel = rel.to_string_lossy().replace('\\', "/");
-    if is_env_file(&rel) {
+    if is_intentionally_local(&rel) {
       continue;
     }
     if !is_ignored(root, &rel) {

@@ -145,11 +145,18 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
     changes.record_optional(&path, None, &template, vec!["created from template".into()])?;
   }
 
-  // 11. .claude/settings.json — deep merge, except `hooks`, which merges by hook name so a
-  //     hand-edited entry is updated in place rather than duplicated.
-  {
-    let path = ctx.root.join(".claude").join("settings.json");
-    let template = templates::load(templates_dir, "claude/settings.json", &ctx, templates::Escape::Json)?;
+  // 11. Claude settings, in two halves. `settings.json` is shared and committed; everything
+  //     resolved from *this* checkout — the absolute pycache prefix, and hook commands
+  //     naming this machine's venv layout — goes in the gitignored `settings.local.json`,
+  //     because a committed copy would break every teammate on another path or OS. Claude
+  //     Code merges the two with the local file winning. Both merge `hooks` by hook name, so
+  //     a hand-edited entry is updated in place rather than duplicated.
+  for (rel, template_name) in [
+    (".claude/settings.json", "claude/settings.json"),
+    (".claude/settings.local.json", "claude/settings.local.json"),
+  ] {
+    let path = ctx.root.join(rel);
+    let template = templates::load(templates_dir, template_name, &ctx, templates::Escape::Json)?;
     let original = read_optional(&path)?;
     let mut log = Vec::new();
     let merged = json_merge::merge_claude_settings(original.as_deref(), &template, &mut log)?;
@@ -166,47 +173,48 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
     changes.record_optional(&path, original.as_deref(), &merged, log)?;
   }
 
-  // 13. Gitignored managed files: write them anyway (done above) and un-ignore them, so a
-  //     project rule like `*.json` cannot silently keep `.claude/settings.json` out of git.
-  //     Env files are exempt — `.env` is ignored by design.
+  // 13. Managed files git will ignore: say so, and leave the project's `.gitignore` alone.
+  //
+  //     devkit used to append `!` negations here so a rule like `*.json` could not silently
+  //     keep `.claude/settings.json` out of the repo. That was the wrong trade. The rules
+  //     are the project's, and doing it *correctly* is worse than doing nothing: git never
+  //     descends into an ignored directory, so a file-level negation under a `.claude/` rule
+  //     is dead, and the only fix is to un-ignore the directory — which also un-ignores
+  //     `settings.local.json`, `shell-snapshots/` and everything else Claude keeps there.
+  //     Reversing a deliberate ignore rule is the user's call, so we describe the situation
+  //     and let them make it.
   if git::is_git_tracked(&ctx.root) {
-    let mut negations = Vec::new();
-    // Every managed file, not just the ones this run changed: a project that adds `.claude/`
-    // to its `.gitignore` after a successful setup would otherwise never get a negation,
-    // because the following run finds nothing to change and never looks.
+    // Every managed file, not just the ones this run changed: a project that tightens its
+    // `.gitignore` after a successful setup changes nothing on the next run, and the
+    // warning has to keep appearing until it is dealt with.
     for managed in &changes.managed {
       let Ok(rel) = managed.strip_prefix(&ctx.root) else {
         // Written outside the project root (a `launch.json` envFile pointing at `../`).
-        // git has no opinion on it and `git add` would refuse it, so leave it alone.
+        // git has no opinion on it, so there is nothing to warn about.
         continue;
       };
       let rel = rel.to_string_lossy().replace('\\', "/");
-      if git::is_env_file(&rel) || rel == ".gitignore" {
+      // Files that are *supposed* to be ignored: secrets, and the per-machine settings half.
+      if git::is_intentionally_local(&rel) || rel == ".gitignore" {
         continue;
       }
       if !git::is_ignored(&ctx.root, &rel) {
         continue;
       }
-      // Git never descends into an ignored directory, so `!.claude/settings.json` is dead
-      // under a `.claude/` rule: un-ignore every ignored ancestor first, outermost inward.
+      // Name the ancestor when that is the real cause, because it changes the fix.
       // `match_indices('/')` yields each prefix up to a separator, i.e. each ancestor dir.
-      for (i, _) in rel.match_indices('/') {
-        let dir = format!("{}/", &rel[..i]);
-        if git::is_ignored(&ctx.root, &dir) {
-          let rule = format!("!{dir}");
-          if !negations.contains(&rule) {
-            negations.push(rule);
-          }
-        }
-      }
-      negations.push(format!("!{rel}"));
-    }
-    if !negations.is_empty() {
-      let path = ctx.root.join(".gitignore");
-      let original = read_optional(&path)?;
-      let merged = lines::append_rules(original.as_deref(), &negations);
-      let log = vec![format!("un-ignored {}", negations.join(", "))];
-      changes.record_optional(&path, original.as_deref(), &merged, log)?;
+      let blocked_by = rel
+        .match_indices('/')
+        .map(|(i, _)| format!("{}/", &rel[..i]))
+        .find(|dir| git::is_ignored(&ctx.root, dir));
+      changes.notes.push(match blocked_by {
+        Some(dir) => format!(
+          "{rel} is managed by devkit but git ignores {dir}, so it will not be committed. \
+           A `!{rel}` line alone will not help — git does not look inside an ignored \
+           directory. Un-ignoring {dir} would also expose everything else in it."
+        ),
+        None => format!("{rel} is managed by devkit but is gitignored, so it will not be committed."),
+      });
     }
   }
 
