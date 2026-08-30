@@ -110,3 +110,49 @@ impl Changes {
     out
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn two_steps_touching_one_file_produce_one_entry() {
+    // More than one step can legitimately write the same file. Two `FileChange` entries for
+    // one path would list it twice in the report, twice in the commit body, and twice in the
+    // `git add` argument list.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.txt");
+    let mut c = Changes::new(false);
+    c.record_optional(&path, None, "one\n", vec!["created".into()]).unwrap();
+    c.record_optional(&path, Some("one\n"), "one\ntwo\n", vec!["appended".into()])
+      .unwrap();
+
+    assert_eq!(c.files.len(), 1, "{:?}", c.files);
+    // The first write created it, and that stays true however many steps touch it after.
+    assert!(c.files[0].created);
+    assert!(c.files[0].details.iter().any(|d| d == "appended"), "{:?}", c.files[0].details);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\n");
+  }
+
+  #[test]
+  fn an_unchanged_file_is_still_tracked_as_managed() {
+    // `files` is what changed; `managed` is what devkit owns. The gitignore warning needs the
+    // second list, or a project that tightens its rules after setup never hears about it.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.txt");
+    let mut c = Changes::new(false);
+    c.record_optional(&path, Some("same\n"), "same\n", vec![]).unwrap();
+    assert!(c.files.is_empty(), "nothing changed: {:?}", c.files);
+    assert_eq!(c.managed, vec![path]);
+  }
+
+  #[test]
+  fn a_dry_run_records_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f.txt");
+    let mut c = Changes::new(true);
+    c.record_optional(&path, None, "content\n", vec![]).unwrap();
+    assert_eq!(c.files.len(), 1);
+    assert!(!path.exists(), "--dry-run must not write");
+  }
+}

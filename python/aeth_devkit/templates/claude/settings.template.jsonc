@@ -1,7 +1,4 @@
 {
-    "env": {
-        "PYTHONPYCACHEPREFIX": "{project_root}/.cache/pycache"
-    },
     "permissions": {
         "allow": [
             "Bash(uv run pytest *)",
@@ -14,53 +11,8 @@
             "WebSearch"
         ]
     },
-    "hooks": {
-        "PreToolUse": [
-            {
-                "matcher": "Edit|Write",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "{devkit_bin} hook pre-edit-protect",
-                        "shell": "bash"
-                    }
-                ]
-            },
-            {
-                "matcher": "Bash",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "{devkit_bin} hook pre-bash-protect-deps",
-                        "shell": "bash"
-                    }
-                ]
-            }
-        ],
-        "Stop": [
-            {
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "{devkit_bin} hook stop-ruff",
-                        "shell": "bash",
-                        "timeout": 30
-                    },
-                    {
-                        "type": "command",
-                        "command": "{devkit_bin} hook stop-pyright",
-                        "shell": "bash",
-                        "timeout": 60
-                    },
-                    {
-                        "type": "command",
-                        "command": "{devkit_bin} hook stop-clean",
-                        "shell": "bash",
-                        "timeout": 30
-                    }
-                ]
-            }
-        ]
-    },
-    "enabledMcpjsonServers": ["github", "context7"]
+    "enabledMcpjsonServers": [
+        "github",
+        "context7"
+    ]
 }

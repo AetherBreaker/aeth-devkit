@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Claude Code — per-machine settings (absolute paths, this machine's venv layout).
+# The shared half lives in .claude/settings.json and is committed.
+.claude/settings.local.json

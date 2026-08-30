@@ -328,21 +328,50 @@ fn claude_config_files_are_created_and_create_if_missing_ones_are_never_rewritte
 
   let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
   let report = changes.report(root);
-  for rel in [".claude/settings.json", ".mcp.json"] {
+  for rel in [".claude/settings.json", ".claude/settings.local.json", ".mcp.json"] {
     assert!(report.contains(&format!("{rel}: created")), "{report}");
   }
   assert_eq!(read(root, ".claude/CLAUDE.md"), "my own claude notes\n");
   assert_eq!(read(root, ".github/workflows/claude.yml"), "name: mine\n");
 
-  let settings: serde_json::Value = serde_json::from_str(&read(root, ".claude/settings.json")).unwrap();
-  let cmd = settings["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
+  let shared: serde_json::Value = serde_json::from_str(&read(root, ".claude/settings.json")).unwrap();
+  let local: serde_json::Value = serde_json::from_str(&read(root, ".claude/settings.local.json")).unwrap();
+  let cmd = local["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
   assert!(cmd.ends_with(" hook stop-ruff"), "{cmd}");
   assert!(cmd.starts_with("uv run devkit"), "no venv in fixture → uv fallback: {cmd}");
-  assert!(settings.get("enabledPlugins").is_none());
-  assert!(settings["env"]["PYTHONPYCACHEPREFIX"].as_str().unwrap().contains(".cache"));
+  assert!(local["env"]["PYTHONPYCACHEPREFIX"].as_str().unwrap().contains(".cache"));
+  // Nothing machine-specific may reach the committed half.
+  assert!(shared.get("hooks").is_none(), "hooks belong in the local half: {shared}");
+  assert!(shared.get("env").is_none(), "env belongs in the local half: {shared}");
+  assert_eq!(shared["enabledMcpjsonServers"], serde_json::json!(["github", "context7"]));
 
   let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
   assert!(again.is_empty(), "second run must be a no-op:\n{}", again.report(root));
+}
+
+#[test]
+fn the_committed_settings_carry_no_absolute_or_os_specific_path() {
+  // This is the whole point of the split: `settings.json` is shared, so a path from the
+  // machine that ran setup would break every teammate whose clone lives elsewhere or who
+  // runs a different OS.
+  let dir = make_project();
+  let root = dir.path();
+  write(root, ".venv/Scripts/devkit.exe", "");
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+
+  let shared = read(root, ".claude/settings.json");
+  let root_str = root.to_string_lossy().replace('\\', "/");
+  assert!(!shared.contains(&root_str), "absolute path leaked into the shared file:\n{shared}");
+  for os_specific in [".venv/Scripts", ".venv/bin", ".exe"] {
+    assert!(
+      !shared.contains(os_specific),
+      "{os_specific} leaked into the shared file:\n{shared}"
+    );
+  }
+  // The local half is where those belong, and it is ignored by the shipped gitignore.
+  let local = read(root, ".claude/settings.local.json");
+  assert!(local.contains(".venv/Scripts/devkit.exe"), "{local}");
+  assert!(read(root, ".gitignore").contains(".claude/settings.local.json"));
 }
 
 #[test]
@@ -354,8 +383,8 @@ fn claude_md_and_workflow_are_created_when_missing_and_devkit_bin_prefers_the_ve
   aeth_devkit_setup::run(root, &templates(), false).unwrap();
   assert!(read(root, ".claude/CLAUDE.md").starts_with("@../AGENTS.md\n"));
   assert!(read(root, ".github/workflows/claude.yml").contains("claude-code-action@v1"));
-  let settings: serde_json::Value = serde_json::from_str(&read(root, ".claude/settings.json")).unwrap();
-  let cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
+  let local: serde_json::Value = serde_json::from_str(&read(root, ".claude/settings.local.json")).unwrap();
+  let cmd = local["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
   assert_eq!(cmd, "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/devkit.exe\" hook pre-edit-protect");
 }
 
@@ -411,95 +440,6 @@ fn git_init(root: &Path) {
 }
 
 #[test]
-fn gitignored_managed_files_get_negation_lines_appended() {
-  let dir = make_project();
-  let root = dir.path();
-  git_init(root);
-  let gi = read(root, ".gitignore");
-  write(root, ".gitignore", &format!("{gi}\n# project rule\n*.json\n"));
-
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
-  let gi = read(root, ".gitignore");
-  assert!(gi.contains("\n!.claude/settings.json\n"), "{gi}");
-  assert!(gi.contains("\n!.mcp.json\n"), "{gi}");
-  assert!(gi.contains("\n!.vscode/settings.json\n"), "{gi}");
-  assert!(!gi.contains("!.env"), ".env must stay ignored: {gi}");
-  let ignored = std::process::Command::new("git")
-    .current_dir(root)
-    .args(["check-ignore", "-q", ".mcp.json"])
-    .status()
-    .unwrap();
-  assert!(!ignored.success(), ".mcp.json must no longer be ignored");
-
-  let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
-  assert!(again.is_empty(), "second run must be a no-op:\n{}", again.report(root));
-}
-
-#[test]
-fn gitignored_parent_directory_is_un_ignored_before_the_file() {
-  let dir = make_project();
-  let root = dir.path();
-  git_init(root);
-  let gi = read(root, ".gitignore");
-  write(
-    root,
-    ".gitignore",
-    &format!(
-      "{gi}
-# project rule
-.claude/
-"
-    ),
-  );
-
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
-  let gi = read(root, ".gitignore");
-  let dir_at = gi
-    .find(
-      "
-!.claude/
-",
-    )
-    .unwrap_or_else(|| {
-      panic!(
-        "missing !.claude/ in:
-{gi}"
-      )
-    });
-  let file_at = gi
-    .find(
-      "
-!.claude/settings.json
-",
-    )
-    .unwrap_or_else(|| {
-      panic!(
-        "missing file rule in:
-{gi}"
-      )
-    });
-  assert!(
-    dir_at < file_at,
-    "directory negation must precede the file negation:
-{gi}"
-  );
-  let ignored = std::process::Command::new("git")
-    .current_dir(root)
-    .args(["check-ignore", "-q", ".claude/settings.json"])
-    .status()
-    .unwrap();
-  assert!(!ignored.success(), ".claude/settings.json must no longer be ignored");
-
-  let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
-  assert!(
-    again.is_empty(),
-    "second run must be a no-op:
-{}",
-    again.report(root)
-  );
-}
-
-#[test]
 fn obsolete_artifacts_are_reported_not_removed() {
   let dir = make_project();
   let root = dir.path();
@@ -522,33 +462,62 @@ fn obsolete_artifacts_are_reported_not_removed() {
 }
 
 #[test]
-fn a_path_is_reported_once_even_when_two_steps_touch_it() {
-  // Step 6 merges the .gitignore template; step 13 appends un-ignore lines to the same
-  // file. Two `FileChange` entries for one path listed it twice in the report, twice in the
-  // commit body, and twice in the `git add` argument list.
+fn a_gitignored_managed_file_is_reported_and_the_gitignore_is_left_alone() {
+  // devkit used to append `!` negations here. Reversing a rule the project chose is the
+  // user's call, and doing it correctly under a directory rule means un-ignoring the whole
+  // directory — so it now describes the situation instead of editing the file.
+  let dir = make_project();
+  let root = dir.path();
+  git_init(root);
+  let before = read(root, ".gitignore");
+  write(root, ".gitignore", &format!("{before}\n# project rule\n*.json\n"));
+
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  // Step 6 still merges the shipped template into .gitignore — that is the project opting
+  // in. What must never appear is a negation reversing a rule the project wrote itself.
+  let gi = read(root, ".gitignore");
+  for negation in ["!.mcp.json", "!.claude/", "!.vscode/settings.json", "!.env"] {
+    assert!(
+      !gi.contains(negation),
+      "devkit must not un-ignore on the user's behalf: {negation}\n{gi}"
+    );
+  }
+  assert!(
+    changes.notes.iter().any(|n| n.contains(".mcp.json") && n.contains("gitignored")),
+    "{:?}",
+    changes.notes
+  );
+  // Files that are meant to be ignored are never warned about.
+  for quiet in [".env", "settings.local.json"] {
+    assert!(!changes.notes.iter().any(|n| n.contains(quiet)), "{quiet}: {:?}", changes.notes);
+  }
+}
+
+#[test]
+fn an_ignored_parent_directory_is_named_as_the_cause() {
+  // The fix differs: a `!<file>` line does nothing while a parent directory is ignored,
+  // because git never descends into one. Saying so is the whole value of the warning.
   let dir = make_project();
   let root = dir.path();
   git_init(root);
   let gi = read(root, ".gitignore");
-  write(root, ".gitignore", &format!("{gi}\n.claude/\n"));
+  write(root, ".gitignore", &format!("{gi}\n# project rule\n.claude/\n"));
 
   let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
-  let n = changes.files.iter().filter(|f| f.path.ends_with(".gitignore")).count();
-  assert_eq!(n, 1, "one entry per path: {}", changes.report(root));
-  // Both steps' details still show up, on the single entry.
-  let entry = changes.files.iter().find(|f| f.path.ends_with(".gitignore")).unwrap();
-  assert!(
-    entry.details.iter().any(|d| d.contains("un-ignored")),
-    "step 13 detail lost: {:?}",
-    entry.details
-  );
+  let note = changes
+    .notes
+    .iter()
+    .find(|n| n.contains(".claude/settings.json"))
+    .unwrap_or_else(|| panic!("no note for the ignored file: {:?}", changes.notes));
+  assert!(note.contains(".claude/"), "must name the directory: {note}");
+  assert!(note.contains("does not look inside"), "must explain why: {note}");
 }
 
 #[test]
-fn a_gitignore_tightened_after_setup_still_un_ignores_managed_files() {
-  // The negation list used to be built from the files this run *changed*. Once setup has
-  // succeeded, a later run changes nothing — so a project that adds `.claude/` to its
-  // .gitignore afterwards would keep its managed files invisible to git forever.
+fn a_gitignore_tightened_after_setup_is_still_reported() {
+  // The check used to run over the files this run *changed*. Once setup has succeeded a
+  // later run changes nothing, so a project that tightens its .gitignore afterwards would
+  // never hear about it again.
   let dir = make_project();
   let root = dir.path();
   git_init(root);
@@ -557,17 +526,12 @@ fn a_gitignore_tightened_after_setup_still_un_ignores_managed_files() {
   // Now the project tightens its own .gitignore, after everything is already in place.
   let gi = read(root, ".gitignore");
   write(root, ".gitignore", &format!("{gi}\n.claude/\n"));
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
 
-  let ignored = std::process::Command::new("git")
-    .current_dir(root)
-    .args(["check-ignore", "-q", ".claude/settings.json"])
-    .status()
-    .unwrap();
   assert!(
-    !ignored.success(),
-    ".claude/settings.json must be un-ignored on the later run too:\n{}",
-    read(root, ".gitignore")
+    changes.notes.iter().any(|n| n.contains(".claude/settings.json")),
+    "a later run must still warn: {:?}",
+    changes.notes
   );
 }
 
