@@ -35,6 +35,36 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # The Rust job deliberately has no Python environment, so crates/aeth-devkit/build.rs cannot
+  # regenerate the baked poe task table there and silently falls back to the committed one.
+  # This job is what actually exercises generation, on both platforms: Linux covers
+  # find_python's bin/python branch and POSIX script paths, which nothing else touches.
+  tests:
+    name: Python tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+
+      - name: Test
+        run: |
+          uv sync
+          uv run pytest
+
+      - name: The baked task table must match its source
+        run: git diff --exit-code -- python/aeth_devkit/_tasks_generated.py
+
   wheel:
     name: Wheel build
     runs-on: windows-latest
