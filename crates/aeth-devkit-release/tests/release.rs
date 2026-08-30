@@ -163,8 +163,8 @@ fn bump_mode_happy_path() {
   assert!(uv.contains(&vec!["version".to_string(), "--bump".into(), "patch".into()]));
   assert!(uv.contains(&vec!["lock".to_string()]));
   assert!(uv.contains(&vec!["build".to_string()]));
-  // Exactly this and nothing more: the credentials must stay in the environment (uv reads
-  // `UV_INDEX_PRIVATE_*` itself), never on argv where an error message could echo them.
+  // Exactly this and nothing more on argv: credentials travel in the child's environment,
+  // never where an error message could echo them.
   assert!(uv.contains(&vec!["publish".to_string(), "--index".into(), "Private".into()]));
   assert!(uv.iter().flatten().all(|a| a != "--password" && a != "p"));
   // Cargo.lock does not exist in the fixture, so `cargo update` must not run; Cargo.toml
@@ -734,4 +734,41 @@ fn cargo_mismatch_is_refused_before_anything() {
   std::fs::write(w.root().join("Cargo.toml"), CARGO.replace("1.0.0", "0.9.9")).unwrap();
   let e = run(&w.args(&["patch"]), &w.deps()).unwrap_err().to_string();
   assert!(e.contains("0.9.9"), "{e}");
+}
+
+#[test]
+fn publish_hands_uv_the_credential_variables_it_actually_reads() {
+  // uv keeps two separate credential sets: `UV_INDEX_<NAME>_*` authenticate *reads* from an
+  // index during resolution, while `uv publish` looks for `UV_PUBLISH_USERNAME` /
+  // `_PASSWORD`. Supplying only the first pair leaves uv with no publish credentials, so it
+  // prompts on the terminal at step 7 of 9 — after the commit and tag are already made.
+  let w = World::new(&[]);
+  assert!(ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+
+  let calls = w.runner.calls.borrow();
+  let publish = calls
+    .iter()
+    .find(|c| c.program == "uv" && c.args.first().is_some_and(|a| a == "publish"))
+    .expect("uv publish must run");
+  let env: std::collections::HashMap<&str, &str> = publish.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+  assert_eq!(env.get("UV_PUBLISH_USERNAME"), Some(&"u"), "{:?}", publish.env);
+  assert_eq!(env.get("UV_PUBLISH_PASSWORD"), Some(&"p"), "{:?}", publish.env);
+
+  // And still nowhere near argv, which is what `run_ok`'s error message interpolates.
+  assert!(!publish.args.iter().any(|a| a == "p" || a == "u"));
+}
+
+#[test]
+fn no_other_step_is_handed_the_publish_credentials() {
+  // The password should reach exactly one child process. Anything else inheriting it widens
+  // the blast radius of a compromised tool for no benefit.
+  let w = World::new(&[]);
+  assert!(ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+  let calls = w.runner.calls.borrow();
+  let with_creds: Vec<&str> = calls
+    .iter()
+    .filter(|c| c.env.iter().any(|(k, _)| k == "UV_PUBLISH_PASSWORD"))
+    .map(|c| c.program.as_str())
+    .collect();
+  assert_eq!(with_creds, ["uv"], "only `uv publish` may carry them");
 }

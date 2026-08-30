@@ -37,6 +37,9 @@ pub struct Invocation {
   pub program: String,
   pub args: Vec<String>,
   pub cwd: PathBuf,
+  /// Extra variables set on the child, in the order they were given. Recorded so a test can
+  /// assert a secret was handed over *this* way rather than on the command line.
+  pub env: Vec<(String, String)>,
 }
 
 /// What a finished process left behind when we captured its output instead of letting it
@@ -67,9 +70,20 @@ impl CapturedOutput {
 /// vtable pointer) that dispatches to whichever concrete type is behind it at run time.
 pub trait Runner {
   /// Run `program args` in `cwd` with inherited stdio (the child's output goes straight to
-  /// the user's terminal). Returns the exit code, or `None` when the process was terminated
-  /// by a signal. Use this for long-running tools whose progress the user wants to see.
-  fn run_inherit(&self, program: &str, args: &[String], cwd: &Path) -> Result<Option<i32>>;
+  /// the user's terminal) and `env` set on the child on top of what it inherits. Returns the
+  /// exit code, or `None` when the process was terminated by a signal.
+  ///
+  /// The environment is how a *secret* reaches a subprocess. Unlike argv it does not appear
+  /// in another user's process listing, and it cannot be swept into an error message built
+  /// from the command line. This is the required method rather than the convenience one
+  /// below precisely so an implementor cannot quietly drop the variables.
+  fn run_inherit_env(&self, program: &str, args: &[String], cwd: &Path, env: &[(&str, &str)]) -> Result<Option<i32>>;
+
+  /// Run `program args` in `cwd` with inherited stdio and nothing added to its environment.
+  /// Use this for long-running tools whose progress the user wants to see.
+  fn run_inherit(&self, program: &str, args: &[String], cwd: &Path) -> Result<Option<i32>> {
+    self.run_inherit_env(program, args, cwd, &[])
+  }
 
   /// Run `program args` in `cwd` and capture stdout/stderr instead of showing them. Use
   /// this when we need to *parse* the output (e.g. `uv version`, `git rev-parse`).
@@ -83,17 +97,21 @@ pub trait Runner {
 pub struct SystemRunner;
 
 impl Runner for SystemRunner {
-  fn run_inherit(&self, program: &str, args: &[String], cwd: &Path) -> Result<Option<i32>> {
-    // Builder pattern: each call returns `&mut Command` so we can chain. `.status()` spawns
-    // the child, waits for it, and returns its `ExitStatus`. The `?` operator unwraps the
-    // `Ok` value or *returns early* with the error — after `with_context` has wrapped it
-    // with a message saying which program we were trying to run. The closure `|| …` is
-    // only evaluated on the error path, so the happy path pays nothing for the message.
-    let status = Command::new(program)
-      .args(args)
-      .current_dir(cwd)
-      .status()
-      .with_context(|| format!("running {program}"))?;
+  fn run_inherit_env(&self, program: &str, args: &[String], cwd: &Path, env: &[(&str, &str)]) -> Result<Option<i32>> {
+    // Builder pattern: each call returns `&mut Command` so we can chain. `.env` adds one
+    // variable on top of the inherited environment (as opposed to `.envs`/`.env_clear`,
+    // which would replace it wholesale and strip PATH along with everything else).
+    let mut cmd = Command::new(program);
+    cmd.args(args).current_dir(cwd);
+    for (k, v) in env {
+      cmd.env(k, v);
+    }
+    // `.status()` spawns the child, waits for it, and returns its `ExitStatus`. The `?`
+    // operator unwraps the `Ok` value or *returns early* with the error — after
+    // `with_context` has wrapped it with a message saying which program we were trying to
+    // run. The closure `|| …` is only evaluated on the error path, so the happy path pays
+    // nothing for the message.
+    let status = cmd.status().with_context(|| format!("running {program}"))?;
     // `status.code()` is already an `Option<i32>` for exactly the signal reason above.
     Ok(status.code())
   }
@@ -207,10 +225,15 @@ impl RecordingRunner {
 
   /// Shared implementation for both trait methods: log the call, then decide the answer.
   fn record(&self, program: &str, args: &[String], cwd: &Path) -> CapturedOutput {
+    self.record_env(program, args, cwd, &[])
+  }
+
+  fn record_env(&self, program: &str, args: &[String], cwd: &Path, env: &[(&str, &str)]) -> CapturedOutput {
     self.calls.borrow_mut().push(Invocation {
       program: program.to_string(),
       args: args.to_vec(),
       cwd: cwd.to_path_buf(),
+      env: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
     });
     // The call we just pushed is call number `len` (1-based).
     let n = self.calls.borrow().len();
@@ -245,8 +268,8 @@ impl RecordingRunner {
 }
 
 impl Runner for RecordingRunner {
-  fn run_inherit(&self, program: &str, args: &[String], cwd: &Path) -> Result<Option<i32>> {
-    Ok(self.record(program, args, cwd).code)
+  fn run_inherit_env(&self, program: &str, args: &[String], cwd: &Path, env: &[(&str, &str)]) -> Result<Option<i32>> {
+    Ok(self.record_env(program, args, cwd, env).code)
   }
 
   fn run_capture(&self, program: &str, args: &[String], cwd: &Path) -> Result<CapturedOutput> {
@@ -327,5 +350,58 @@ mod tests {
     let out = SystemRunner.run_capture(&cargo, &["--version".into()], Path::new(".")).unwrap();
     assert!(out.success());
     assert!(out.stdout.starts_with("cargo "));
+  }
+
+  #[test]
+  fn recording_runner_records_the_child_environment() {
+    // A test asserting a *secret* was handed over safely has to be able to see how: the
+    // whole point of `run_inherit_env` is that the value reaches the child by environment
+    // and not by argv.
+    let r = RecordingRunner::new(0);
+    r.run_inherit_env("uv", &["publish".into()], Path::new("/proj"), &[("TOKEN", "s3cret")])
+      .unwrap();
+    let calls = r.calls.borrow();
+    assert_eq!(calls[0].env, vec![("TOKEN".to_string(), "s3cret".to_string())]);
+    assert!(!calls[0].args.iter().any(|a| a == "s3cret"));
+  }
+
+  #[test]
+  fn run_inherit_defaults_to_an_empty_environment() {
+    let r = RecordingRunner::new(0);
+    r.run_inherit("uv", &["sync".into()], Path::new("/proj")).unwrap();
+    assert!(r.calls.borrow()[0].env.is_empty());
+  }
+
+  #[test]
+  fn system_runner_really_sets_the_variables_on_the_child() {
+    // The recording runner can only prove the plumbing; this proves the spawn. A child that
+    // exits 0 only when it sees the variable turns "was it set?" into an exit code.
+    let py = if cfg!(windows) { "python" } else { "python3" };
+    let script = "import os,sys; sys.exit(0 if os.environ.get('DEVKIT_PROBE')=='hello' else 9)";
+    let args = vec!["-c".to_string(), script.to_string()];
+    let cwd = std::env::temp_dir();
+
+    let Ok(without) = SystemRunner.run_inherit(py, &args, &cwd) else {
+      // No python on this machine: the assertion below would be vacuous, so skip rather
+      // than pass for the wrong reason.
+      return;
+    };
+    assert_eq!(without, Some(9), "the variable must not be set by accident");
+
+    let with = SystemRunner.run_inherit_env(py, &args, &cwd, &[("DEVKIT_PROBE", "hello")]).unwrap();
+    assert_eq!(with, Some(0), "run_inherit_env must set it on the child");
+  }
+
+  #[test]
+  fn system_runner_keeps_the_inherited_environment() {
+    // `.env` adds to what the child inherits. Using `.envs` after `.env_clear` would strip
+    // PATH and break every tool devkit spawns, so this pins the additive behaviour.
+    let py = if cfg!(windows) { "python" } else { "python3" };
+    let script = "import os,sys; sys.exit(0 if os.environ.get('PATH') and os.environ.get('DEVKIT_PROBE')=='x' else 9)";
+    let args = vec!["-c".to_string(), script.to_string()];
+    let Ok(code) = SystemRunner.run_inherit_env(py, &args, &std::env::temp_dir(), &[("DEVKIT_PROBE", "x")]) else {
+      return;
+    };
+    assert_eq!(code, Some(0), "PATH must survive alongside the added variable");
   }
 }
