@@ -4,9 +4,11 @@
   description     = "Personal project-maintenance toolkit: poe tasks plus the devkit CLI"
   readme          = "README.md"
   requires-python = ">=3.14"
+  # poethepoet is the runner itself, and the `clean` task calls its `poethepoet.scripts:rm`.
+  # poethepoet-tasks is deliberately absent: only crates/aeth-devkit/build.rs imports it, so
+  # it is a build requirement (see [build-system]) rather than something consumers install.
   dependencies    = [
     "poethepoet>=0.46.0",
-    "poethepoet-tasks>=0.3.0",
   ]
 
 [dependency-groups]

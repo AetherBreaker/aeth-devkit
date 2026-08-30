@@ -9,10 +9,12 @@ what is checked here is the content of the baked file.
 import json
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 GENERATED = REPO / "python" / "aeth_devkit" / "_tasks_generated.py"
+PYPROJECT = REPO / "pyproject.toml"
 
 
 def test_importing_aeth_devkit_does_not_import_poethepoet_tasks():
@@ -20,6 +22,22 @@ def test_importing_aeth_devkit_does_not_import_poethepoet_tasks():
   probe = "import aeth_devkit, sys; print('poethepoet_tasks' in sys.modules)"
   out = subprocess.run([sys.executable, "-c", probe], capture_output=True, encoding="utf-8", check=True)
   assert out.stdout.strip() == "False", "poethepoet_tasks was imported at runtime"
+
+
+def test_poethepoet_tasks_is_a_build_dependency_only():
+  """Consumers should not install a package only the build imports.
+
+  Note this is poethepoet-tasks (the TaskCollection helper), not poethepoet (the runner) —
+  the latter stays a runtime dependency, and the `clean` task's `poethepoet.scripts:rm`
+  comes from it.
+  """
+  config = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+  runtime = " ".join(config["project"]["dependencies"])
+  build = " ".join(config["build-system"]["requires"])
+
+  assert "poethepoet-tasks" not in runtime, "poethepoet-tasks is not imported at runtime"
+  assert "poethepoet-tasks" in build, "the build imports it, so it must stay a build requirement"
+  assert "poethepoet>" in runtime or "poethepoet=" in runtime, "poe itself runs the tasks"
 
 
 def test_generated_file_holds_no_absolute_paths():
