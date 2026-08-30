@@ -73,6 +73,22 @@ def test_generation_needs_no_loose_files_outside_the_crate():
   assert "python/gen_tasks.py" not in included, "stale include for a generator that no longer exists"
 
 
+def test_task_source_is_excluded_from_the_wheel():
+  """`_tasks_source.py` imports poethepoet_tasks, which consumers no longer install.
+
+  Nothing imports it at runtime, but shipping a module that raises ImportError on import is
+  a trap for anything that walks the package. The sdist still needs it — that is what a
+  source build regenerates from — so the exclusion is wheel-only.
+
+  Asserted against config rather than a built wheel because `uv build` runs cargo.
+  """
+  config = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+  excluded = {(e["path"], e.get("format")) for e in config["tool"]["maturin"].get("exclude", []) if isinstance(e, dict)}
+  assert ("python/aeth_devkit/_tasks_source.py", "wheel") in excluded, (
+    "_tasks_source.py must be excluded from the wheel but kept in the sdist"
+  )
+
+
 def test_build_backend_is_plain_maturin():
   """No custom PEP 517 shim: build.rs is the whole mechanism."""
   config = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
