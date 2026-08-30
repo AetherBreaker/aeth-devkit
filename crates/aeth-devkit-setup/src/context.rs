@@ -101,13 +101,21 @@ impl ProjectContext {
   }
 }
 
-/// Whether `dir` directly contains a `Dockerfile*` or a `compose.yml`/`compose.yaml`.
+/// Whether `dir` directly contains a `Dockerfile*` or a compose file. Both the modern
+/// (`compose.yml`) and the legacy (`docker-compose.yml`) spellings count: the legacy one is
+/// still the more common in the wild, and the previous `docker/` -is-a-directory probe
+/// accepted it, so leaving it out would silently demote real Docker projects.
 fn dir_has_docker_content(dir: &Path) -> bool {
   let Ok(entries) = std::fs::read_dir(dir) else { return false };
   entries.flatten().any(|e| {
     let name = e.file_name().to_string_lossy().to_string();
-    e.path().is_file() && (name.starts_with("Dockerfile") || matches!(name.as_str(), "compose.yml" | "compose.yaml"))
+    e.path().is_file() && (name.starts_with("Dockerfile") || is_compose_file(&name))
   })
+}
+
+/// The four compose filenames Docker itself looks for, modern spelling first.
+fn is_compose_file(name: &str) -> bool {
+  matches!(name, "compose.yml" | "compose.yaml" | "docker-compose.yml" | "docker-compose.yaml")
 }
 
 /// The sole package directory under `dir` (has `__init__.py`), if unambiguous.
@@ -194,9 +202,22 @@ mod docker_detection {
       &["docker/Dockerfile"],
       &["docker/compose.yaml"],
       &["docker/compose.yml"],
+      // The legacy spelling is still the common one, and the old `docker/`-is-a-directory
+      // probe accepted it; dropping it would demote real Docker projects.
+      &["docker-compose.yml"],
+      &["docker-compose.yaml"],
+      &["docker/docker-compose.yml"],
     ] {
       let dir = project(files);
       assert!(ProjectContext::discover(dir.path()).unwrap().has_docker, "{files:?}");
+    }
+  }
+
+  #[test]
+  fn unrelated_yaml_is_not_a_docker_setup() {
+    for files in [&["docker/notes.yml"][..], &["compose-overrides.yml"], &["docker/README.md"]] {
+      let dir = project(files);
+      assert!(!ProjectContext::discover(dir.path()).unwrap().has_docker, "{files:?}");
     }
   }
 }

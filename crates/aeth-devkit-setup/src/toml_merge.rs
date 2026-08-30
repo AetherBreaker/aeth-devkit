@@ -6,6 +6,8 @@ use toml_edit::{Array, DocumentMut, Item, Table, Value};
 use crate::context::{ProjectContext, dependency_name};
 
 const ADDED_COMMENT_PREFIX: &str = " # setup-project added: ";
+/// Common prefix of every marker comment, used to strip them all on the keep path.
+const MARKER: &str = "setup-project:";
 const IF_DEP_MARKER: &str = "setup-project: if-dep ";
 const IF_DOCKER_MARKER: &str = "setup-project: if-docker";
 
@@ -97,9 +99,14 @@ impl Merger<'_> {
               t.set_implicit(true);
               target.insert_formatted(&tkey, Item::Table(t));
             } else {
-              // A brand-new leaf table: copy it verbatim so the template's formatting
-              // (indentation, alignment, comments) is preserved.
-              target.insert_formatted(&tkey, Item::Table(ttable.clone()));
+              // A brand-new leaf table: copy it so the template's formatting (indentation,
+              // alignment, comments) is preserved — minus the `setup-project:` markers,
+              // which are instructions *to* this merger. Shipping one would leave a comment
+              // in the project's pyproject.toml that reads like a live directive but is
+              // only ever honoured on the template side.
+              let mut fresh = ttable.clone();
+              strip_marker_comments(&mut fresh);
+              target.insert_formatted(&tkey, Item::Table(fresh));
               self.log.push(format!("added [{child}]"));
               continue;
             }
@@ -157,6 +164,31 @@ impl Merger<'_> {
       }
     }
   }
+}
+
+/// Drop the `setup-project:` marker lines from a table's leading comment block, keeping
+/// every other comment (and the blank-line spacing) exactly as the template wrote it.
+fn strip_marker_comments(t: &mut Table) {
+  // Build the replacement prefix *first*. `kept.join` returns an owned `String`, so the
+  // immutable borrow of `t` taken by `decor()` has ended by the time `decor_mut()` needs a
+  // mutable one — doing it in one expression would fail the borrow check.
+  //
+  // `split` on the newline char (not `lines()`) keeps the leading and trailing empty
+  // pieces, so the blank line separating this table from the one above it survives.
+  let cleaned = t
+    .decor()
+    .prefix()
+    .and_then(|p| p.as_str())
+    .filter(|p| p.contains(MARKER))
+    .map(|prefix| prefix.split('\n').filter(|l| !is_marker_line(l)).collect::<Vec<_>>().join("\n"));
+  if let Some(cleaned) = cleaned {
+    t.decor_mut().set_prefix(cleaned);
+  }
+}
+
+/// Whether a raw decor line is a `# setup-project: ...` marker.
+fn is_marker_line(line: &str) -> bool {
+  line.trim().trim_start_matches('#').trim().starts_with(MARKER)
 }
 
 /// The comment lines directly above a template table, with `#` and whitespace stripped.
@@ -400,5 +432,28 @@ mod docker_tests {
     let mut log = vec![];
     let out = merge_pyproject("[project]\nname = \"p\"\n", TPL, &ctx(true), &mut log).unwrap();
     assert!(out.contains("[tool.docker]"), "{out}");
+  }
+
+  #[test]
+  fn the_marker_comment_never_reaches_the_project() {
+    // The marker is an instruction to the merger. Shipping it leaves a comment in the
+    // project's pyproject.toml that reads like a live directive but is only ever honoured
+    // on the template side — and it would persist through every later run.
+    let mut log = vec![];
+    let out = merge_pyproject("[project]\nname = \"p\"\n", TPL, &ctx(true), &mut log).unwrap();
+    assert!(out.contains("[tool.docker]"), "{out}");
+    assert!(!out.contains("setup-project:"), "marker leaked:\n{out}");
+  }
+
+  #[test]
+  fn stripping_the_marker_keeps_the_other_comments_and_spacing() {
+    const TPL2: &str =
+      "[tool.pyright]\n  strict = true\n\n# Keep me: explains the table.\n# setup-project: if-docker\n[tool.docker]\n  mkdirs = []\n";
+    let mut log = vec![];
+    let out = merge_pyproject("[project]\nname = \"p\"\n", TPL2, &ctx(true), &mut log).unwrap();
+    assert!(out.contains("# Keep me: explains the table."), "{out}");
+    assert!(!out.contains("setup-project:"), "{out}");
+    // The blank line separating the table from its predecessor must survive the strip.
+    assert!(out.contains("\n\n# Keep me"), "spacing collapsed:\n{out}");
   }
 }

@@ -11,10 +11,14 @@ use crate::changes::Changes;
 
 pub const COMMIT_SUBJECT: &str = "Standardize project configuration with devkit";
 
-/// Env files carry secrets: never auto-commit them, even if the repo happens to track one.
+/// Env files carry secrets: never auto-commit them, and never un-ignore them, even if the
+/// repo happens to track one. A `launch.json` `envFile` may name any of the three spellings
+/// in the wild, so all three count: `.env` itself, the `.env.<suffix>` family
+/// (`.env.local`, `.env.production`), and the `<name>.env` form (`prod.env`). Missing one
+/// is not cosmetic — step 13 would rewrite the project's own `.gitignore` to expose it.
 pub fn is_env_file(rel: &str) -> bool {
   let name = rel.rsplit('/').next().unwrap_or(rel);
-  name == ".env" || name.ends_with(".env")
+  name == ".env" || name.ends_with(".env") || name.starts_with(".env.")
 }
 
 /// Whether git would ignore `rel` (a root-relative, `/`-separated path). The file need
@@ -58,4 +62,38 @@ pub fn commit_changes(root: &Path, changes: &Changes) -> Result<Option<String>> 
   }
   let message = format!("{COMMIT_SUBJECT}\n\n{body}");
   aeth_devkit_core::git::commit_paths(root, &files, &message).map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn env_file_covers_every_spelling_a_launch_json_can_name() {
+    for rel in [
+      ".env",
+      ".env.local",
+      ".env.production",
+      ".env.dev.local",
+      "prod.env",
+      "sub/dir/.env.local",
+    ] {
+      assert!(is_env_file(rel), "{rel} must be treated as an env file");
+    }
+  }
+
+  #[test]
+  fn env_file_does_not_over_match() {
+    for rel in ["settings.json", ".environment", "env", ".envrc"] {
+      assert!(!is_env_file(rel), "{rel} must not be treated as an env file");
+    }
+  }
+
+  #[test]
+  fn env_file_fails_closed_on_the_dot_env_prefix() {
+    // `.env.md` is a doc, not secrets, but the predicate only ever *excludes* a file from
+    // being committed or un-ignored. Over-matching costs nothing (devkit manages no such
+    // file); under-matching writes a secret into git, so the prefix rule stays broad.
+    assert!(is_env_file(".env.md"));
+  }
 }
