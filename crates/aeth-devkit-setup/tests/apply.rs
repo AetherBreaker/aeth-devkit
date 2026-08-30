@@ -441,23 +441,48 @@ fn gitignored_parent_directory_is_un_ignored_before_the_file() {
   let root = dir.path();
   git_init(root);
   let gi = read(root, ".gitignore");
-  write(root, ".gitignore", &format!("{gi}
+  write(
+    root,
+    ".gitignore",
+    &format!(
+      "{gi}
 # project rule
 .claude/
-"));
+"
+    ),
+  );
 
   aeth_devkit_setup::run(root, &templates(), false).unwrap();
   let gi = read(root, ".gitignore");
-  let dir_at = gi.find("
+  let dir_at = gi
+    .find(
+      "
 !.claude/
-").unwrap_or_else(|| panic!("missing !.claude/ in:
-{gi}"));
-  let file_at = gi.find("
+",
+    )
+    .unwrap_or_else(|| {
+      panic!(
+        "missing !.claude/ in:
+{gi}"
+      )
+    });
+  let file_at = gi
+    .find(
+      "
 !.claude/settings.json
-").unwrap_or_else(|| panic!("missing file rule in:
-{gi}"));
-  assert!(dir_at < file_at, "directory negation must precede the file negation:
-{gi}");
+",
+    )
+    .unwrap_or_else(|| {
+      panic!(
+        "missing file rule in:
+{gi}"
+      )
+    });
+  assert!(
+    dir_at < file_at,
+    "directory negation must precede the file negation:
+{gi}"
+  );
   let ignored = std::process::Command::new("git")
     .current_dir(root)
     .args(["check-ignore", "-q", ".claude/settings.json"])
@@ -466,8 +491,12 @@ fn gitignored_parent_directory_is_un_ignored_before_the_file() {
   assert!(!ignored.success(), ".claude/settings.json must no longer be ignored");
 
   let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
-  assert!(again.is_empty(), "second run must be a no-op:
-{}", again.report(root));
+  assert!(
+    again.is_empty(),
+    "second run must be a no-op:
+{}",
+    again.report(root)
+  );
 }
 
 #[test]
