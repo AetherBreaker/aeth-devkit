@@ -23,8 +23,8 @@ design exists. Check items off in place; delete them once released.
     `Dockerfile`, `entrypoint.sh` and `docker/scripts/get_{chown_paths,mkdirs,launch_script,readme}.py`
     / `detect_app_extra.py` already read everything from `pyproject.toml` (`[tool.docker]`,
     `[project.scripts]`) and look fully generic.
-  - `docker-pin-latest.sh` already knows how to set `GIT_TAG`; the scaffold should leave
-    `GIT_TAG` unset/placeholder and let `poe docker-pin-latest` fill it.
+  - `devkit docker-pin` already knows how to set `GIT_TAG`; the scaffold should leave
+    `GIT_TAG` unset/placeholder and let `poe docker-pin` fill it.
   - Tests: e2e case for a fresh project with `--docker`; idempotency on re-run.
 - [x] `if-docker` conditional marker for template tables (mirrors `if-dep`; drives the
       `[tool.docker]` item above). Done on `feat/agent-config`.
@@ -48,7 +48,62 @@ Planned order (each command is its own crate under `crates/`; the `devkit` binar
 dispatches):
 
 - [x] `lock.sh` → `devkit lock` (7.0.0)
-- [ ] `docker-pin-latest.sh`
+- [x] `docker-pin-latest.sh` → `devkit docker-pin`. Agreed requirements:
+  - [x] **Rename** — command and poe task become `docker-pin` (it pins any version, not just
+        latest); `release-and-pin` keeps its name.
+  - [x] **Crate layout** — thin `crates/aeth-devkit-pin` (clap `Args` + orchestration, `run_real`
+        dispatched from `devkit`); reusable pieces (compose discovery, version resolution,
+        GitHub tags client, pin edit) live in `aeth-devkit-core` so a future in-process
+        `release-and-pin` can call the raw functions directly (no subprocess).
+  - [x] **Index config from pyproject** — kill the hardcoded SFTPyPI URL. Query *every*
+        `[[tool.uv.index]]` with a `publish-url` via its simple `url` (existing `IndexClient`).
+        Explicit version must exist on ALL of them (missing from any = failed release, name
+        the index); latest = `latest_stable` over the *intersection* of version sets.
+  - [x] **GitHub via `gh` CLI** through the `Runner` trait (`gh api ... --paginate`): picks up
+        auth, no rate-limit issues, no 100-tag cap, testable with `RecordingRunner`.
+  - [x] **Block-aware compose edit** — format-preserving line edit scoped to service blocks
+        that build *this* project: `PACKAGE_NAME` (normalized) == `project.name`, or
+        `GIT_REPO` == origin remote (normalized https/ssh/.git/case). All matching blocks
+        move together, each change reported; no match = error listing what was found.
+        Mode (git/pypi) follows from which match kind hits, not key order in the file.
+  - [x] **Preflights before any edit** — resolve → validate → behind-check → edit → commit → push:
+    - Complete-release check (mode-independent): remote tag `v<ver>` AND GitHub release AND
+      present on every publish index. Index check skipped only when no publish index is
+      configured; GitHub checks skipped only when origin is not a GitHub remote. Applies to
+      resolved-latest as well as explicit versions; failure lists exactly what is missing.
+    - Behind-origin check (`fetch` + `behind_count`) when pushing; fail before touching files.
+  - [x] **Commit only the compose path** (`commit_paths`, not bare `git commit` which sweeps
+        the user's staged files). Message: `chore: pin <name> to <version>`.
+  - [x] **Dirty compose file** — apply the pin to the HEAD blob and commit via
+        `commit_files_on_head` (user's index/worktree untouched), then write the 3-way merge
+        (worktree over base + pin) back to the worktree so the user's uncommitted changes ride
+        on top. Merge conflict = abort before committing anything.
+  - [x] **Flags** — `--version/-V`, `--dry-run`, `--no-commit` (edit only, implies no push),
+        `--no-push`, `--compose-file <path>`.
+  - [x] **Compose discovery** — anchored at the git repo root; walk shallowest-first with
+        Docker name precedence (`compose.yaml` > `compose.yml` > `docker-compose.yaml` >
+        `docker-compose.yml`) within each directory; first hit wins (single compose file
+        assumed; extend later if ever needed). Skip known-irrelevant dirs (`.git`, `.venv`,
+        `.cache`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`,
+        `node_modules`, root Cargo `target/`). Always print the chosen file.
+  - [x] **Version handling via `pep440_rs` end to end** — explicit input accepted with or
+        without `v` prefix, parsed on entry (error if unparseable); all membership checks
+        (indexes, git tags) use parsed equality, not string equality; latest via
+        `latest_stable` (no hand-rolled regex filters). Written form: `GIT_TAG` = `v` + the
+        actual tag spelling found on the remote; `PACKAGE_VERSION` = PEP 440 normalized.
+  - [x] **Poe wiring + script removal** — the poe task becomes `docker-pin` running
+        `devkit docker-pin` with declared poe args mirroring the flags (lock-task
+        style); delete `docker-pin-latest.sh`. README: move the command out of the
+        shell-script table and add its per-command Rust feature-reference bullets.
+  - [x] **Migrate `release-and-pin` in the same pass** (both constituents are then Rust):
+        a thin `ReleaseAndPin` subcommand in the `devkit` binary crate composing
+        `aeth_devkit_release` + pin lib in-process (no subprocesses). Release lib entry
+        point grows a structured outcome (released version + released/aborted) so the
+        composition knows what to pin; `devkit release` behavior unchanged. `--dry-run`
+        runs release's dry-run then *skips* the pin step ("dry run: skipping docker pin" —
+        an unpublished version cannot pass pin's preflights). All other args forward to
+        release verbatim; the pin step runs with the released version and full preflights
+        (free post-release verification). Poe task: `devkit release-and-pin $POE_EXTRA_ARGS`.
 - [x] `release.sh` → `devkit release` (spec: `docs/specs/2026-08-26-devkit-release-design.md`)
 - [ ] `rescind-release.sh`
 
