@@ -16,6 +16,7 @@ dependencies = [
  "aeth-devkit-core",
  "aeth-devkit-hooks",
  "aeth-devkit-lock",
+ "aeth-devkit-pin",
  "aeth-devkit-release",
  "aeth-devkit-setup",
  "anyhow",

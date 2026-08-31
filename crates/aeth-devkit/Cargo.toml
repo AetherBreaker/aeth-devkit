@@ -13,6 +13,7 @@
   aeth-devkit-core  = { workspace = true }
   aeth-devkit-hooks = { workspace = true }
   aeth-devkit-lock  = { workspace = true }
+  aeth-devkit-pin   = { workspace = true }
   aeth-devkit-release = { workspace = true }
   aeth-devkit-setup = { workspace = true }
   anyhow            = { workspace = true }

@@ -20,6 +20,8 @@ enum Command {
   Lock(aeth_devkit_lock::Args),
   /// Bump version, build, tag, publish to the index, and create a GitHub release.
   Release(aeth_devkit_release::Args),
+  /// Pin the docker compose file to a released version of this project.
+  DockerPin(aeth_devkit_pin::Args),
   /// Shell-completion data for poe tasks (fast replacement for poe's `_list_tasks`).
   Complete(aeth_devkit_complete::Args),
   /// Run a Claude Code hook (payload on stdin, decision on stdout). Always exits 0.
@@ -47,6 +49,7 @@ fn main() -> ExitCode {
     Command::SetupProject(args) => aeth_devkit_setup::cli::run(args),
     Command::Lock(args) => aeth_devkit_lock::run_real(args),
     Command::Release(args) => aeth_devkit_release::run_real(args),
+    Command::DockerPin(args) => aeth_devkit_pin::run_real(args),
     Command::Complete(args) => Ok(aeth_devkit_complete::run_real(args)),
     Command::Hook(args) => Ok(aeth_devkit_hooks::run_real(args)),
   };
