@@ -2,6 +2,7 @@
 
 pub mod cargo_toml;
 pub mod commit;
+pub mod compose;
 pub mod devpi;
 pub mod git;
 pub mod github;
