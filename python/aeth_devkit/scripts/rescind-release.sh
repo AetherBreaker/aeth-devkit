@@ -3,7 +3,7 @@
 # Usage: bash scripts/rescind-release.sh [version]
 #   version   Optional version to rescind (e.g. "1.2.3" or "v1.2.3").
 #             Defaults to the most recent release. When defaulting, the version-bump
-#             and docker-pin-latest commits are rewound, with their changes kept in the
+#             and docker-pin commits are rewound, with their changes kept in the
 #             working tree. Any other commits on the branch are left untouched.
 #
 # Required env vars (loaded from .env by the poe task):

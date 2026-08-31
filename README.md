@@ -10,7 +10,8 @@ plus the `devkit` CLI (Rust) they call.
 | `poe setup-project`                                               | `devkit setup-project`         | Standardize a project's config from the shipped templates (idempotent).                                                                                                                                                                                       |
 | `poe lock [-U] [--all-extras] [-p PKG] [--dry-run] [--no-commit]` | `devkit lock`                  | Bump the `aeth-devkit` pin to the latest stable release on its index, `uv sync`, commit `uv.lock`.                                                                                                                                                            |
 | `poe release [-f] [--dry-run] [bump …] ["notes"]`                 | `devkit release`               | Bump version, build, tag, publish to the index and GitHub; rolls back on failure.                                                                                                                                                                             |
-| `poe docker-pin-latest`                                           | `scripts/docker-pin-latest.sh` | Pin the compose file's package version.                                                                                                                                                                                                                       |
+| `poe docker-pin [-V VER] [--dry-run] [--no-commit] [--no-push]`   | `devkit docker-pin`            | Pin the compose file's `GIT_TAG` / `PACKAGE_VERSION` to a released version of the project, commit, and push.                                                                                                                                                  |
+| `poe release-and-pin [-f] [--dry-run] [bump …] ["notes"]`         | `devkit release-and-pin`       | `devkit release` then `devkit docker-pin` with the freshly released version, in-process.                                                                                                                                                                      |
 | —                                                                 | `devkit complete`              | Shell completion for `poe` served from Rust (~13 ms per Tab instead of ~200 ms). `devkit complete install --powershell --bash` wires it into `$PROFILE` and the bash completion files (needs a global `devkit`: `uv tool install aeth-devkit --index <url>`). |
 | `poe rescind-release`                                             | `scripts/rescind-release.sh`   | Undo a release.                                                                                                                                                                                                                                               |
 
@@ -29,7 +30,7 @@ silent. `DEVKIT_NO_UPDATE_CHECK=1` disables the check; the Tab-completion data p
 ## Feature reference (Rust commands)
 
 <!-- Feature-tracking section. Update a command's list in the same commit that changes its
-behavior. Shell-script commands (docker-pin-latest, rescind-release) are documented here
+behavior. Shell-script commands (rescind-release) are documented here
 only once they migrate to Rust. -->
 
 ### `devkit setup-project`
@@ -135,6 +136,49 @@ parse anywhere on the line.
   force-with-lease guards and byte-comparison checks so a concurrent release is never
   clobbered; anything that can't be undone prints an exact manual cleanup command.
 - **Exit codes** - 0 released, 1 aborted or rolled back, 2 pre-flight/config error.
+
+### `devkit docker-pin`
+
+Flags: `-V/--version` (exact version, `v` prefix optional, pre-releases allowed; default =
+latest stable release present everywhere), `--dry-run`, `--no-commit` (edit only, implies
+no push), `--no-push`, `-c/--compose-file`, `--root`.
+
+- **Compose discovery** - Breadth-first from the git repo root, shallowest directory
+  first, Docker's own name precedence (`compose.yaml` > `compose.yml` >
+  `docker-compose.yaml` > `docker-compose.yml`) within a directory, first hit wins;
+  hidden and environment/build directories are skipped; the chosen file is printed.
+- **Service matching** - Line-based, format-preserving parse of `services:`; a service is
+  pinned only when it builds *this* project — `GIT_REPO` naming the same repository as
+  `origin` (https/ssh/`.git`/case-insensitive comparison) pins `GIT_TAG`, or
+  `PACKAGE_NAME` normalizing to `[project].name` pins `PACKAGE_VERSION`. All matching
+  services move together; commented lines never count; no match is an error listing what
+  was found.
+- **Completeness preflight** - The target version must exist on every source before
+  anything is edited: GitHub tags *and* a GitHub release (via `gh`, so auth and pagination
+  come free) when `origin` is on GitHub, plus every `[[tool.uv.index]]` with a
+  `publish-url` (queried through its simple `url`). "Latest" is the highest stable version
+  common to all sources — a half-published release can never be pinned.
+- **Version handling** - PEP 440 end to end: parsed-equality membership checks
+  (`1.2.0-alpha1` == `1.2.0a1`), `GIT_TAG` written with the tag's exact remote spelling,
+  `PACKAGE_VERSION` written normalized. Already-pinned everywhere is a clean no-op.
+- **Behind-origin preflight** - When pushing: fetch, require an upstream, refuse to edit
+  while behind origin.
+- **Commit & push** - Commits exactly the compose file (`chore: pin <package> to <ver>`),
+  pathspec-limited so other staged work stays out; pushes the current branch. A dirty
+  compose file gets the pin committed against HEAD's copy through a scratch index and the
+  user's uncommitted edits merged back on top of the working tree (3-way); overlapping
+  edits abort before anything is committed.
+
+### `devkit release-and-pin`
+
+Args: identical to `devkit release` (all of them forward verbatim).
+
+- **Composition** - Runs the release and the pin in one process — no subprocess, no shell
+  glue; the pin step receives the released version explicitly and runs its full preflights
+  as free post-release verification.
+- **Dry run stays dry** - `--dry-run` prints the release plan and skips the pin step (an
+  unpublished version cannot pass the completeness preflight).
+- **Abort safety** - A declined prompt or rolled-back release never reaches the pin step.
 
 ### `devkit complete`
 
