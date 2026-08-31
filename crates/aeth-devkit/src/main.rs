@@ -22,6 +22,8 @@ enum Command {
   Release(aeth_devkit_release::Args),
   /// Pin the docker compose file to a released version of this project.
   DockerPin(aeth_devkit_pin::Args),
+  /// Release, then pin the docker compose file to the freshly released version.
+  ReleaseAndPin(aeth_devkit_release::Args),
   /// Shell-completion data for poe tasks (fast replacement for poe's `_list_tasks`).
   Complete(aeth_devkit_complete::Args),
   /// Run a Claude Code hook (payload on stdin, decision on stdout). Always exits 0.
@@ -43,6 +45,31 @@ impl Command {
   }
 }
 
+/// `devkit release` then `devkit docker-pin --version <released>`, in-process. The pin step
+/// only runs after a completed release: a dry run stays dry, and an aborted or rolled-back
+/// release must not move the pin.
+fn release_and_pin(args: &aeth_devkit_release::Args) -> anyhow::Result<ExitCode> {
+  use aeth_devkit_release::Outcome;
+  match aeth_devkit_release::run_outcome_real(args)? {
+    Outcome::Aborted => Ok(ExitCode::from(1)),
+    Outcome::DryRun => {
+      println!("Dry run: skipping docker pin.");
+      Ok(ExitCode::SUCCESS)
+    }
+    Outcome::Released { version } => {
+      println!();
+      aeth_devkit_pin::run_real(&aeth_devkit_pin::Args {
+        root: args.root.clone(),
+        version: Some(version),
+        dry_run: false,
+        no_commit: false,
+        no_push: false,
+        compose_file: None,
+      })
+    }
+  }
+}
+
 fn main() -> ExitCode {
   let cli = Cli::parse();
   let result = match &cli.command {
@@ -50,6 +77,7 @@ fn main() -> ExitCode {
     Command::Lock(args) => aeth_devkit_lock::run_real(args),
     Command::Release(args) => aeth_devkit_release::run_real(args),
     Command::DockerPin(args) => aeth_devkit_pin::run_real(args),
+    Command::ReleaseAndPin(args) => release_and_pin(args),
     Command::Complete(args) => Ok(aeth_devkit_complete::run_real(args)),
     Command::Hook(args) => Ok(aeth_devkit_hooks::run_real(args)),
   };
