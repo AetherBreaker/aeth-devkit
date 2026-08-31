@@ -5,14 +5,14 @@ plus the `devkit` CLI (Rust) they call.
 
 ## Commands
 
-| poe task | Backing | What it does |
-| --- | --- | --- |
-| `poe setup-project` | `devkit setup-project` | Standardize a project's config from the shipped templates (idempotent). |
-| `poe lock [-U] [--all-extras] [-p PKG] [--dry-run] [--no-commit]` | `devkit lock` | Bump the `aeth-devkit` pin to the latest stable release on its index, `uv sync`, commit `uv.lock`. |
-| `poe release [-f] [--dry-run] [bump …] ["notes"]` | `devkit release` | Bump version, build, tag, publish to the index and GitHub; rolls back on failure. |
-| `poe docker-pin-latest` | `scripts/docker-pin-latest.sh` | Pin the compose file's package version. |
-| — | `devkit complete` | Shell completion for `poe` served from Rust (~13 ms per Tab instead of ~200 ms). `devkit complete install --powershell --bash` wires it into `$PROFILE` and the bash completion files (needs a global `devkit`: `uv tool install aeth-devkit --index <url>`). |
-| `poe rescind-release` | `scripts/rescind-release.sh` | Undo a release. |
+| poe task                                                          | Backing                        | What it does                                                                                                                                                                                                                                                  |
+| ----------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `poe setup-project`                                               | `devkit setup-project`         | Standardize a project's config from the shipped templates (idempotent).                                                                                                                                                                                       |
+| `poe lock [-U] [--all-extras] [-p PKG] [--dry-run] [--no-commit]` | `devkit lock`                  | Bump the `aeth-devkit` pin to the latest stable release on its index, `uv sync`, commit `uv.lock`.                                                                                                                                                            |
+| `poe release [-f] [--dry-run] [bump …] ["notes"]`                 | `devkit release`               | Bump version, build, tag, publish to the index and GitHub; rolls back on failure.                                                                                                                                                                             |
+| `poe docker-pin-latest`                                           | `scripts/docker-pin-latest.sh` | Pin the compose file's package version.                                                                                                                                                                                                                       |
+| —                                                                 | `devkit complete`              | Shell completion for `poe` served from Rust (~13 ms per Tab instead of ~200 ms). `devkit complete install --powershell --bash` wires it into `$PROFILE` and the bash completion files (needs a global `devkit`: `uv tool install aeth-devkit --index <url>`). |
+| `poe rescind-release`                                             | `scripts/rescind-release.sh`   | Undo a release.                                                                                                                                                                                                                                               |
 
 `devkit --help` lists the Rust subcommands. Each lives in its own crate under `crates/`;
 `cargo run -p aeth-devkit-lock -- --help` runs one command's dev binary without linking the
