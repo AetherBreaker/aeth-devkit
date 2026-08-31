@@ -189,6 +189,19 @@ fn bump_mode_happy_path() {
 }
 
 #[test]
+fn run_outcome_reports_released_version() {
+  use aeth_devkit_release::{Outcome, run_outcome};
+  let w = World::new(&[]);
+  let outcome = run_outcome(&w.args(&["patch"]), &w.deps()).unwrap();
+  assert_eq!(outcome, Outcome::Released { version: "1.0.1".into() });
+  // A dry run reports DryRun, never Released.
+  let w = World::new(&[]);
+  let mut args = w.args(&["patch"]);
+  args.dry_run = true;
+  assert_eq!(run_outcome(&args, &w.deps()).unwrap(), Outcome::DryRun);
+}
+
+#[test]
 fn no_bump_mode_pushes_only_the_tag() {
   let w = World::new(&[]);
   let before = git::head_sha(w.root()).unwrap();

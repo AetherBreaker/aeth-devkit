@@ -101,9 +101,35 @@ impl Deps<'_> {
   }
 }
 
-/// Exit codes: 0 released; 1 aborted at a prompt or failed and rolled back. Errors from
-/// pre-flight bubble up as `Err` (the dispatcher prints them and exits 2).
+/// What a release run amounted to, for callers that compose further steps on top
+/// (`devkit release-and-pin` pins the compose file only after `Released`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+  /// The release completed; `version` is the released version (PEP 440, no `v`).
+  Released { version: String },
+  /// `--dry-run`: the plan was printed, nothing changed.
+  DryRun,
+  /// Declined at a prompt, or failed and rolled back (exit 1 either way).
+  Aborted,
+}
+
+impl Outcome {
+  fn exit_code(&self) -> ExitCode {
+    match self {
+      Outcome::Aborted => ExitCode::from(1),
+      _ => ExitCode::SUCCESS,
+    }
+  }
+}
+
+/// Exit codes: 0 released (or dry run); 1 aborted at a prompt or failed and rolled back.
+/// Errors from pre-flight bubble up as `Err` (the dispatcher prints them and exits 2).
 pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
+  Ok(run_outcome(args, deps)?.exit_code())
+}
+
+/// [`run`], but reporting *what happened* instead of collapsing it to an exit code.
+pub fn run_outcome(args: &Args, deps: &Deps) -> Result<Outcome> {
   let parsed = args::parse_positionals(&args.words)?;
   // `--force` may arrive as a clap flag or buried in the positionals; either counts.
   let force = args.force || parsed.force;
@@ -141,7 +167,7 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
   // A declined prompt is a normal exit (1), not an error (2): the user chose to stop.
   if let Err(e) = preflight::confirm_dirty_tree(&root, force, deps.prompt) {
     eprintln!("{e:#}");
-    return Ok(ExitCode::from(1));
+    return Ok(Outcome::Aborted);
   }
 
   let existing = preflight::probe(deps, &root, &cfg, &target.new)?;
@@ -149,7 +175,7 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
     print!("{}", report::render(&target.new, &existing, &cfg.package, &cfg.index_name));
     if !args.dry_run && !confirm_force(deps.prompt, force, "Remove these and continue? Type 'force' to continue:")? {
       eprintln!("aborted: artefacts for v{} already exist", target.new);
-      return Ok(ExitCode::from(1));
+      return Ok(Outcome::Aborted);
     }
     // The probe above may have taken a while; do not start deleting after a Ctrl-C.
     deps.check_interrupt()?;
@@ -169,7 +195,7 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
   };
   if args.dry_run {
     print!("{}", steps::describe(&plan));
-    return Ok(ExitCode::SUCCESS);
+    return Ok(Outcome::DryRun);
   }
 
   // --- Execute, and unwind the journal on the first error. ---
@@ -177,7 +203,9 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
   match steps::execute(&plan, deps, &mut journal) {
     Ok(url) => {
       println!("Released {} {}\n{url}", cfg.package, target.new);
-      Ok(ExitCode::SUCCESS)
+      Ok(Outcome::Released {
+        version: target.new.clone(),
+      })
     }
     Err(e) => {
       eprintln!("\nERROR: Release failed: {e:#}\nRolling back...");
@@ -187,7 +215,7 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
       } else {
         eprintln!("\n{}", undo::render_failures(&failures));
       }
-      Ok(ExitCode::from(1))
+      Ok(Outcome::Aborted)
     }
   }
 }
@@ -198,13 +226,18 @@ static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 /// [`run`] with the real collaborators.
 pub fn run_real(args: &Args) -> Result<ExitCode> {
+  Ok(run_outcome_real(args)?.exit_code())
+}
+
+/// [`run_outcome`] with the real collaborators.
+pub fn run_outcome_real(args: &Args) -> Result<Outcome> {
   // The handler only flips the flag. Child processes (`uv`, `git`, `gh`) receive the same
   // console interrupt and exit non-zero, which surfaces as an ordinary step error and
   // triggers rollback; the flag covers interrupts that land between steps. The handler stays
   // installed, so a second Ctrl-C during rollback does not kill us mid-unwind.
   ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst)).context("installing Ctrl-C handler")?;
   let env = |key: &str| std::env::var(key).ok();
-  run(
+  run_outcome(
     args,
     &Deps {
       runner: &aeth_devkit_core::process::SystemRunner,
