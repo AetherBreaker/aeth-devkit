@@ -58,13 +58,19 @@ tasks.add(
 )
 
 tasks.add(
-  task_name="docker-pin-latest",
+  task_name="docker-pin",
   task_config={
     "help": (
-      "Auto-detect the docker compose file in the project root, resolve the version to pin "
-      "(--version or latest stable release), and update PACKAGE_VERSION in place."
+      "Pin the docker compose file to a released version of this project. "
+      "Auto-detects the compose file and the services that build this package, verifies the "
+      "release is complete (GitHub tag+release and every publish index), then updates "
+      "GIT_TAG / PACKAGE_VERSION, commits, and pushes."
     ),
-    "cmd": f'bash "{_script_path("docker-pin-latest.sh")}" "${{version}}"',
+    "shell": (
+      'devkit docker-pin ${version:+--version "$version"} ${dry_run:+--dry-run} '
+      '${no_commit:+--no-commit} ${no_push:+--no-push} ${compose_file:+--compose-file "$compose_file"}'
+    ),
+    "interpreter": "bash",
     "args": [
       {
         "name": "version",
@@ -72,8 +78,32 @@ tasks.add(
         "default": "",
         "help": (
           "Pin to this exact version (supports pre-release versions such as 1.2.0a1). "
-          "If omitted, the latest stable release is fetched from the package index."
+          "If omitted, the latest stable complete release is used."
         ),
+      },
+      {
+        "name": "dry_run",
+        "options": ["--dry-run"],
+        "type": "boolean",
+        "help": "Resolve and report without changing anything",
+      },
+      {
+        "name": "no_commit",
+        "options": ["--no-commit"],
+        "type": "boolean",
+        "help": "Edit the compose file but do not commit (implies --no-push)",
+      },
+      {
+        "name": "no_push",
+        "options": ["--no-push"],
+        "type": "boolean",
+        "help": "Commit locally but do not push",
+      },
+      {
+        "name": "compose_file",
+        "options": ["--compose-file", "-c"],
+        "default": "",
+        "help": "Compose file to edit (default: auto-discover from the repo root)",
       },
     ],
   },
@@ -89,22 +119,16 @@ tasks.add(
       "valid values: major, minor, patch, stable, alpha, beta, rc, post, dev. "
       "To include release notes, append a multi-word string as the final arg "
       "(single-word trailing args are treated as a typo and raise an error). "
-      "Pass --force / -f to skip the confirmation prompts. "
+      "Pass --force / -f to skip the confirmation prompts; --dry-run stays dry (the pin step is skipped). "
       "Examples: "
       "poe release-and-pin patch | "
       "poe release-and-pin major alpha | "
       "poe release-and-pin minor 'first minor release'"
     ),
     "envfile": ".env",
-    # `devkit release --dry-run` prints its plan and exits 0, so a bare `&&` would still
-    # run the pin script and edit the compose file. The `case` guard keeps a dry run dry:
-    # if --dry-run is among the forwarded args, skip the pin step entirely.
-    "shell": (
-      f'devkit release $POE_EXTRA_ARGS && case " $POE_EXTRA_ARGS " in *" --dry-run "*) '
-      f'echo "Dry run: skipping docker pin." ;; *) '
-      f'bash "{_script_path("docker-pin-latest.sh")}" "$(uv version --short)" ;; esac'
-    ),
-    "interpreter": "bash",
+    # Free positionals are forwarded verbatim and parsed by `devkit release-and-pin` itself;
+    # the pin step runs in-process after a completed release, never on --dry-run.
+    "cmd": "devkit release-and-pin $POE_EXTRA_ARGS",
   },
 )
 
