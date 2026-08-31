@@ -29,31 +29,49 @@ _RAW = {'env': {},
                                 'Bash without changing global PATH',
                         'cmd': 'powershell -NoProfile -ExecutionPolicy Bypass -File '
                                '"@@AETH_DEVKIT_SCRIPTS@@/fix-git-bash-workspace.ps1"'},
-           'docker-pin-latest': {'help': 'Auto-detect the docker compose file in the project root, resolve '
-                                         'the version to pin (--version or latest stable release), and '
-                                         'update PACKAGE_VERSION in place.',
-                                 'cmd': 'bash "@@AETH_DEVKIT_SCRIPTS@@/docker-pin-latest.sh" "${version}"',
-                                 'args': [{'name': 'version',
-                                           'options': ['--version', '-V'],
-                                           'default': '',
-                                           'help': 'Pin to this exact version (supports pre-release versions '
-                                                   'such as 1.2.0a1). If omitted, the latest stable release '
-                                                   'is fetched from the package index.'}]},
+           'docker-pin': {'help': 'Pin the docker compose file to a released version of this project. '
+                                  'Auto-detects the compose file and the services that build this package, '
+                                  'verifies the release is complete (GitHub tag+release and every publish '
+                                  'index), then updates GIT_TAG / PACKAGE_VERSION, commits, and pushes.',
+                          'shell': 'devkit docker-pin ${version:+--version "$version"} ${dry_run:+--dry-run} '
+                                   '${no_commit:+--no-commit} ${no_push:+--no-push} '
+                                   '${compose_file:+--compose-file "$compose_file"}',
+                          'interpreter': 'bash',
+                          'args': [{'name': 'version',
+                                    'options': ['--version', '-V'],
+                                    'default': '',
+                                    'help': 'Pin to this exact version (supports pre-release versions such '
+                                            'as 1.2.0a1). If omitted, the latest stable complete release is '
+                                            'used.'},
+                                   {'name': 'dry_run',
+                                    'options': ['--dry-run'],
+                                    'type': 'boolean',
+                                    'help': 'Resolve and report without changing anything'},
+                                   {'name': 'no_commit',
+                                    'options': ['--no-commit'],
+                                    'type': 'boolean',
+                                    'help': 'Edit the compose file but do not commit (implies --no-push)'},
+                                   {'name': 'no_push',
+                                    'options': ['--no-push'],
+                                    'type': 'boolean',
+                                    'help': 'Commit locally but do not push'},
+                                   {'name': 'compose_file',
+                                    'options': ['--compose-file', '-c'],
+                                    'default': '',
+                                    'help': 'Compose file to edit (default: auto-discover from the repo '
+                                            'root)'}]},
            'release-and-pin': {'help': 'Bump version, commit, tag, build, and publish to GitHub and the '
                                        'package index, then pin the docker-compose package version. Pass one '
                                        'or more bump types as free positional args; valid values: major, '
                                        'minor, patch, stable, alpha, beta, rc, post, dev. To include release '
                                        'notes, append a multi-word string as the final arg (single-word '
                                        'trailing args are treated as a typo and raise an error). Pass '
-                                       '--force / -f to skip the confirmation prompts. Examples: poe '
-                                       'release-and-pin patch | poe release-and-pin major alpha | poe '
-                                       "release-and-pin minor 'first minor release'",
+                                       '--force / -f to skip the confirmation prompts; --dry-run stays dry '
+                                       '(the pin step is skipped). Examples: poe release-and-pin patch | poe '
+                                       "release-and-pin major alpha | poe release-and-pin minor 'first minor "
+                                       "release'",
                                'envfile': '.env',
-                               'shell': 'devkit release $POE_EXTRA_ARGS && case " $POE_EXTRA_ARGS " in *" '
-                                        '--dry-run "*) echo "Dry run: skipping docker pin." ;; *) bash '
-                                        '"@@AETH_DEVKIT_SCRIPTS@@/docker-pin-latest.sh" "$(uv version '
-                                        '--short)" ;; esac',
-                               'interpreter': 'bash'},
+                               'cmd': 'devkit release-and-pin $POE_EXTRA_ARGS'},
            'rescind-release': {'help': 'Fully rescind a release: removes the package from the package index, '
                                        'deletes the GitHub release, and removes the Git tag (local and '
                                        'remote). Defaults to the most recent release; when defaulting, also '
