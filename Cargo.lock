@@ -76,6 +76,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aeth-devkit-pin"
+version = "8.0.1"
+dependencies = [
+ "aeth-devkit-core",
+ "anyhow",
+ "clap",
+ "pep440_rs",
+ "tempfile",
+ "toml_edit",
+]
+
+[[package]]
 name = "aeth-devkit-release"
 version = "8.0.3"
 dependencies = [
