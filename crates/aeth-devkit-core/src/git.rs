@@ -1,6 +1,6 @@
 //! Thin wrappers over the `git` CLI used by every command.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
@@ -120,6 +120,18 @@ pub fn status_porcelain(root: &Path) -> Result<String> {
 /// Human-readable short status, for showing the user what is dirty.
 pub fn status_short(root: &Path) -> Result<String> {
   expect_ok(capture(root, &["status", "--short"])?, "git status")
+}
+
+/// The repository's top-level directory (`git rev-parse --show-toplevel`).
+pub fn toplevel(root: &Path) -> Result<PathBuf> {
+  let s = expect_ok(capture(root, &["rev-parse", "--show-toplevel"])?, "git rev-parse --show-toplevel")?;
+  Ok(PathBuf::from(s.trim()))
+}
+
+/// The URL of the `origin` remote, or `None` when no such remote is configured.
+pub fn origin_url(root: &Path) -> Result<Option<String>> {
+  let out = capture(root, &["remote", "get-url", "origin"])?;
+  Ok(out.success().then(|| out.stdout.trim().to_string()))
 }
 
 /// The short SHA of the commit `tag` points at, or `None` when the tag does not exist.
@@ -661,6 +673,24 @@ mod tests {
     assert_eq!(head_sha(root).unwrap(), first);
     // Mixed reset keeps the working tree: the file still has the newer content.
     assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "2\n");
+  }
+
+  #[test]
+  fn toplevel_and_origin_url() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init_test_repo(root);
+    let top = toplevel(root).unwrap();
+    assert_eq!(top.canonicalize().unwrap(), root.canonicalize().unwrap());
+    assert_eq!(origin_url(root).unwrap(), None);
+    assert!(
+      git(root)
+        .args(["remote", "add", "origin", "https://github.com/o/r.git"])
+        .status()
+        .unwrap()
+        .success()
+    );
+    assert_eq!(origin_url(root).unwrap().as_deref(), Some("https://github.com/o/r.git"));
   }
 
   #[test]
