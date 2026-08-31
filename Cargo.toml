@@ -24,6 +24,7 @@
   aeth-devkit-setup = { path = "crates/aeth-devkit-setup" }
   aeth-devkit-lock  = { path = "crates/aeth-devkit-lock" }
   aeth-devkit-release = { path = "crates/aeth-devkit-release" }
+  aeth-devkit-pin   = { path = "crates/aeth-devkit-pin" }
   aeth-devkit-complete = { path = "crates/aeth-devkit-complete" }
   aeth-devkit-hooks = { path = "crates/aeth-devkit-hooks" }
 
