@@ -319,6 +319,31 @@ pub fn publish_index(doc: &DocumentMut, name: Option<&str>) -> Result<PublishInd
   }
 }
 
+/// An index a release publishes to, with the simple `url` reads go through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinIndex {
+  pub name: String,
+  pub url: String,
+  pub publish_url: String,
+}
+
+/// Every `[[tool.uv.index]]` entry carrying a `publish-url`, in document order. Empty when
+/// no index publishes. An entry with a `publish-url` but missing `name` or `url` is an
+/// error: readers resolve versions through the simple `url`, so it must exist.
+pub fn publish_indexes(doc: &DocumentMut) -> Result<Vec<PinIndex>> {
+  let str_of = |t: &dyn TableLike, key: &str| t.get(key).and_then(Item::as_str).map(str::to_string);
+  let mut out = Vec::new();
+  for t in index_tables(doc) {
+    let Some(publish_url) = str_of(t, "publish-url") else { continue };
+    let name = str_of(t, "name").unwrap_or_else(|| "<unnamed>".into());
+    let Some(url) = str_of(t, "url") else {
+      bail!("[[tool.uv.index]] {name} has a publish-url but no url; the pin command needs the simple url to read versions");
+    };
+    out.push(PinIndex { name, url, publish_url });
+  }
+  Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -386,6 +411,19 @@ name='x'
 
   fn doc() -> DocumentMut {
     DOC.parse().unwrap()
+  }
+
+  #[test]
+  fn lists_publish_indexes() {
+    let d = doc();
+    let idx = publish_indexes(&d).unwrap();
+    assert_eq!(idx.len(), 1);
+    assert_eq!(idx[0].name, "SFTPyPI");
+    assert_eq!(idx[0].url, "https://pypi.example.com/user/internal/+simple");
+    let none: DocumentMut = "[project]\nname='x'\n".parse().unwrap();
+    assert_eq!(publish_indexes(&none).unwrap(), vec![]);
+    let broken: DocumentMut = "[[tool.uv.index]]\nname='X'\npublish-url='https://x/'\n".parse().unwrap();
+    assert!(publish_indexes(&broken).unwrap_err().to_string().contains("no url"));
   }
 
   #[test]
