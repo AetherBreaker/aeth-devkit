@@ -1,15 +1,50 @@
 //! Committing the changes `devkit setup-project` made, when the project is git-tracked.
+//!
+//! The commit is quiet (see `aeth_devkit_core::commit`): the committable managed files are
+//! reset to their `HEAD` content before the templates are applied, the commit carries only
+//! this command's changes, and the user's uncommitted edits are replayed back on top
+//! afterwards — or, if they overlap the template changes, the run is rejected and rolled
+//! back.
 
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::Result;
 
+use aeth_devkit_core::commit::{self, TrackedBase};
 pub use aeth_devkit_core::git::is_git_tracked;
 
 use crate::changes::Changes;
 
 pub const COMMIT_SUBJECT: &str = "Standardize project configuration with devkit";
+
+/// Every committable file `setup-project` can write. The dynamic managed paths — env files,
+/// `.claude/settings.local.json` — are exactly the intentionally-local ones that are never
+/// committed, so this list is static. `.dockerignore` and the Rust overlays only apply to
+/// some projects, but staging a path the project does not have is a no-op.
+const COMMITTABLE: [&str; 13] = [
+  "pyproject.toml",
+  ".vscode/settings.json",
+  ".vscode/extensions.json",
+  ".vscode/launch.json",
+  ".vscode/tasks.json",
+  ".gitignore",
+  ".gitattributes",
+  ".dockerignore",
+  "AGENTS.md",
+  ".claude/CLAUDE.md",
+  ".claude/settings.json",
+  ".github/workflows/claude.yml",
+  ".mcp.json",
+];
+
+/// Reset the committable managed files to `HEAD` (capturing the user's uncommitted state)
+/// so the template merges run on clean input. Gitignored files are excluded: they are never
+/// committed, so they are merged in place like the env files.
+pub fn stage_bases(root: &Path) -> Result<Vec<TrackedBase>> {
+  let paths: Vec<&str> = COMMITTABLE.iter().copied().filter(|rel| !is_ignored(root, rel)).collect();
+  commit::stage_clean_base(root, &paths)
+}
 
 /// Env files carry secrets: never auto-commit them, and never un-ignore them, even if the
 /// repo happens to track one. A `launch.json` `envFile` may name any of the three spellings
@@ -75,13 +110,13 @@ fn trackable(root: &Path, changes: &Changes) -> Result<Vec<String>> {
   Ok(out)
 }
 
-/// Stage exactly the changed, non-ignored files and commit them. Returns the short hash,
-/// or `None` when nothing trackable changed.
-pub fn commit_changes(root: &Path, changes: &Changes) -> Result<Option<String>> {
+/// Commit exactly the changed, non-ignored files through the quiet-commit machinery, then
+/// replay the user's uncommitted edits on top. Returns the short hash, or `None` when
+/// nothing committable changed (the user's originals are back where `HEAD` copies were
+/// staged). On error — most often uncommitted edits overlapping the template changes —
+/// the working tree, index, and branch are restored to their pre-run state.
+pub fn commit_changes(root: &Path, changes: &Changes, bases: &mut Vec<TrackedBase>) -> Result<Option<String>> {
   let files = trackable(root, changes)?;
-  if files.is_empty() {
-    return Ok(None);
-  }
   let mut body = String::new();
   for f in &changes.files {
     let rel = relative_to(root, &f.path).unwrap_or_default();
@@ -90,7 +125,11 @@ pub fn commit_changes(root: &Path, changes: &Changes) -> Result<Option<String>> 
     }
   }
   let message = format!("{COMMIT_SUBJECT}\n\n{body}");
-  aeth_devkit_core::git::commit_paths(root, &files, &message).map(Some)
+  // A committable file the run created from scratch gets an "existed nowhere" base so it
+  // is committed as-is; a gitignored one stays out, like it stayed out of the staging.
+  let created: Vec<&str> = COMMITTABLE.iter().copied().filter(|rel| !is_ignored(root, rel)).collect();
+  commit::absorb_created(root, &created, bases);
+  commit::commit_or_rollback(root, bases, &message, "the template changes")
 }
 
 #[cfg(test)]

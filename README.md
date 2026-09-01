@@ -68,18 +68,22 @@ byte-for-byte no-op.
   adds missing servers, never edits ones the project already defines.
 - **Placeholders** - `{project_root}`, `{package}`, `{python_dir}`, `{devkit_bin}` with
   per-format escaping; `{devkit_bin}` prefers the venv binary over `uv run devkit`.
-- **Post-apply** - `tombi format` on pyproject (non-fatal), then an auto-commit of exactly
-  the changed files (`Standardize project configuration with devkit`, per-file body; never
-  env files or `settings.local.json`; unrelated staged work is left alone), then `note:`
-  advisories (git-ignored managed files, stale `[tool.docker]`, `copilot-instructions.md`).
+- **Post-apply** - `tombi format` on pyproject (non-fatal), then a quiet auto-commit of
+  exactly the changed files (`Standardize project configuration with devkit`, per-file
+  body; never env files or `settings.local.json`) via the machinery shared with `lock` and
+  `release`: committable managed files are merged against their HEAD content, the commit
+  carries only this run's changes, and uncommitted edits are replayed back on top —
+  overlapping edits reject the run and roll it back (exit 3); unrelated staged work is
+  left alone. Then `note:` advisories (git-ignored managed files, stale `[tool.docker]`,
+  `copilot-instructions.md`).
 - **Not yet implemented** - (see TODO.md) `--docker` scaffolding flags, `--python-dir`
   override, vendored-gitignore refresh task.
 
 ### `devkit lock`
 
 Flags: `--root`, `-p/--package` (repeatable; default `aeth-devkit`), `--dry-run`,
-`--no-commit`, and a trailing `-- <uv args>` forwarded verbatim to `uv sync` (`poe lock`'s
-`-U` / `--all-extras` arrive this way).
+`--no-commit`, and a trailing `-- <uv args>` forwarded to `uv sync`, appended to the
+default `--upgrade --all-extras` (a forwarded copy of a default is dropped, not doubled).
 
 - **Pin discovery** - Finds each pin across `project.dependencies`,
   `optional-dependencies` and `dependency-groups` (PEP 503 name normalization).
@@ -89,11 +93,16 @@ Flags: `--root`, `-p/--package` (repeatable; default `aeth-devkit`), `--dry-run`
 - **Pin rewrite** - Rewrites `>=` / `==` / `===` / `~=` pins and one-major `>=A,<B` ranges
   in place, preserving extras, markers, whitespace and comments; anything odder is skipped
   with a message naming the latest version.
-- **Sync** - Always runs `uv sync` (plus forwarded args); a sync failure becomes the exit
-  code and the pin edit is left on disk (no rollback).
-- **Commit** - Commits exactly `uv.lock` + `pyproject.toml` (`Update uv.lock`),
-  pathspec-limited so other staged work stays out; skips cleanly outside git or with
-  nothing to commit. Synced-but-commit-failed is exit 3.
+- **Sync** - Always runs `uv sync --upgrade --all-extras` (plus forwarded args); a sync
+  failure becomes the exit code (in commit mode the pin edit is rolled back first; with
+  `--no-commit` or outside git it is left on disk).
+- **Commit** - Quiet commit of exactly `uv.lock` + `pyproject.toml` (`Update uv.lock`),
+  via the machinery shared with `release` and `setup-project`: the pin update and sync run
+  against the files as committed in HEAD, the commit is built through a scratch index
+  (staged work untouched) and carries only this command's changes, and uncommitted edits
+  are replayed back on top afterwards — edits overlapping the pin update reject the run
+  and roll everything back (exit 3). Skips cleanly outside git or with nothing to commit;
+  safe on any branch (no `main` check).
 
 ### `devkit release`
 
@@ -112,8 +121,9 @@ parse anywhere on the line.
 - **Prompts** - Two, both requiring the literal word `force` (dirty tree; remove existing
   artefacts); `--force` skips both.
 - **Release steps** - Snapshot managed files + `dist/` → bump (pyproject, `Cargo.toml`,
-  `cargo update`) → `uv lock` → `uv build` into a fresh `dist/` → commit built through a
-  scratch index (uncommitted edits to managed files are replayed back afterwards; the
+  `cargo update`) → `uv lock` → `uv build` into a fresh `dist/` → quiet commit built
+  through a scratch index (the machinery shared with `lock` and `setup-project`:
+  uncommitted edits to managed files are replayed back afterwards; the
   user's staging is untouched; comparisons and the merge-back go through git's
   clean/smudge filters, so a `core.autocrlf` CRLF checkout is neither mistaken for an
   edit nor rewritten to LF) → annotated tag → `uv publish` (credentials from

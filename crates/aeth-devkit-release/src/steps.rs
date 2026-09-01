@@ -11,7 +11,7 @@ use std::path::Path;
 use anyhow::{Context as _, Result, bail};
 use toml_edit::DocumentMut;
 
-use aeth_devkit_core::git::IndexEntry;
+use aeth_devkit_core::commit::{self, TrackedBase};
 use aeth_devkit_core::{cargo_toml, git};
 
 use crate::Deps;
@@ -100,187 +100,18 @@ fn run_ok_env(deps: &Deps, root: &Path, program: &str, args: &[&str], env: &[(&s
   }
 }
 
-/// Pre-run state of one release-managed file, captured before any tool touches it, so the
-/// bump commit can be built from clean content and the user's edits put back afterwards.
-struct TrackedBase {
-  path: String,
-  /// The committed bytes (`None` if `HEAD` has no such file).
-  head: Option<Vec<u8>>,
-  /// The committed file mode (`100644`/`100755`), `None` alongside `head`. The bump commit
-  /// keeps *this* mode, not the index's: a staged `chmod` is the user's pending change and
-  /// must stay in their index, not be folded into the release commit.
-  head_mode: Option<String>,
-  /// The working-tree bytes before the run in repository form (clean filters applied) —
-  /// the user's version, edits and all — or `None` when the file was absent (deleted by
-  /// the user, or never created yet).
-  worktree: Option<Vec<u8>>,
-  /// Whether those bytes differ from the raw file on disk (a CRLF checkout, say); every
-  /// write back to the working tree smudges iff this is set, so the file keeps its form.
-  filtered: bool,
-  /// The index entry before the run, and the bytes it points at (if any).
-  index: IndexEntry,
-  index_bytes: Option<Vec<u8>>,
-}
-
-/// Capture every release-managed file that exists on disk, in `HEAD`, or in the index, and
-/// where the working copy differs from `HEAD` (edited *or deleted*) put the `HEAD` version
-/// on disk so `uv version` / `uv lock` / the Cargo edit operate on clean input.
-///
-/// The working tree is restored by the snapshot on failure; on success step 5 merges the
-/// user's edits back on top of the bumped content (`commit_release_edits`).
-fn stage_clean_base(root: &Path) -> Result<Vec<TrackedBase>> {
-  let paths: Vec<String> = TRACKED.iter().map(|p| p.to_string()).collect();
-  let entries = git::index_entries(root, &paths)?;
-  let mut bases = Vec::with_capacity(paths.len());
-  // `zip` pairs each path with its index entry; they were produced in the same order.
-  for (path, index) in paths.into_iter().zip(entries) {
-    // Repository-form bytes (clean filters applied), never a raw `fs::read`: on a
-    // `core.autocrlf=true` checkout the raw file is CRLF while every blob is LF, and
-    // comparing those would call a clean tree "edited on every line" — then the merge-back
-    // in `commit_release_edits` would report the version line as an overlapping edit.
-    let (worktree, filtered) = match git::worktree_blob(root, &path)? {
-      Some(w) => (Some(w.bytes), w.filtered),
-      None => (None, false),
-    };
-    let head = git::head_blob(root, &path)?;
-    let head_mode = git::head_mode(root, &path)?;
-    if worktree.is_none() && head.is_none() && index.staged.is_none() {
-      continue; // the project simply does not have this file
-    }
-    // `as_ref()` turns `&Option<(String, String)>` into `Option<&(String, String)>` so the
-    // closure can borrow the sha without moving it out of the entry.
-    let index_bytes = match index.staged.as_ref() {
-      Some((_, sha)) => Some(git::blob_bytes(root, sha)?),
-      None => None,
-    };
-    // A let-chain (edition 2024): bind `h` *and* test it in one condition. A deleted file
-    // (`worktree == None`) counts as "differs", and gets the HEAD copy back for the tools.
-    if let Some(h) = &head
-      && worktree.as_deref() != Some(h.as_slice())
-    {
-      git::write_worktree(root, &path, h, filtered).with_context(|| format!("resetting {path} to HEAD for the bump"))?;
-    }
-    bases.push(TrackedBase {
-      path,
-      head,
-      head_mode,
-      worktree,
-      filtered,
-      index,
-      index_bytes,
-    });
-  }
-  Ok(bases)
-}
-
-/// Commit the release's edits and only those, then put the user's edits back.
-///
-/// For each managed file the tools produced `bumped` from the clean base `head`. The commit
-/// gets `bumped` verbatim (built through a scratch index, so the real index is never
-/// `git add`ed). Then the same base→bumped delta is replayed onto the user's working-tree
-/// version and onto their staged version with a three-way merge, so after this the tree
-/// looks like "what the user had, plus the bump", and `git status` shows exactly the edits
-/// they had before. Overlapping edits (say, the user changed the version line) cannot be
-/// combined, and are an error — the caller rolls back.
-///
-/// The `ResetCommit` undo is pushed onto `journal` the moment the commit exists, *before*
-/// the index and working tree are touched, so a failure in that last stretch still rolls
-/// the commit back.
+/// Commit the release's edits and only those, then put the user's edits back — the shared
+/// quiet-commit machinery (`aeth_devkit_core::commit`), plus the release's journaling: the
+/// `ResetCommit` undo is pushed the moment the commit exists, *before* the index and
+/// working tree are touched, so a failure in that last stretch still rolls the commit back.
 fn commit_release_edits(root: &Path, bases: &[TrackedBase], message: &str, pre_sha: &str, journal: &mut Vec<Undo>) -> Result<String> {
-  let mut to_commit = Vec::new();
-  let mut new_index = Vec::new();
-  // `Option<Vec<u8>>` per path: `None` means "the user had deleted it; delete it again".
-  // The `bool` is the file's `filtered` flag: smudge on the way back out iff set.
-  let mut new_worktree: Vec<(String, Option<Vec<u8>>, bool)> = Vec::new();
-  for b in bases {
-    // Repository form again (see `stage_clean_base`), so `bumped` is comparable with
-    // `head` and the user's copies whatever line endings the tools wrote.
-    let Some(bumped) = git::worktree_blob(root, &b.path)?.map(|w| w.bytes) else {
-      // Nothing regenerated it (a deleted lockfile the tools did not need): the commit
-      // keeps HEAD's version and the user's deletion stands.
-      continue;
-    };
-    // Two very different situations hide behind "HEAD has no such file".
-    let Some(head) = &b.head else {
-      if b.worktree.is_some() || b.index.staged.is_some() {
-        // The file predates the run (untracked, or staged as new): its bytes are the
-        // *user's* content, which the tools edited in place, and committing it would
-        // sweep their work into the bump commit and silently start tracking it. Leave it
-        // out of the commit entirely: the working tree already holds "theirs plus the
-        // bump", and the real index — never touched by the scratch-index commit — still
-        // holds exactly what they had staged.
-        continue;
-      }
-      // Created *by this release* (a first `Cargo.lock`, say): nothing pre-existed, so
-      // commit it as-is and stage the same entry — without one, the committed path would
-      // show up in `git status` as a staged deletion.
-      let staged = Some(("100644".to_string(), git::hash_object(root, &bumped)?));
-      to_commit.push(IndexEntry {
-        path: b.path.clone(),
-        staged: staged.clone(),
-      });
-      new_index.push(IndexEntry {
-        path: b.path.clone(),
-        staged,
-      });
-      continue;
-    };
-    // The commit's mode comes from `HEAD` (captured with the blob in `stage_clean_base`);
-    // a mode the user *staged* stays theirs, restored with their index entry below.
-    let head_mode = b.head_mode.clone().unwrap_or_else(|| "100644".to_string());
-    to_commit.push(IndexEntry {
-      path: b.path.clone(),
-      staged: Some((head_mode, git::hash_object(root, &bumped)?)),
+  commit::commit_on_clean_base(root, bases, message, "the version bump", &mut |sha| {
+    journal.push(Undo::ResetCommit {
+      bump_sha: sha.to_string(),
+      pre_sha: pre_sha.to_string(),
+      index: bases.iter().map(|b| b.index.clone()).collect(),
     });
-    let replay = |onto: &[u8], what: &str| -> Result<Vec<u8>> {
-      if onto == head.as_slice() {
-        return Ok(bumped.clone());
-      }
-      git::merge_file(root, onto, head, &bumped)?.with_context(|| {
-        format!(
-          "your uncommitted {what} edits to {} overlap the version bump; commit or stash them and rerun",
-          b.path
-        )
-      })
-    };
-    // The user's working copy: replay the bump onto it, or keep it deleted.
-    let worktree = match &b.worktree {
-      Some(bytes) => Some(replay(bytes, "working-tree")?),
-      None => None,
-    };
-    // The user's staged copy: replay onto it; a staged deletion (HEAD has the file, the
-    // index does not) stays a deletion. The rebuilt entry keeps the *index's* mode — this
-    // is where a staged `chmod` survives, while the commit above kept HEAD's mode.
-    let index = match (&b.index_bytes, b.index.staged.as_ref()) {
-      // Both are `Some` together (`index_bytes` was read from the staged sha); matching
-      // the pair lets the compiler hand us the mode without an `unwrap`.
-      (Some(bytes), Some((staged_mode, _))) => Some((staged_mode.clone(), git::hash_object(root, &replay(bytes, "staged")?)?)),
-      _ => None,
-    };
-    new_index.push(IndexEntry {
-      path: b.path.clone(),
-      staged: index,
-    });
-    new_worktree.push((b.path.clone(), worktree, b.filtered));
-  }
-  // All merges succeeded before anything is mutated, so a conflict leaves no commit behind.
-  let sha = git::commit_files_on_head(root, &to_commit, message)?;
-  journal.push(Undo::ResetCommit {
-    bump_sha: sha.clone(),
-    pre_sha: pre_sha.to_string(),
-    index: bases.iter().map(|b| b.index.clone()).collect(),
-  });
-  for e in &new_index {
-    git::set_index_entry(root, e)?;
-  }
-  for (path, bytes, filtered) in &new_worktree {
-    match bytes {
-      // Smudged iff the user's copy was, so the file keeps the line endings it had.
-      Some(b) => git::write_worktree(root, path, b, *filtered).with_context(|| format!("re-applying edits to {path}"))?,
-      None => std::fs::remove_file(root.join(path)).with_context(|| format!("re-deleting {path}"))?,
-    }
-  }
-  Ok(sha)
+  })
 }
 
 /// Rewrite `Cargo.toml`'s version if the file exists and has one. Returns whether it did.
@@ -350,7 +181,7 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   if plan.bumping() {
     check_interrupt(deps)?;
     println!("[2/9] Bumping version to {new}...");
-    bases = stage_clean_base(root)?;
+    bases = commit::stage_clean_base(root, &TRACKED)?;
     let mut args = vec!["version"];
     for b in plan.bumps {
       args.push("--bump");
@@ -377,23 +208,8 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
     check_interrupt(deps)?;
     println!("[5/9] Committing...");
     // A file the tools created during the run (say, a first `Cargo.lock`) has no base;
-    // add it as "no HEAD, no index, no prior working copy" so it is committed as-is.
-    for p in TRACKED {
-      if root.join(p).is_file() && !bases.iter().any(|b| b.path == p) {
-        bases.push(TrackedBase {
-          path: p.to_string(),
-          head: None,
-          head_mode: None,
-          worktree: None,
-          filtered: false,
-          index: IndexEntry {
-            path: p.to_string(),
-            staged: None,
-          },
-          index_bytes: None,
-        });
-      }
-    }
+    // add one so it is committed as-is.
+    commit::absorb_created(root, &TRACKED, &mut bases);
     // The sha is returned by the commit itself (which also journals its own undo), so the
     // push step can reuse it and no fallible call sits between mutating the remote and
     // journaling that undo either.

@@ -32,26 +32,53 @@ pub struct Args {
   pub no_commit: bool,
 }
 
-/// Exit codes: 0 ok, 1 `--check` found drift, 3 applied but commit failed. Errors bubble up
-/// for the caller to print (exit 2).
+/// Exit codes: 0 ok, 1 `--check` found drift, 3 commit failed (the template changes were
+/// rolled back). Errors bubble up for the caller to print (exit 2).
 pub fn run(args: &Args) -> Result<ExitCode> {
   let dry_run = args.dry_run || args.check;
   let templates = crate::templates::locate(args.templates_dir.as_deref())?;
-  let mut changes = crate::run(&args.root, &templates, dry_run)?;
   let root = crate::context::strip_verbatim(args.root.canonicalize().unwrap_or(args.root.clone()));
-  if !dry_run {
-    match crate::format::format_pyproject(&root, &crate::format::SystemRunner, &mut changes)? {
-      crate::format::Outcome::Formatted(_) => {}
-      crate::format::Outcome::Unavailable => println!("note: tombi not found; skipping pyproject.toml formatting."),
-      crate::format::Outcome::Failed { code } => {
-        eprintln!("warning: tombi format exited with {code:?}; pyproject.toml left unformatted.");
+
+  // When committing, the committable managed files are merged against their `HEAD`
+  // content, so the commit carries only this run's changes and the user's uncommitted
+  // edits are replayed back on top afterwards (see `aeth_devkit_core::commit`).
+  let committing = !dry_run && !args.no_commit && crate::git::is_git_tracked(&root);
+  let mut bases = if committing { Some(crate::git::stage_bases(&root)?) } else { None };
+
+  // Apply the templates (plus tombi), putting the user's files back on any failure.
+  let apply = |changes: &mut Option<crate::changes::Changes>| -> Result<()> {
+    let mut c = crate::run(&root, &templates, dry_run)?;
+    if !dry_run {
+      match crate::format::format_pyproject(&root, &crate::format::SystemRunner, &mut c)? {
+        crate::format::Outcome::Formatted(_) => {}
+        crate::format::Outcome::Unavailable => println!("note: tombi not found; skipping pyproject.toml formatting."),
+        crate::format::Outcome::Failed { code } => {
+          eprintln!("warning: tombi format exited with {code:?}; pyproject.toml left unformatted.");
+        }
       }
     }
+    *changes = Some(c);
+    Ok(())
+  };
+  let mut changes = None;
+  if let Err(e) = apply(&mut changes) {
+    if let Some(bases) = &bases {
+      aeth_devkit_core::commit::restore_worktree(&root, bases)?;
+    }
+    return Err(e);
   }
+  // `expect` documents the invariant: `apply` only returns `Ok` after setting it.
+  let changes = changes.expect("apply sets changes on success");
+
   for note in &changes.notes {
     println!("note: {note}");
   }
   if changes.is_empty() {
+    // No file differs from its merge base; undo the staging so the user's uncommitted
+    // edits to managed files are back in place.
+    if let Some(bases) = &bases {
+      aeth_devkit_core::commit::unstage_clean_base(&root, bases)?;
+    }
     println!("Nothing to do — project already matches the templates.");
     return Ok(ExitCode::SUCCESS);
   }
@@ -60,12 +87,12 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   if args.check {
     return Ok(ExitCode::from(1));
   }
-  if !dry_run && !args.no_commit && crate::git::is_git_tracked(&root) {
-    match crate::git::commit_changes(&root, &changes) {
+  if let Some(bases) = &mut bases {
+    match crate::git::commit_changes(&root, &changes, bases) {
       Ok(Some(hash)) => println!("Committed as {hash}."),
       Ok(None) => println!("Nothing to commit (only gitignored or env files changed)."),
       Err(e) => {
-        eprintln!("warning: changes applied but not committed: {e:#}");
+        eprintln!("warning: not committed; the template changes were rolled back: {e:#}");
         return Ok(ExitCode::from(3));
       }
     }

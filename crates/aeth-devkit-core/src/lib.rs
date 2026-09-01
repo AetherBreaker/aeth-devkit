@@ -1,6 +1,7 @@
 //! Shared building blocks for the `devkit` commands.
 
 pub mod cargo_toml;
+pub mod commit;
 pub mod devpi;
 pub mod git;
 pub mod index;

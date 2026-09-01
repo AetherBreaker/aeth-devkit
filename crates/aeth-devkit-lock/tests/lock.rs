@@ -78,7 +78,8 @@ fn bumps_pin_syncs_and_commits() {
   };
   let runner = RecordingRunner::new(0);
   let mut a = args(root);
-  a.uv_args = vec!["--upgrade".into()];
+  // One forwarded arg duplicating a default (dropped) and one extra (appended).
+  a.uv_args = vec!["--upgrade".into(), "--inexact".into()];
 
   let code = run(&a, &index, &runner).unwrap();
   assert_eq!(code, ExitCode::SUCCESS);
@@ -87,7 +88,7 @@ fn bumps_pin_syncs_and_commits() {
   let calls = runner.calls.borrow();
   assert_eq!(calls.len(), 1);
   assert_eq!(calls[0].program, "uv");
-  assert_eq!(calls[0].args, vec!["sync", "--upgrade"]);
+  assert_eq!(calls[0].args, vec!["sync", "--upgrade", "--all-extras", "--inexact"]);
   assert_eq!(calls[0].cwd, canon(root));
 
   assert_eq!(last_subject(root), COMMIT_SUBJECT);
@@ -104,7 +105,13 @@ fn already_current_pin_and_clean_lock_commits_nothing() {
   let runner = RecordingRunner::new(0);
   run(&args(root), &index, &runner).unwrap();
   assert_eq!(last_subject(root), "init");
-  assert_eq!(runner.calls.borrow().len(), 1, "uv sync still runs");
+  let calls = runner.calls.borrow();
+  assert_eq!(calls.len(), 1, "uv sync still runs");
+  assert_eq!(
+    calls[0].args,
+    vec!["sync", "--upgrade", "--all-extras"],
+    "the defaults apply with no forwarded args"
+  );
 }
 
 #[test]
@@ -213,6 +220,75 @@ fn unsupported_range_is_left_alone_but_sync_runs() {
   assert_eq!(read(root, "pyproject.toml"), ranged, "range pin must not be rewritten");
   assert_eq!(runner.calls.borrow().len(), 1);
   assert_eq!(last_subject(root), "range");
+}
+
+#[test]
+fn unrelated_uncommitted_edits_stay_out_of_the_commit() {
+  let dir = project(true);
+  let root = dir.path();
+  // The user changed an unrelated line (the requests pin) and left it uncommitted.
+  let edited = PYPROJECT.replace("\"requests>=2\"", "\"requests>=3\"");
+  std::fs::write(root.join("pyproject.toml"), &edited).unwrap();
+  let index = StubIndexClient {
+    versions: vec!["7.1.0".into()],
+  };
+  let runner = RecordingRunner::new(0);
+  let code = run(&args(root), &index, &runner).unwrap();
+  assert_eq!(code, ExitCode::SUCCESS);
+  assert_eq!(last_subject(root), COMMIT_SUBJECT);
+  // The commit holds HEAD + the pin bump only; the user's edit is still uncommitted.
+  let committed = String::from_utf8(
+    std::process::Command::new("git")
+      .current_dir(root)
+      .args(["show", "HEAD:pyproject.toml"])
+      .output()
+      .unwrap()
+      .stdout,
+  )
+  .unwrap();
+  assert!(committed.contains("\"requests>=2\""), "{committed}");
+  assert!(committed.contains("\"aeth-devkit>=7.1.0\""), "{committed}");
+  let tree = read(root, "pyproject.toml");
+  assert!(
+    tree.contains("\"requests>=3\"") && tree.contains("\"aeth-devkit>=7.1.0\""),
+    "{tree}"
+  );
+  assert!(
+    git::is_dirty(root, &["pyproject.toml"]).unwrap(),
+    "the user edit must stay uncommitted"
+  );
+}
+
+#[test]
+fn edits_overlapping_the_pin_are_rejected_and_rolled_back() {
+  let dir = project(true);
+  let root = dir.path();
+  // The user edited the very line the pin update rewrites.
+  let edited = PYPROJECT.replace("\"aeth-devkit>=6.0.2\"", "\"aeth-devkit>=6.0.2\"  # pinned on purpose");
+  std::fs::write(root.join("pyproject.toml"), &edited).unwrap();
+  let index = StubIndexClient {
+    versions: vec!["7.1.0".into()],
+  };
+  let runner = RecordingRunner::new(0);
+  let code = run(&args(root), &index, &runner).unwrap();
+  assert_eq!(code, ExitCode::from(3));
+  assert_eq!(last_subject(root), "init", "no commit may survive the conflict");
+  assert_eq!(read(root, "pyproject.toml"), edited, "the user's file must be back untouched");
+}
+
+#[test]
+fn uv_failure_in_commit_mode_rolls_the_pin_edit_back() {
+  let dir = project(true);
+  let root = dir.path();
+  let edited = PYPROJECT.replace("\"requests>=2\"", "\"requests>=3\"");
+  std::fs::write(root.join("pyproject.toml"), &edited).unwrap();
+  let index = StubIndexClient {
+    versions: vec!["7.0.0".into()],
+  };
+  let runner = RecordingRunner::new(7);
+  let code = run(&args(root), &index, &runner).unwrap();
+  assert_eq!(code, ExitCode::from(7));
+  assert_eq!(read(root, "pyproject.toml"), edited, "the user's tree must be restored");
 }
 
 #[test]

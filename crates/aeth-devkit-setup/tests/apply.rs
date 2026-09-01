@@ -248,9 +248,10 @@ fn commits_only_changed_trackable_files_in_a_git_repo() {
   write(root, "unrelated.txt", "x\n");
   git(&["add", "unrelated.txt"]);
 
+  let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
   let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
   assert!(aeth_devkit_setup::git::is_git_tracked(root));
-  let hash = aeth_devkit_setup::git::commit_changes(root, &changes).unwrap();
+  let hash = aeth_devkit_setup::git::commit_changes(root, &changes, &mut bases).unwrap();
   assert!(hash.is_some());
 
   let subject = git(&["log", "-1", "--format=%s"]);
@@ -273,8 +274,39 @@ fn commits_only_changed_trackable_files_in_a_git_repo() {
   );
 
   // Nothing to commit on a second run.
+  let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
   let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
-  assert!(aeth_devkit_setup::git::commit_changes(root, &again).unwrap().is_none());
+  assert!(aeth_devkit_setup::git::commit_changes(root, &again, &mut bases).unwrap().is_none());
+}
+
+#[test]
+fn uncommitted_edits_to_managed_files_stay_out_of_the_commit() {
+  let dir = make_project();
+  let root = dir.path();
+  let git = |args: &[&str]| {
+    let out = std::process::Command::new("git").current_dir(root).args(args).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+  };
+  git_init(root);
+  git(&["add", "-A"]);
+  git(&["commit", "-q", "-m", "init"]);
+  // An uncommitted user edit to a managed file, on a line the templates leave alone.
+  let user_rule = "user-scratch-dir/";
+  write(root, ".gitignore", &format!("{}{user_rule}\n", read(root, ".gitignore")));
+
+  let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let hash = aeth_devkit_setup::git::commit_changes(root, &changes, &mut bases).unwrap();
+  assert!(hash.is_some());
+
+  // The commit was built from HEAD + templates: the user's rule is not in it…
+  let committed = git(&["show", "HEAD:.gitignore"]);
+  assert!(!committed.contains(user_rule), "{committed}");
+  // …but it survives in the working tree, still uncommitted.
+  assert!(read(root, ".gitignore").contains(user_rule));
+  let status = git(&["status", "--porcelain", ".gitignore"]);
+  assert!(status.contains(".gitignore"), "the user edit must stay uncommitted: {status:?}");
 }
 
 #[test]
@@ -621,8 +653,9 @@ fn commit_works_when_the_caller_spells_the_root_differently() {
     .unwrap();
   assert!(out.status.success());
 
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
   let odd_root = root.join("src").join("..");
-  let hash = aeth_devkit_setup::git::commit_changes(&odd_root, &changes).unwrap();
+  let mut bases = aeth_devkit_setup::git::stage_bases(&odd_root).unwrap();
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let hash = aeth_devkit_setup::git::commit_changes(&odd_root, &changes, &mut bases).unwrap();
   assert!(hash.is_some(), "a differently-spelled root must still commit the managed files");
 }
