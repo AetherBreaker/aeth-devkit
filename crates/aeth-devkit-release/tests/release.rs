@@ -700,6 +700,63 @@ fn overlapping_user_edit_is_an_error_and_rolls_back() {
 }
 
 #[test]
+fn crlf_checkout_is_not_an_overlapping_edit() {
+  let w = World::new(&[]);
+  let root = w.root();
+  // A Windows checkout: `core.autocrlf=true`, so every managed file sits on disk as CRLF
+  // while HEAD holds LF. `git status` is clean, and the release must agree — a raw byte
+  // comparison would see an edit on every line, and the merge-back would then refuse the
+  // bump as an overlapping edit of the version line.
+  // Checked out by git, as on a real machine, so the index stat data matches the CRLF
+  // files (a hand-written CRLF file is stat-dirty and `status` reports it modified).
+  assert!(git_out(root, &["config", "core.autocrlf", "true"]).is_empty());
+  for rel in ["Cargo.toml", "pyproject.toml", "uv.lock"] {
+    std::fs::remove_file(root.join(rel)).unwrap();
+  }
+  assert!(git_out(root, &["checkout", "--", "Cargo.toml", "pyproject.toml", "uv.lock"]).is_empty());
+  assert!(std::fs::read_to_string(root.join("Cargo.toml")).unwrap().contains("\r\n"));
+  assert_eq!(git_out(root, &["status", "--porcelain"]), "");
+  // No `--force`: the tree really is clean, so no dirty-tree prompt may appear.
+  assert!(ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+  // The commit holds LF (repository form) with the bump…
+  let committed = git_out(root, &["show", "HEAD:Cargo.toml"]);
+  assert!(
+    committed.contains("version = \"1.0.1\"") && !committed.contains('\r'),
+    "{committed:?}"
+  );
+  // …the working copy keeps its CRLF endings, and the tree is clean afterwards.
+  let on_disk = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+  assert!(on_disk.contains("version = \"1.0.1\"\r\n"), "{on_disk:?}");
+  assert_eq!(git_out(root, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn crlf_checkout_with_a_user_edit_merges_cleanly() {
+  let w = World::new(&[]);
+  let root = w.root();
+  assert!(git_out(root, &["config", "core.autocrlf", "true"]).is_empty());
+  // The user's note sits far from the version line; only line endings differ elsewhere.
+  std::fs::write(root.join("Cargo.toml"), format!("# user note\n{CARGO}").replace('\n', "\r\n")).unwrap();
+  let mut a = w.args(&["patch"]);
+  a.force = true;
+  assert!(ok(run(&a, &w.deps()).unwrap()));
+  let committed = git_out(root, &["show", "HEAD:Cargo.toml"]);
+  assert!(
+    committed.contains("version = \"1.0.1\"") && !committed.contains("user note"),
+    "{committed}"
+  );
+  let on_disk = std::fs::read(root.join("Cargo.toml")).unwrap();
+  assert!(
+    on_disk.starts_with(b"# user note\r\n") && on_disk.windows(19).any(|w| w == b"version = \"1.0.1\"\r\n"),
+    "{:?}",
+    String::from_utf8_lossy(&on_disk)
+  );
+  // `git status` shows exactly what the user had before: Cargo.toml unstaged, nothing staged.
+  assert_eq!(git_out(root, &["diff", "--name-only"]), "Cargo.toml");
+  assert_eq!(git_out(root, &["diff", "--cached", "--name-only"]), "");
+}
+
+#[test]
 fn interrupt_before_cleanup_deletes_nothing() {
   let w = World::new(&[]);
   w.devpi.exists.set(true);

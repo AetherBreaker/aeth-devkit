@@ -114,7 +114,9 @@ parse anywhere on the line.
 - **Release steps** - Snapshot managed files + `dist/` → bump (pyproject, `Cargo.toml`,
   `cargo update`) → `uv lock` → `uv build` into a fresh `dist/` → commit built through a
   scratch index (uncommitted edits to managed files are replayed back afterwards; the
-  user's staging is untouched) → annotated tag → `uv publish` (credentials from
+  user's staging is untouched; comparisons and the merge-back go through git's
+  clean/smudge filters, so a `core.autocrlf` CRLF checkout is neither mistaken for an
+  edit nor rewritten to LF) → annotated tag → `uv publish` (credentials from
   `UV_INDEX_<NAME>_USERNAME/_PASSWORD`, passed by env, never argv) → one atomic
   `git push` of branch + tag → `gh release create` with the built artifacts and the notes
   (or `--generate-notes`).

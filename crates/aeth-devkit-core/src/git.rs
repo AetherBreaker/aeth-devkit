@@ -284,6 +284,80 @@ pub fn hash_object(root: &Path, bytes: &[u8]) -> Result<String> {
   Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Store `bytes` as a blob *as if they were being added at `path`*: git's clean filters for
+/// that path run first (`core.autocrlf` / `eol` attributes turn CRLF into LF, custom
+/// `filter=` drivers apply), so the sha is the one `git add <path>` would produce.
+fn hash_object_at(root: &Path, path: &str, bytes: &[u8]) -> Result<String> {
+  use std::io::Write as _;
+  use std::process::Stdio;
+  let mut child = git(root)
+    .args(["hash-object", "-w", "--stdin", "--path", path])
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .context("running git hash-object")?;
+  {
+    let mut stdin = child.stdin.take().context("opening git hash-object stdin")?;
+    stdin.write_all(bytes).context("writing to git hash-object")?;
+  }
+  let out = child.wait_with_output().context("waiting for git hash-object")?;
+  if !out.status.success() {
+    bail!("git hash-object failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+  }
+  Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// A working-tree file read in *repository* form (see [`worktree_blob`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeBlob {
+  /// The bytes git would store for the file: clean filters applied.
+  pub bytes: Vec<u8>,
+  /// Whether the clean filters changed anything — the file on disk is not byte-identical
+  /// to `bytes` (a CRLF checkout of an LF blob, say). Hand it back to [`write_worktree`]
+  /// so the file goes back in the form it was found: smudged when it was filtered, verbatim
+  /// when it was not. Git calls both forms clean; the user's editor may not.
+  pub filtered: bool,
+}
+
+/// The working-tree file at `path` in *repository* form: the bytes git would store for it
+/// (clean filters applied), which is the form that compares equal to `HEAD` and index
+/// blobs. `None` when the file is absent.
+///
+/// This is the only correct way to ask "does the working copy differ from HEAD?" by bytes.
+/// On a `core.autocrlf=true` checkout the file on disk is CRLF while the blob is LF, so a
+/// raw `fs::read` differs on every line even though `git status` is clean — and a
+/// three-way merge against the blob then conflicts on any line the tools touch.
+pub fn worktree_blob(root: &Path, path: &str) -> Result<Option<WorktreeBlob>> {
+  let file = root.join(path);
+  if !file.is_file() {
+    return Ok(None);
+  }
+  let raw = std::fs::read(&file).with_context(|| format!("reading {path}"))?;
+  let sha = hash_object_at(root, path, &raw)?;
+  let bytes = blob_bytes(root, &sha)?;
+  let filtered = bytes != raw;
+  Ok(Some(WorktreeBlob { bytes, filtered }))
+}
+
+/// Write repository-form `bytes` to the working-tree file at `path`. With `smudge` set
+/// this is what a checkout does — git's smudge filters for the path run first (LF back to
+/// CRLF under `core.autocrlf=true`, and so on); without it the bytes land verbatim. Pass
+/// the [`WorktreeBlob::filtered`] flag of the file as it was read, so it keeps the form the
+/// user had it in. The inverse of [`worktree_blob`].
+pub fn write_worktree(root: &Path, path: &str, bytes: &[u8], smudge: bool) -> Result<()> {
+  let file = root.join(path);
+  if !smudge {
+    return std::fs::write(&file, bytes).with_context(|| format!("writing {path}"));
+  }
+  // `cat-file --filters` needs an object to read, so store the (already clean) bytes
+  // verbatim first — no `--path`, or the clean filter would run a second time.
+  let sha = hash_object(root, bytes)?;
+  let path_arg = format!("--path={path}");
+  let smudged = capture_bytes(root, &["cat-file", "--filters", &path_arg, &sha])?;
+  std::fs::write(&file, smudged).with_context(|| format!("writing {path}"))
+}
+
 /// Three-way merge of file contents: the changes from `base` to `other`, applied on top of
 /// `current`. `Ok(None)` means the two sides touched overlapping lines and git could not
 /// combine them. Runs `git merge-file -p` on three temporary files.
@@ -634,6 +708,52 @@ mod tests {
     assert_eq!(merged.as_deref(), Some(&b"A\nb\nc\nd\nE\n"[..]));
     // Both sides changed line 5 → conflict → `None`.
     assert_eq!(merge_file(root, b"a\nb\nc\nd\nX\n", base, b"a\nb\nc\nd\nE\n").unwrap(), None);
+  }
+
+  #[test]
+  fn worktree_blob_and_write_worktree_go_through_the_eol_filters() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init_test_repo(root);
+    write(root, "a.txt", "1\n2\n");
+    commit_paths(root, &["a.txt".into()], "first").unwrap();
+    // A Windows-style checkout: the blob is LF, the file on disk is CRLF, git says clean.
+    // Checked out by git (not written by hand) so the index's stat data matches the CRLF
+    // file — a hand-written CRLF file leaves the entry stat-dirty and `status` reports it
+    // modified on the size mismatch alone, which is not the state a real checkout is in.
+    assert!(git(root).args(["config", "core.autocrlf", "true"]).status().unwrap().success());
+    std::fs::remove_file(root.join("a.txt")).unwrap();
+    assert!(git(root).args(["checkout", "--", "a.txt"]).status().unwrap().success());
+    assert_eq!(std::fs::read(root.join("a.txt")).unwrap(), b"1\r\n2\r\n");
+    assert_eq!(status_porcelain(root).unwrap(), "");
+    // Raw bytes differ from HEAD; repository-form bytes do not, and the read says so.
+    assert_ne!(
+      std::fs::read(root.join("a.txt")).unwrap(),
+      head_blob(root, "a.txt").unwrap().unwrap()
+    );
+    let got = worktree_blob(root, "a.txt").unwrap().unwrap();
+    assert_eq!(Some(got.bytes.clone()), head_blob(root, "a.txt").unwrap());
+    assert!(got.filtered);
+    assert_eq!(worktree_blob(root, "missing.txt").unwrap(), None);
+    // Writing repository-form bytes back smudged lands CRLF on disk, and the tree stays
+    // clean apart from the intended edit.
+    write_worktree(root, "a.txt", b"1\n2\n3\n", true).unwrap();
+    assert_eq!(std::fs::read(root.join("a.txt")).unwrap(), b"1\r\n2\r\n3\r\n");
+    assert_eq!(worktree_blob(root, "a.txt").unwrap().unwrap().bytes, b"1\n2\n3\n");
+    // Unsmudged, the bytes land verbatim even though the filter is configured — the form a
+    // user who keeps LF files under `autocrlf=true` (tool-written, never checked out) has.
+    write_worktree(root, "a.txt", b"1\n2\n", false).unwrap();
+    assert_eq!(std::fs::read(root.join("a.txt")).unwrap(), b"1\n2\n");
+    let got = worktree_blob(root, "a.txt").unwrap().unwrap();
+    assert_eq!(got.bytes, b"1\n2\n");
+    assert!(!got.filtered);
+    // Without any filter configured both are plain byte round-trips.
+    assert!(git(root).args(["config", "core.autocrlf", "false"]).status().unwrap().success());
+    write_worktree(root, "a.txt", b"x\r\ny\n", true).unwrap();
+    assert_eq!(std::fs::read(root.join("a.txt")).unwrap(), b"x\r\ny\n");
+    let got = worktree_blob(root, "a.txt").unwrap().unwrap();
+    assert_eq!(got.bytes, b"x\r\ny\n");
+    assert!(!got.filtered);
   }
 
   #[test]

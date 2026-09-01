@@ -110,9 +110,13 @@ struct TrackedBase {
   /// keeps *this* mode, not the index's: a staged `chmod` is the user's pending change and
   /// must stay in their index, not be folded into the release commit.
   head_mode: Option<String>,
-  /// The working-tree bytes before the run — the user's version, edits and all — or
-  /// `None` when the file was absent (deleted by the user, or never created yet).
+  /// The working-tree bytes before the run in repository form (clean filters applied) —
+  /// the user's version, edits and all — or `None` when the file was absent (deleted by
+  /// the user, or never created yet).
   worktree: Option<Vec<u8>>,
+  /// Whether those bytes differ from the raw file on disk (a CRLF checkout, say); every
+  /// write back to the working tree smudges iff this is set, so the file keeps its form.
+  filtered: bool,
   /// The index entry before the run, and the bytes it points at (if any).
   index: IndexEntry,
   index_bytes: Option<Vec<u8>>,
@@ -130,11 +134,13 @@ fn stage_clean_base(root: &Path) -> Result<Vec<TrackedBase>> {
   let mut bases = Vec::with_capacity(paths.len());
   // `zip` pairs each path with its index entry; they were produced in the same order.
   for (path, index) in paths.into_iter().zip(entries) {
-    let file = root.join(&path);
-    let worktree = if file.is_file() {
-      Some(std::fs::read(&file).with_context(|| format!("reading {path}"))?)
-    } else {
-      None
+    // Repository-form bytes (clean filters applied), never a raw `fs::read`: on a
+    // `core.autocrlf=true` checkout the raw file is CRLF while every blob is LF, and
+    // comparing those would call a clean tree "edited on every line" — then the merge-back
+    // in `commit_release_edits` would report the version line as an overlapping edit.
+    let (worktree, filtered) = match git::worktree_blob(root, &path)? {
+      Some(w) => (Some(w.bytes), w.filtered),
+      None => (None, false),
     };
     let head = git::head_blob(root, &path)?;
     let head_mode = git::head_mode(root, &path)?;
@@ -152,13 +158,14 @@ fn stage_clean_base(root: &Path) -> Result<Vec<TrackedBase>> {
     if let Some(h) = &head
       && worktree.as_deref() != Some(h.as_slice())
     {
-      std::fs::write(&file, h).with_context(|| format!("resetting {path} to HEAD for the bump"))?;
+      git::write_worktree(root, &path, h, filtered).with_context(|| format!("resetting {path} to HEAD for the bump"))?;
     }
     bases.push(TrackedBase {
       path,
       head,
       head_mode,
       worktree,
+      filtered,
       index,
       index_bytes,
     });
@@ -183,15 +190,16 @@ fn commit_release_edits(root: &Path, bases: &[TrackedBase], message: &str, pre_s
   let mut to_commit = Vec::new();
   let mut new_index = Vec::new();
   // `Option<Vec<u8>>` per path: `None` means "the user had deleted it; delete it again".
-  let mut new_worktree: Vec<(String, Option<Vec<u8>>)> = Vec::new();
+  // The `bool` is the file's `filtered` flag: smudge on the way back out iff set.
+  let mut new_worktree: Vec<(String, Option<Vec<u8>>, bool)> = Vec::new();
   for b in bases {
-    let file = root.join(&b.path);
-    if !file.is_file() {
+    // Repository form again (see `stage_clean_base`), so `bumped` is comparable with
+    // `head` and the user's copies whatever line endings the tools wrote.
+    let Some(bumped) = git::worktree_blob(root, &b.path)?.map(|w| w.bytes) else {
       // Nothing regenerated it (a deleted lockfile the tools did not need): the commit
       // keeps HEAD's version and the user's deletion stands.
       continue;
-    }
-    let bumped = std::fs::read(&file).with_context(|| format!("reading {}", b.path))?;
+    };
     // Two very different situations hide behind "HEAD has no such file".
     let Some(head) = &b.head else {
       if b.worktree.is_some() || b.index.staged.is_some() {
@@ -253,7 +261,7 @@ fn commit_release_edits(root: &Path, bases: &[TrackedBase], message: &str, pre_s
       path: b.path.clone(),
       staged: index,
     });
-    new_worktree.push((b.path.clone(), worktree));
+    new_worktree.push((b.path.clone(), worktree, b.filtered));
   }
   // All merges succeeded before anything is mutated, so a conflict leaves no commit behind.
   let sha = git::commit_files_on_head(root, &to_commit, message)?;
@@ -265,11 +273,11 @@ fn commit_release_edits(root: &Path, bases: &[TrackedBase], message: &str, pre_s
   for e in &new_index {
     git::set_index_entry(root, e)?;
   }
-  for (path, bytes) in &new_worktree {
-    let file = root.join(path);
+  for (path, bytes, filtered) in &new_worktree {
     match bytes {
-      Some(b) => std::fs::write(&file, b).with_context(|| format!("re-applying edits to {path}"))?,
-      None => std::fs::remove_file(&file).with_context(|| format!("re-deleting {path}"))?,
+      // Smudged iff the user's copy was, so the file keeps the line endings it had.
+      Some(b) => git::write_worktree(root, path, b, *filtered).with_context(|| format!("re-applying edits to {path}"))?,
+      None => std::fs::remove_file(root.join(path)).with_context(|| format!("re-deleting {path}"))?,
     }
   }
   Ok(sha)
@@ -377,6 +385,7 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
           head: None,
           head_mode: None,
           worktree: None,
+          filtered: false,
           index: IndexEntry {
             path: p.to_string(),
             staged: None,
