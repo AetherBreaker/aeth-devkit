@@ -1,5 +1,4 @@
 //! `devkit hook <name>` — Claude Code hooks, ported from the per-repo Python scripts.
-//! See docs/specs/2026-08-28-agent-config-design.md §A.
 //!
 //! Every hook has the same shape: Claude pipes a JSON payload describing the event to stdin,
 //! and the hook may print one JSON object to stdout telling Claude what to do. Printing

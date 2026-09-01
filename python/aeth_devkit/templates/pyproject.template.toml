@@ -1,7 +1,7 @@
 #:schema https://json.schemastore.org/pyproject.json
 # setup-project template — merged into each project's pyproject.toml by `devkit setup-project`.
 # Scalars here replace the project's values; arrays are unioned (additions are commented
-# on the merged line); keys absent here are never touched. See docs/specs.
+# on the merged line); keys absent here are never touched.
 #
 # Placeholders: {package} → the project's import name; {python_dir} → "src", or "python"
 # for mixed Rust/Python projects where src/ belongs to cargo.
