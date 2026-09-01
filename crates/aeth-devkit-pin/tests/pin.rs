@@ -148,6 +148,38 @@ fn dirty_compose_commits_pin_on_head_and_keeps_user_edits() {
 }
 
 #[test]
+fn dirty_crlf_checkout_merges_cleanly_and_stays_crlf() {
+  let (_d, root) = fixture();
+  // A Windows checkout (`core.autocrlf=true`): CRLF on disk, LF in HEAD. With an unrelated
+  // user edit on top, the merge-back must compare in repository form, or the pinned line
+  // reads as an overlapping edit.
+  git(&root, &["config", "core.autocrlf", "true"]);
+  let dirty = format!("# EXTRA_ARG note from the user\n{COMPOSE}").replace('\n', "\r\n");
+  std::fs::write(root.join("compose.yaml"), &dirty).unwrap();
+  let r = happy_runner();
+  let idx = StubIndexClient {
+    versions: vec!["2.0.0".into()],
+  };
+  run(&args(&root), &Deps { runner: &r, index: &idx }).unwrap();
+  let head = Command::new("git")
+    .current_dir(&root)
+    .args(["show", "HEAD:compose.yaml"])
+    .output()
+    .unwrap();
+  let head = String::from_utf8_lossy(&head.stdout);
+  assert!(
+    head.contains("PACKAGE_VERSION: 2.0.0") && !head.contains("EXTRA_ARG") && !head.contains('\r'),
+    "{head:?}"
+  );
+  let tree = std::fs::read_to_string(root.join("compose.yaml")).unwrap();
+  assert!(
+    tree.contains("PACKAGE_VERSION: 2.0.0\r\n") && tree.starts_with("# EXTRA_ARG"),
+    "{tree:?}"
+  );
+  assert!(!tree.replace("\r\n", "").contains('\n'), "mixed endings: {tree:?}");
+}
+
+#[test]
 fn conflicting_dirty_edit_aborts_before_committing() {
   let (_d, root) = fixture();
   // The user edited the very line the pin wants to change.
