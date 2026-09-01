@@ -212,7 +212,13 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
     std::fs::write(&compose_path, &pinned_text).with_context(|| format!("writing {}", compose_path.display()))?;
     println!("Updated {rel}");
     if will_commit {
-      let hash = git::commit_paths(&root, &[rel.clone()], &message)?;
+      // `commit_paths` takes `paths: &[String]` — it only *borrows* the list for the
+      // duration of the call, so we never needed to own one. `&[rel.clone()]` built a
+      // temporary one-element array, deep-copying the String's heap buffer into it, just
+      // to immediately hand back a borrow of that array and drop it. `slice::from_ref`
+      // reinterprets the single `&String` we already hold as a slice of length 1: same
+      // pointer, no allocation, no copy.
+      let hash = git::commit_paths(&root, std::slice::from_ref(&rel), &message)?;
       println!("Committed {hash}: {message}");
     }
   }
