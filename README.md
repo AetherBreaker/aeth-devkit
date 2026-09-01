@@ -166,7 +166,8 @@ no push), `--no-push`, `-c/--compose-file`, `--root`.
 - **Commit & push** - Commits exactly the compose file (`chore: pin <package> to <ver>`),
   pathspec-limited so other staged work stays out; pushes the current branch. A dirty
   compose file gets the pin committed against HEAD's copy through a scratch index and the
-  user's uncommitted edits merged back on top of the working tree (3-way); overlapping
+  user's uncommitted edits merged back on top of the working tree (3-way, through git's
+  clean/smudge filters so a CRLF checkout merges cleanly and stays CRLF); overlapping
   edits abort before anything is committed.
 
 ### `devkit release-and-pin`

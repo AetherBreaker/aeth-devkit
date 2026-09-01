@@ -189,7 +189,11 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
   if will_commit && dirty {
     // Commit the pin against HEAD's copy; the user's uncommitted edits ride on top.
     let base = head.unwrap();
-    let merged = git::merge_file(&root, worktree_text.as_bytes(), &base, pinned_text.as_bytes())?
+    // The user's copy in repository form (clean filters applied), not the raw file: on a
+    // `core.autocrlf=true` checkout the raw bytes are CRLF against an LF `base`, and the
+    // merge would then flag the pinned line as an overlapping edit.
+    let current = git::worktree_blob(&root, &rel)?.with_context(|| format!("{rel} vanished during the run"))?;
+    let merged = git::merge_file(&root, &current.bytes, &base, pinned_text.as_bytes())?
       .context("your uncommitted compose changes overlap the pinned lines; commit or revert them first")?;
     let mode = git::head_mode(&root, &rel)?.unwrap_or_else(|| "100644".into());
     let sha = git::hash_object(&root, pinned_text.as_bytes())?;
@@ -201,7 +205,8 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
       }],
       &message,
     )?;
-    std::fs::write(&compose_path, merged).with_context(|| format!("writing {}", compose_path.display()))?;
+    // Smudged iff the user's copy was, so the file keeps the line endings it had.
+    git::write_worktree(&root, &rel, &merged, current.filtered).with_context(|| format!("writing {}", compose_path.display()))?;
     println!("Committed pin on HEAD; your uncommitted changes to {rel} were kept in the working tree.");
   } else {
     std::fs::write(&compose_path, &pinned_text).with_context(|| format!("writing {}", compose_path.display()))?;
