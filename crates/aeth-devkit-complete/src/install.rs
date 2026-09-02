@@ -210,3 +210,17 @@ pub fn install_bash(files: &[PathBuf], script: &str, dry_run: bool) -> Result<Ve
   }
   Ok(log)
 }
+
+/// The bash completion files, in the order they are written. Both hold the same script;
+/// see the module doc in [`install`] for why there are two.
+pub fn bash_targets(home: &Path) -> Vec<PathBuf> {
+  vec![
+    home.join("bash_completion.d").join("poe.bash"),
+    home
+      .join(".local")
+      .join("share")
+      .join("bash-completion")
+      .join("completions")
+      .join("poe"),
+  ]
+}
