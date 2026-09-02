@@ -73,7 +73,10 @@ fn completes_task_names_after_the_command() {
 #[test]
 fn filters_task_names_by_prefix() {
   let project = fixture_project(&["build", "bench", "test"]);
-  let req = Request { prefix: "b".to_string(), ..base(&project) };
+  let req = Request {
+    prefix: "b".to_string(),
+    ..base(&project)
+  };
   assert_eq!(values(run(&req)), ["build", "bench"]);
 }
 
@@ -82,7 +85,10 @@ fn an_unreadable_project_yields_no_completions_rather_than_an_error() {
   // A directory with no pyproject at all. A completer that errored here would print over
   // the user's prompt, so the contract is "empty, quietly".
   let dir = tempfile::tempdir().unwrap();
-  let req = Request { root: root_of(&dir).to_path_buf(), ..base(&fixture_project(&[])) };
+  let req = Request {
+    root: root_of(&dir).to_path_buf(),
+    ..base(&fixture_project(&[]))
+  };
   assert_eq!(values(run(&req)), Vec::<String>::new());
 }
 
@@ -96,7 +102,12 @@ fn w(line: &str) -> Vec<String> {
 #[test]
 fn completes_global_options_before_the_task() {
   let p = fixture_project(&["build"]);
-  let req = Request { words: w("poe -"), cword: 1, prefix: "-".to_string(), ..base(&p) };
+  let req = Request {
+    words: w("poe -"),
+    cword: 1,
+    prefix: "-".to_string(),
+    ..base(&p)
+  };
   let got = items(run(&req));
   assert!(got.iter().any(|i| i.value == "--verbose"), "{:?}", values_of(&got));
   assert!(matches!(got[0].kind, ItemKind::Param));
@@ -105,7 +116,12 @@ fn completes_global_options_before_the_task() {
 #[test]
 fn omits_globals_excluded_by_one_already_typed() {
   let p = fixture_project(&["build"]);
-  let req = Request { words: w("poe --verbose -"), cword: 2, prefix: "-".to_string(), ..base(&p) };
+  let req = Request {
+    words: w("poe --verbose -"),
+    cword: 2,
+    prefix: "-".to_string(),
+    ..base(&p)
+  };
   let got = values(run(&req));
   assert!(!got.iter().any(|v| v == "--quiet" || v == "-q"), "{got:?}");
   // Unrelated globals are still offered: only the excluded pair disappears.
@@ -115,7 +131,12 @@ fn omits_globals_excluded_by_one_already_typed() {
 #[test]
 fn does_not_offer_globals_once_the_task_is_typed() {
   let p = fixture_project(&["build"]);
-  let req = Request { words: w("poe build -"), cword: 2, prefix: "-".to_string(), ..base(&p) };
+  let req = Request {
+    words: w("poe build -"),
+    cword: 2,
+    prefix: "-".to_string(),
+    ..base(&p)
+  };
   // Past the task, `-` means a task option, never a poe global.
   assert!(!values(run(&req)).iter().any(|v| v == "--verbose"));
 }
@@ -125,35 +146,60 @@ fn does_not_offer_globals_once_the_task_is_typed() {
 #[test]
 fn requests_directory_completion_after_dash_c() {
   let p = fixture_project(&["build"]);
-  let req = Request { words: w("poe -C"), cword: 2, prefix: String::new(), ..base(&p) };
+  let req = Request {
+    words: w("poe -C"),
+    cword: 2,
+    prefix: String::new(),
+    ..base(&p)
+  };
   assert_eq!(run(&req), Directive::Dirs);
 }
 
 #[test]
 fn requests_directory_completion_for_inline_dash_c() {
   let p = fixture_project(&["build"]);
-  let req = Request { words: w("poe -C=sr"), cword: 1, prefix: "-C=sr".to_string(), ..base(&p) };
+  let req = Request {
+    words: w("poe -C=sr"),
+    cword: 1,
+    prefix: "-C=sr".to_string(),
+    ..base(&p)
+  };
   assert_eq!(run(&req), Directive::Dirs);
 }
 
 #[test]
 fn requests_directory_completion_for_the_long_spelling() {
   let p = fixture_project(&["build"]);
-  let req = Request { words: w("poe --directory"), cword: 2, prefix: String::new(), ..base(&p) };
+  let req = Request {
+    words: w("poe --directory"),
+    cword: 2,
+    prefix: String::new(),
+    ..base(&p)
+  };
   assert_eq!(run(&req), Directive::Dirs);
 }
 
 #[test]
 fn completes_executor_choices() {
   let p = fixture_project(&["build"]);
-  let req = Request { words: w("poe -e"), cword: 2, prefix: String::new(), ..base(&p) };
+  let req = Request {
+    words: w("poe -e"),
+    cword: 2,
+    prefix: String::new(),
+    ..base(&p)
+  };
   assert_eq!(values(run(&req)), ["auto", "poetry", "simple", "uv", "virtualenv"]);
 }
 
 #[test]
 fn completes_inline_executor_choices_with_the_whole_word() {
   let p = fixture_project(&["build"]);
-  let req = Request { words: w("poe --executor=u"), cword: 1, prefix: "--executor=u".to_string(), ..base(&p) };
+  let req = Request {
+    words: w("poe --executor=u"),
+    cword: 1,
+    prefix: "--executor=u".to_string(),
+    ..base(&p)
+  };
   let got = items(run(&req));
   // The inserted text replaces the entire word; the popup shows only the value.
   assert_eq!(got[0].value, "--executor=uv");
@@ -166,7 +212,12 @@ fn completes_inline_executor_choices_with_the_whole_word() {
 #[test]
 fn offers_file_completion_after_the_separator() {
   let p = fixture_project(&["run"]);
-  let req = Request { words: w("poe run --"), cword: 3, prefix: String::new(), ..base(&p) };
+  let req = Request {
+    words: w("poe run --"),
+    cword: 3,
+    prefix: String::new(),
+    ..base(&p)
+  };
   assert_eq!(run(&req), Directive::Files);
 }
 
@@ -229,7 +280,12 @@ choices = ["fast", "slow"]
 #[test]
 fn completes_a_tasks_own_options_with_help_as_tooltip() {
   let p = fixture_args();
-  let req = Request { words: w("poe build -"), cword: 2, prefix: "-".to_string(), ..base(&p) };
+  let req = Request {
+    words: w("poe build -"),
+    cword: 2,
+    prefix: "-".to_string(),
+    ..base(&p)
+  };
   let got = items(run(&req));
   let mode = got.iter().find(|i| i.value == "--mode").expect("--mode offered");
   assert_eq!(mode.tooltip, "Build profile");
@@ -240,7 +296,12 @@ fn completes_a_tasks_own_options_with_help_as_tooltip() {
 fn hides_every_spelling_of_an_already_used_option() {
   // -m and --mode are one argument; using either must hide both.
   let p = fixture_args();
-  let req = Request { words: w("poe build -m fast -"), cword: 4, prefix: "-".to_string(), ..base(&p) };
+  let req = Request {
+    words: w("poe build -m fast -"),
+    cword: 4,
+    prefix: "-".to_string(),
+    ..base(&p)
+  };
   let got = values(run(&req));
   assert!(!got.iter().any(|v| v == "--mode" || v == "-m"), "{got:?}");
   assert!(got.iter().any(|v| v == "--force"), "{got:?}");
@@ -249,7 +310,12 @@ fn hides_every_spelling_of_an_already_used_option() {
 #[test]
 fn positionals_are_never_offered_as_option_names() {
   let p = fixture_args();
-  let req = Request { words: w("poe deploy -"), cword: 2, prefix: "-".to_string(), ..base(&p) };
+  let req = Request {
+    words: w("poe deploy -"),
+    cword: 2,
+    prefix: "-".to_string(),
+    ..base(&p)
+  };
   let got = values(run(&req));
   assert!(!got.iter().any(|v| v == "target" || v == "env"), "{got:?}");
 }
@@ -257,7 +323,12 @@ fn positionals_are_never_offered_as_option_names() {
 #[test]
 fn completes_an_options_choices() {
   let p = fixture_args();
-  let req = Request { words: w("poe build --mode"), cword: 3, prefix: String::new(), ..base(&p) };
+  let req = Request {
+    words: w("poe build --mode"),
+    cword: 3,
+    prefix: String::new(),
+    ..base(&p)
+  };
   let got = items(run(&req));
   assert_eq!(got.iter().map(|i| i.value.as_str()).collect::<Vec<_>>(), ["fast", "slow"]);
   assert!(matches!(got[0].kind, ItemKind::Value));
@@ -266,7 +337,12 @@ fn completes_an_options_choices() {
 #[test]
 fn completes_inline_equals_choices_replacing_the_whole_word() {
   let p = fixture_args();
-  let req = Request { words: w("poe build --mode=f"), cword: 2, prefix: "--mode=f".to_string(), ..base(&p) };
+  let req = Request {
+    words: w("poe build --mode=f"),
+    cword: 2,
+    prefix: "--mode=f".to_string(),
+    ..base(&p)
+  };
   let got = items(run(&req));
   assert_eq!(got[0].value, "--mode=fast");
   assert_eq!(got[0].display, "fast");
@@ -276,48 +352,83 @@ fn completes_inline_equals_choices_replacing_the_whole_word() {
 fn a_boolean_flag_does_not_consume_the_next_word() {
   // After a boolean the next Tab offers options again, not that flag's "value".
   let p = fixture_args();
-  let req = Request { words: w("poe build --force -"), cword: 3, prefix: "-".to_string(), ..base(&p) };
+  let req = Request {
+    words: w("poe build --force -"),
+    cword: 3,
+    prefix: "-".to_string(),
+    ..base(&p)
+  };
   assert!(values(run(&req)).iter().any(|v| v == "--mode"));
 }
 
 #[test]
 fn falls_back_to_files_for_a_free_form_value() {
   let p = fixture_args();
-  let req = Request { words: w("poe build --out"), cword: 3, prefix: String::new(), ..base(&p) };
+  let req = Request {
+    words: w("poe build --out"),
+    cword: 3,
+    prefix: String::new(),
+    ..base(&p)
+  };
   assert_eq!(run(&req), Directive::Files);
 }
 
 #[test]
 fn completes_positional_choices_at_the_right_index() {
   let p = fixture_args();
-  let req = Request { words: w("poe deploy alpha"), cword: 3, prefix: String::new(), ..base(&p) };
+  let req = Request {
+    words: w("poe deploy alpha"),
+    cword: 3,
+    prefix: String::new(),
+    ..base(&p)
+  };
   assert_eq!(values(run(&req)), ["dev", "prod"]);
 }
 
 #[test]
 fn completes_the_first_positional_before_any_are_given() {
   let p = fixture_args();
-  let req = Request { words: w("poe deploy"), cword: 2, prefix: String::new(), ..base(&p) };
+  let req = Request {
+    words: w("poe deploy"),
+    cword: 2,
+    prefix: String::new(),
+    ..base(&p)
+  };
   assert_eq!(values(run(&req)), ["alpha", "beta"]);
 }
 
 #[test]
 fn positional_index_skips_options_and_their_values() {
   let p = fixture_args();
-  let req = Request { words: w("poe deploy --mode fast alpha"), cword: 5, prefix: String::new(), ..base(&p) };
+  let req = Request {
+    words: w("poe deploy --mode fast alpha"),
+    cword: 5,
+    prefix: String::new(),
+    ..base(&p)
+  };
   assert_eq!(values(run(&req)), ["dev", "prod"]);
 }
 
 #[test]
 fn an_unknown_task_offers_nothing_rather_than_erroring() {
   let p = fixture_args();
-  let req = Request { words: w("poe nosuchtask -"), cword: 2, prefix: "-".to_string(), ..base(&p) };
+  let req = Request {
+    words: w("poe nosuchtask -"),
+    cword: 2,
+    prefix: "-".to_string(),
+    ..base(&p)
+  };
   assert_eq!(values(run(&req)), Vec::<String>::new());
 }
 
 #[test]
 fn positionals_beyond_the_last_fall_back_to_files() {
   let p = fixture_args();
-  let req = Request { words: w("poe deploy alpha dev extra"), cword: 4, prefix: String::new(), ..base(&p) };
+  let req = Request {
+    words: w("poe deploy alpha dev extra"),
+    cword: 4,
+    prefix: String::new(),
+    ..base(&p)
+  };
   assert_eq!(run(&req), Directive::Files);
 }

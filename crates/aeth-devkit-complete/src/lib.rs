@@ -191,7 +191,13 @@ fn build_request(
     _ => cwd,
   };
 
-  engine::Request { shell, words, cword, prefix, root }
+  engine::Request {
+    shell,
+    words,
+    cword,
+    prefix,
+    root,
+  }
 }
 
 /// The user's home directory, however this platform spells it.
@@ -199,7 +205,9 @@ fn build_request(
 /// `Option` rather than `Result` because the two callers want different things from a
 /// failure: `install` reports it, while a Tab press silently skips the repair.
 fn home_dir() -> Option<PathBuf> {
-  std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
+  std::env::var_os("HOME")
+    .or_else(|| std::env::var_os("USERPROFILE"))
+    .map(PathBuf::from)
 }
 
 /// `install`: print every change.

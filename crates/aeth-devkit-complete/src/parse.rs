@@ -136,11 +136,7 @@ pub fn parse(words: &[String], cword: usize) -> Parsed {
   // The separator only matters after a task, and only if the user's cursor is past it —
   // a `--` further to the right has not taken effect yet.
   if let Some(pos) = out.task_position {
-    out.after_separator = words
-      .iter()
-      .enumerate()
-      .skip(pos + 1)
-      .any(|(j, word)| word == "--" && j < cword);
+    out.after_separator = words.iter().enumerate().skip(pos + 1).any(|(j, word)| word == "--" && j < cword);
   }
 
   out
