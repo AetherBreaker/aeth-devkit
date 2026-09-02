@@ -174,3 +174,150 @@ fn offers_file_completion_after_the_separator() {
 fn values_of(items: &[Item]) -> Vec<&str> {
   items.iter().map(|i| i.value.as_str()).collect()
 }
+
+// ---- task arguments ----------------------------------------------------------------------
+
+/// A project with one option-bearing task and one positional-bearing task.
+fn fixture_args() -> tempfile::TempDir {
+  let dir = tempfile::tempdir().unwrap();
+  std::fs::write(
+    dir.path().join("pyproject.toml"),
+    r#"
+[tool.poe.tasks.build]
+cmd = "echo build"
+
+[[tool.poe.tasks.build.args]]
+name = "mode"
+options = ["-m", "--mode"]
+help = "Build profile"
+choices = ["fast", "slow"]
+
+[[tool.poe.tasks.build.args]]
+name = "force"
+options = ["--force"]
+type = "boolean"
+help = "Skip checks"
+
+[[tool.poe.tasks.build.args]]
+name = "out"
+options = ["--out"]
+help = "Output path"
+
+[tool.poe.tasks.deploy]
+cmd = "echo deploy"
+
+[[tool.poe.tasks.deploy.args]]
+name = "target"
+positional = true
+choices = ["alpha", "beta"]
+
+[[tool.poe.tasks.deploy.args]]
+name = "env"
+positional = true
+choices = ["dev", "prod"]
+
+[[tool.poe.tasks.deploy.args]]
+name = "mode"
+options = ["--mode"]
+choices = ["fast", "slow"]
+"#,
+  )
+  .unwrap();
+  dir
+}
+
+#[test]
+fn completes_a_tasks_own_options_with_help_as_tooltip() {
+  let p = fixture_args();
+  let req = Request { words: w("poe build -"), cword: 2, prefix: "-".to_string(), ..base(&p) };
+  let got = items(run(&req));
+  let mode = got.iter().find(|i| i.value == "--mode").expect("--mode offered");
+  assert_eq!(mode.tooltip, "Build profile");
+  assert!(matches!(mode.kind, ItemKind::Param));
+}
+
+#[test]
+fn hides_every_spelling_of_an_already_used_option() {
+  // -m and --mode are one argument; using either must hide both.
+  let p = fixture_args();
+  let req = Request { words: w("poe build -m fast -"), cword: 4, prefix: "-".to_string(), ..base(&p) };
+  let got = values(run(&req));
+  assert!(!got.iter().any(|v| v == "--mode" || v == "-m"), "{got:?}");
+  assert!(got.iter().any(|v| v == "--force"), "{got:?}");
+}
+
+#[test]
+fn positionals_are_never_offered_as_option_names() {
+  let p = fixture_args();
+  let req = Request { words: w("poe deploy -"), cword: 2, prefix: "-".to_string(), ..base(&p) };
+  let got = values(run(&req));
+  assert!(!got.iter().any(|v| v == "target" || v == "env"), "{got:?}");
+}
+
+#[test]
+fn completes_an_options_choices() {
+  let p = fixture_args();
+  let req = Request { words: w("poe build --mode"), cword: 3, prefix: String::new(), ..base(&p) };
+  let got = items(run(&req));
+  assert_eq!(got.iter().map(|i| i.value.as_str()).collect::<Vec<_>>(), ["fast", "slow"]);
+  assert!(matches!(got[0].kind, ItemKind::Value));
+}
+
+#[test]
+fn completes_inline_equals_choices_replacing_the_whole_word() {
+  let p = fixture_args();
+  let req = Request { words: w("poe build --mode=f"), cword: 2, prefix: "--mode=f".to_string(), ..base(&p) };
+  let got = items(run(&req));
+  assert_eq!(got[0].value, "--mode=fast");
+  assert_eq!(got[0].display, "fast");
+}
+
+#[test]
+fn a_boolean_flag_does_not_consume_the_next_word() {
+  // After a boolean the next Tab offers options again, not that flag's "value".
+  let p = fixture_args();
+  let req = Request { words: w("poe build --force -"), cword: 3, prefix: "-".to_string(), ..base(&p) };
+  assert!(values(run(&req)).iter().any(|v| v == "--mode"));
+}
+
+#[test]
+fn falls_back_to_files_for_a_free_form_value() {
+  let p = fixture_args();
+  let req = Request { words: w("poe build --out"), cword: 3, prefix: String::new(), ..base(&p) };
+  assert_eq!(run(&req), Directive::Files);
+}
+
+#[test]
+fn completes_positional_choices_at_the_right_index() {
+  let p = fixture_args();
+  let req = Request { words: w("poe deploy alpha"), cword: 3, prefix: String::new(), ..base(&p) };
+  assert_eq!(values(run(&req)), ["dev", "prod"]);
+}
+
+#[test]
+fn completes_the_first_positional_before_any_are_given() {
+  let p = fixture_args();
+  let req = Request { words: w("poe deploy"), cword: 2, prefix: String::new(), ..base(&p) };
+  assert_eq!(values(run(&req)), ["alpha", "beta"]);
+}
+
+#[test]
+fn positional_index_skips_options_and_their_values() {
+  let p = fixture_args();
+  let req = Request { words: w("poe deploy --mode fast alpha"), cword: 5, prefix: String::new(), ..base(&p) };
+  assert_eq!(values(run(&req)), ["dev", "prod"]);
+}
+
+#[test]
+fn an_unknown_task_offers_nothing_rather_than_erroring() {
+  let p = fixture_args();
+  let req = Request { words: w("poe nosuchtask -"), cword: 2, prefix: "-".to_string(), ..base(&p) };
+  assert_eq!(values(run(&req)), Vec::<String>::new());
+}
+
+#[test]
+fn positionals_beyond_the_last_fall_back_to_files() {
+  let p = fixture_args();
+  let req = Request { words: w("poe deploy alpha dev extra"), cword: 4, prefix: String::new(), ..base(&p) };
+  assert_eq!(run(&req), Directive::Files);
+}

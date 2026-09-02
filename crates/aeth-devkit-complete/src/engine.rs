@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use aeth_devkit_core::process::Runner;
 
+use crate::resolve::TaskArg;
 use crate::{cache, parse};
 
 /// Which shell asked. The engine is shell-agnostic in its logic; this exists only because
@@ -244,6 +245,153 @@ pub fn complete(req: &Request, runner: &dyn Runner, no_cache: bool) -> Directive
     return Directive::Items(items);
   }
 
-  // Past the task: its own arguments. Filled in by the next task.
-  Directive::Items(Vec::new())
+  // Past the task: complete its own arguments.
+  let Ok(resolved) = cache::resolve_cached(&req.root, runner, no_cache) else {
+    return Directive::Items(Vec::new());
+  };
+  // `parsed.task` is `Some` here: `before_task` was false, which requires a task position.
+  let Some(task) = resolved.tasks.iter().find(|t| Some(&t.name) == parsed.task.as_ref()) else {
+    // A task name that does not exist has no arguments to offer.
+    return Directive::Items(Vec::new());
+  };
+  task_arg_items(req, &parsed, &task.args)
+}
+
+/// Find the argument owning `option`, matching any of its spellings.
+///
+/// `TaskArg::options` holds every spelling of one argument (`["-m", "--mode"]`), which is
+/// what makes "hide both once either is used" expressible at all.
+fn arg_for<'a>(args: &'a [TaskArg], option: &str) -> Option<&'a TaskArg> {
+  args.iter().find(|a| a.options.iter().any(|o| o == option))
+}
+
+/// Whether this argument is a flag that takes no value.
+///
+/// `kind` is poe's own type string rather than an enum, because it is whatever the user put
+/// in `type = "..."`; only `"boolean"` changes completion behaviour.
+fn is_boolean(arg: &TaskArg) -> bool {
+  arg.kind == "boolean"
+}
+
+/// Candidates for an argument's `choices`, filtered by what has been typed.
+fn choice_items(arg: &TaskArg, typed: &str, inline_prefix: Option<&str>) -> Vec<Item> {
+  arg
+    .choices
+    .iter()
+    .filter(|c| c.starts_with(typed))
+    .map(|c| match inline_prefix {
+      // Inline form: the whole word is replaced, but the popup shows only the value.
+      Some(name) => Item {
+        value: format!("{name}={c}"),
+        display: c.clone(),
+        tooltip: c.clone(),
+        kind: ItemKind::Value,
+      },
+      None => Item::plain(c, c, ItemKind::Value),
+    })
+    .collect()
+}
+
+/// How many positional arguments have already been supplied before the cursor.
+///
+/// Options and their values must not be counted, which is why this walks the words rather
+/// than simply subtracting indices.
+fn positional_index(req: &Request, task_position: usize, args: &[TaskArg]) -> usize {
+  let mut count = 0;
+  let mut i = task_position + 1;
+  while i < req.cword {
+    let word = req.words[i].as_str();
+    if word.starts_with('-') {
+      // Strip any inline value so `--mode=fast` matches the `--mode` argument.
+      let (name, inline) = match word.split_once('=') {
+        Some((n, _)) => (n, true),
+        None => (word, false),
+      };
+      // A non-boolean option written in the separate form eats the following word.
+      // `let ... && ...` chains a binding and a condition in one `if`, so the nested form
+      // clippy rejects is unnecessary here.
+      if let Some(arg) = arg_for(args, name)
+        && !is_boolean(arg)
+        && !inline
+      {
+        i += 1;
+      }
+    } else {
+      count += 1;
+    }
+    i += 1;
+  }
+  count
+}
+
+/// Complete a task's own options, choices and positionals.
+fn task_arg_items(req: &Request, parsed: &parse::Parsed, args: &[TaskArg]) -> Directive {
+  // 1. Inline `--opt=value`.
+  if let Some((name, typed)) = req.prefix.split_once('=') {
+    let Some(arg) = arg_for(args, name) else {
+      return Directive::Items(Vec::new());
+    };
+    if arg.choices.is_empty() {
+      // No fixed set, so the value is free-form; a path is the best guess available.
+      return Directive::Files;
+    }
+    return Directive::Items(choice_items(arg, typed, Some(name)));
+  }
+
+  // 2. The previous word is one of this task's options, so the cursor is on its value.
+  //    A boolean takes no value, so it deliberately falls through to the option list below.
+  if let Some(prev) = previous_word(req)
+    && prev.starts_with('-')
+    && let Some(arg) = arg_for(args, prev)
+    && !is_boolean(arg)
+  {
+    if arg.choices.is_empty() {
+      return Directive::Files;
+    }
+    return Directive::Items(choice_items(arg, &req.prefix, None));
+  }
+
+  // 3. Option names, minus every spelling of an argument already used.
+  if req.prefix.starts_with('-') {
+    let mut used: Vec<&str> = Vec::new();
+    // Only words belonging to this task count, and never the half-typed word at the cursor.
+    let from = parsed.task_position.map_or(0, |p| p + 1);
+    for (i, word) in req.words.iter().enumerate().skip(from) {
+      if i == req.cword || !word.starts_with('-') {
+        continue;
+      }
+      let name = word.split_once('=').map_or(word.as_str(), |(n, _)| n);
+      if let Some(arg) = arg_for(args, name) {
+        // Mark every spelling used, not just the one typed.
+        used.extend(arg.options.iter().map(String::as_str));
+      }
+    }
+
+    let items = args
+      .iter()
+      // Positionals have no option spelling; offering their placeholder name as a flag
+      // would be nonsense.
+      .filter(|a| a.kind != "positional")
+      .flat_map(|a| a.options.iter().map(move |o| (o, a)))
+      .filter(|(o, _)| o.starts_with(&req.prefix) && !used.contains(&o.as_str()))
+      .map(|(o, a)| {
+        // poe renders a blank help as a single space; fall back to something useful.
+        let tooltip = if a.help.trim().is_empty() { format!("Option: {o}") } else { a.help.clone() };
+        Item::plain(o, &tooltip, ItemKind::Param)
+      })
+      .collect();
+    return Directive::Items(items);
+  }
+
+  // 4. A positional value. Which one depends on how many were already supplied.
+  let index = positional_index(req, parsed.task_position.unwrap_or(0), args);
+  let positionals: Vec<&TaskArg> = args.iter().filter(|a| a.kind == "positional").collect();
+  if let Some(arg) = positionals.get(index)
+    && !arg.choices.is_empty()
+  {
+    return Directive::Items(choice_items(arg, &req.prefix, None));
+  }
+
+  // Nothing structured left to offer, so hand path completion back to the shell.
+  Directive::Files
 }
