@@ -35,7 +35,7 @@ fn shim_text_is_pinned_to_its_version() {
   // than letting an installed shim silently differ from the shipped one.
   assert_eq!(
     (fnv1a(BASH), fnv1a(POWERSHELL)),
-    (0x9911_6d49_621c_98f0, 0xfc57_95e1_d0d1_3c2f),
+    (0xbee4_da6e_4061_9b6a, 0x40ca_fe5e_8fc5_6d3e),
     "shim text changed: bump SHIM_VERSION (and the shim's own header comment), then update these hashes"
   );
 }

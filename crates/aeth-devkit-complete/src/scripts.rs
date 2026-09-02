@@ -15,11 +15,11 @@
 /// fix both count, because both mean an installed shim differs from the shipped one. It is
 /// deliberately unrelated to the package version: an ordinary devkit release that leaves
 /// these constants alone changes nothing and triggers no repair.
-pub const SHIM_VERSION: u32 = 1;
+pub const SHIM_VERSION: u32 = 2;
 
 /// `devkit complete script --bash`; written to the bash completion directories by
 /// `devkit complete install --bash`.
-pub const BASH: &str = r##"# Bash completion for poe - devkit thin shim (shim version 1)
+pub const BASH: &str = r##"# Bash completion for poe - devkit thin shim (shim version 2)
 #
 # Installed by `devkit complete install --bash`. All completion logic lives in
 # `devkit complete query`; this file only forwards the command line and acts on the
@@ -33,7 +33,7 @@ _poe_complete() {
     command -v devkit >/dev/null 2>&1 || return 0
 
     local out
-    out=$(devkit complete query --shell bash --shim-version 1 \
+    out=$(devkit complete query --shell bash --shim-version 2 \
             --line "$COMP_LINE" --point "$COMP_POINT" 2>/dev/null) || return 0
     [[ -z "$out" ]] && return 0
 
@@ -70,7 +70,7 @@ complete -F _poe_complete poe
 
 /// `devkit complete script --powershell`; written to
 /// `~/.local/share/devkit/poe-completion.ps1` and dot-sourced from `$PROFILE`.
-pub const POWERSHELL: &str = r##"# PowerShell completion for poe - devkit thin shim (shim version 1)
+pub const POWERSHELL: &str = r##"# PowerShell completion for poe - devkit thin shim (shim version 2)
 #
 # Installed by `devkit complete install --powershell`. All completion logic lives in
 # `devkit complete query`; this file only forwards the command line and acts on the
@@ -104,7 +104,7 @@ Register-ArgumentCompleter -CommandName poe -Native -ScriptBlock {
     # --word-to-complete uses the =value form deliberately: $wordToComplete is empty when a
     # fresh word is starting, and an empty argument passed separately can be dropped
     # entirely, which would make the parser swallow the next token as this flag's value.
-    $out = & $dk.Source complete query --shell powershell --shim-version 1 --cword $cword --word-to-complete=$wordToComplete -- @texts 2>$null
+    $out = & $dk.Source complete query --shell powershell --shim-version 2 --cword $cword --word-to-complete=$wordToComplete -- @texts 2>$null
     if (-not $out) { return }
 
     $lines = @($out -split "\r?\n" | Where-Object { $_ -ne '' })
@@ -125,8 +125,14 @@ Register-ArgumentCompleter -CommandName poe -Native -ScriptBlock {
     }
     if ($lines[0] -ne 'items') { return }
 
-    foreach ($line in $lines[1..($lines.Count - 1)]) {
-        $p = $line -split "\t"
+    # A header with no candidates is the common case (a prefix matching nothing). Guard it:
+    # the range 1..($lines.Count - 1) becomes the *descending* range 1..0 when Count is 1,
+    # which indexes out of bounds and throws under Set-StrictMode -Version 3.0 or later --
+    # and this file is dot-sourced from $PROFILE, where a user's strict mode applies.
+    if ($lines.Count -le 1) { return }
+
+    for ($i = 1; $i -lt $lines.Count; $i++) {
+        $p = $lines[$i] -split "\t"
         if ($p.Count -lt 4) { continue }
         # Column 4 is the item kind; mapping it back gives the popup its icon and grouping.
         $type = switch ($p[3]) {
