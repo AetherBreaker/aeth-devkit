@@ -1,10 +1,20 @@
 //! `devkit complete` — fast shell completion for poe tasks.
+//! See docs/superpowers/specs/2026-09-01-poe-completion-shim-design.md.
 //!
 //! poe's own completion costs ~200 ms per Tab press: it starts Python, imports the
 //! poethepoet framework, and — with `include_script` — spawns a second process through
-//! `uv run` to obtain the task table. This crate answers the same two questions
-//! (`which tasks?`, `which args for this task?`) from Rust, with the task table resolved
-//! natively for TOML and cached for `include_script`.
+//! `uv run` to obtain the task table. This crate answers the same questions from Rust,
+//! with the task table resolved natively for TOML and cached for `include_script`.
+//!
+//! The completion *logic* lives in [`engine`], not in shell script. Each shell installs a
+//! ~50-line shim ([`scripts`]) that forwards the command line to `devkit complete query`
+//! and acts on a directory/file sentinel; everything else — locating the task, global
+//! options, choices, positional indexing — is decided here, once, for both shells.
+//!
+//! That arrangement is why no global devkit install is needed. The shims invoke devkit only
+//! at Tab time, where an activated venv has already put the right one on PATH; the previous
+//! design ran `devkit complete script | Invoke-Expression` from `$PROFILE` at every shell
+//! start, which no per-project binary could ever satisfy.
 
 pub mod cache;
 pub mod engine;
