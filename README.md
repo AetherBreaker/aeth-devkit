@@ -12,7 +12,7 @@ plus the `devkit` CLI (Rust) they call.
 | `poe release [-f] [--dry-run] [bump …] ["notes"]`                 | `devkit release`               | Bump version, build, tag, publish to the index and GitHub; rolls back on failure.                                                                                                                                                                             |
 | `poe docker-pin [-V VER] [--dry-run] [--no-commit] [--no-push]`   | `devkit docker-pin`            | Pin the compose file's `GIT_TAG` / `PACKAGE_VERSION` to a released version of the project, commit, and push.                                                                                                                                                  |
 | `poe release-and-pin [-f] [--dry-run] [bump …] ["notes"]`         | `devkit release-and-pin`       | `devkit release` then `devkit docker-pin` with the freshly released version, in-process.                                                                                                                                                                      |
-| —                                                                 | `devkit complete`              | Shell completion for `poe` served from Rust (~13 ms per Tab instead of ~200 ms). `devkit complete install --powershell --bash` wires it into `$PROFILE` and the bash completion files (needs a global `devkit`: `uv tool install aeth-devkit --index <url>`). |
+| —                                                                 | `devkit complete`              | Shell completion for `poe` served from Rust (~13 ms per Tab instead of ~200 ms). `devkit complete install --powershell --bash` wires it into `$PROFILE` and the bash completion files. Uses whichever `devkit` is on PATH at Tab time, which an activated venv provides; no global install required. |
 | `poe rescind-release`                                             | `scripts/rescind-release.sh`   | Undo a release.                                                                                                                                                                                                                                               |
 
 `devkit --help` lists the Rust subcommands. Each lives in its own crate under `crates/`;
@@ -183,21 +183,33 @@ Args: identical to `devkit release` (all of them forward verbatim).
 
 ### `devkit complete`
 
-Subcommands: `tasks [DIR]` and `args <TASK> [DIR]` (the per-Tab data), `script
+Subcommands: `query` (the per-Tab request, called by the shims), `tasks [DIR]` and `args
+<TASK> [DIR]` (retained for shims installed by an older devkit), `script
 --powershell|--bash`, `install --powershell --bash [--dry-run]`; global `--no-cache`.
 
-- **Fast data path** - Serves poe's task/argument completion data from Rust (~13 ms warm
-  vs poe's ~200 ms); the shell scripts are poe's own generated ones with only the two data
-  calls swapped.
+- **Fast data path** - Serves poe's completion from Rust (~13 ms warm vs poe's ~200 ms).
+- **Thin shims** - Each shell installs a ~50-line shim that forwards the command line to
+  `devkit complete query` and acts on a directory/file sentinel; all the logic (task
+  location, global options, choices, positional indexing) lives in one Rust engine rather
+  than in two near-duplicate shell scripts. The shells still do their own path completion,
+  keeping their own quoting rules.
 - **Task resolution** - Mirrors poe's: `[tool.poe.tasks]`, recursive `include` files
   (env-var expansion, cycle guard), hidden `_` tasks skipped, first definition wins;
   `include_script` is executed against the venv python directly, skipping poe's startup.
 - **Caching** - Fingerprint cache at `.cache/devkit-completions.json` (devkit version +
   each source's mtime/size); a corrupt cache is a miss, and the data subcommands never
   exit non-zero — a failing completer would break the shell.
-- **Install** - Requires a global `devkit` on PATH, patches `$PROFILE` (also removing
-  poe's own slow registration) and writes the bash completion files for Git Bash and
-  Linux; refuses to overwrite files it didn't generate; idempotent.
+- **No global install needed** - The shims call `devkit` only at Tab time, so an activated
+  venv's copy is used. A global install is only wanted if you want completion in shells
+  where no venv is activated.
+- **Install** - Writes the PowerShell shim to `~/.local/share/devkit/poe-completion.ps1`
+  and puts one permanent, content-free line in `$PROFILE` that dot-sources it (also
+  removing poe's own slow registration, and any previous devkit line); writes the bash
+  completion files for Git Bash and Linux; refuses to overwrite files it didn't generate;
+  idempotent.
+- **Self-repair** - Each request carries a shim version. A shim older than the binary is
+  rewritten in place (atomically) for the next shell, while the current request is still
+  answered.
 - **Shells** - PowerShell and bash only.
 
 ### `devkit hook`
