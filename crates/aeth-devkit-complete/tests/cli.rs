@@ -3,8 +3,9 @@ use aeth_devkit_complete::{Command, output, scripts};
 #[test]
 fn scripts_register_for_poe_and_call_devkit_for_data() {
   for (script, shell) in [(scripts::POWERSHELL, "powershell"), (scripts::BASH, "bash")] {
-    assert!(script.contains("devkit complete tasks"), "{shell}");
-    assert!(script.contains("devkit complete args"), "{shell}");
+    // The shims ask one question now. `tasks` and `args` remain as subcommands for shims
+    // installed by an older devkit, but the shipped shims no longer use them.
+    assert!(script.contains("devkit complete query"), "{shell}");
     assert!(
       !script.contains("poe _list_tasks") && !script.contains("poe _describe_task_args"),
       "{shell}"
