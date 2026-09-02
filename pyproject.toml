@@ -122,7 +122,7 @@
   asyncio_mode = "auto"
 
 [tool.ruff]
-  src       = ["./python"]
+  src       = ["./python", "../*/src", "../*/python"]  # setup-project added: "../*/src", "../*/python"
   cache-dir = ".cache/ruff"
 
   exclude = [
@@ -181,7 +181,9 @@
       "T10",
       "TC",
       "UP",
-    ]
+      "D",
+      "TID",
+    ]                  # setup-project added: "D", "TID"
     ignore        = [
       "A004",
       "PD008",
@@ -202,6 +204,13 @@
         local-folder     = "Local folder imports"
         standard-library = "Standard library imports"
         third-party      = "Third party imports"
+
+    [tool.ruff.lint.flake8-tidy-imports.banned-api."__future__.annotations"]
+      # Delivered by ruff exactly when violated, so the reasoning costs no context otherwise.
+      msg = "Python 3.14 evaluates all annotations lazily (PEP 649) with or without this import. What it adds is PEP 563 stringification, which breaks pydantic, dataclasses.fields() introspection, and typing.get_type_hints."
+
+    [tool.ruff.lint.pydocstyle]
+      convention = "google"
 
 [tool.tombi]
   toml-version = "v1.1.0"

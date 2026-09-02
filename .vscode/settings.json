@@ -39,5 +39,16 @@
     "[rust]": {
         "editor.defaultFormatter": "rust-lang.rust-analyzer",
         "editor.formatOnSave": true
-    }
+    },
+    "chat.useAgentsMdFile": true,
+    "github.copilot.chat.commitMessageGeneration.instructions": [
+        {
+            "file": "AGENTS.md"
+        }
+    ],
+    "github.copilot.chat.reviewSelection.instructions": [
+        {
+            "text": "Do not review files under tests/; only review production code."
+        }
+    ]
 }
