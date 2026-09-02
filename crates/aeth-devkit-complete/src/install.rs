@@ -14,7 +14,16 @@ use anyhow::{Context as _, Result, bail};
 use aeth_devkit_core::process::Runner;
 
 /// The line `install --powershell` puts in `$PROFILE`.
-pub const POWERSHELL_LINE: &str = "devkit complete script --powershell | Out-String | Invoke-Expression";
+///
+/// Deliberately content-free: it names a path and nothing else. Because it never needs to
+/// change, the only artifact that can ever drift is the shim file itself — which devkit owns
+/// and may safely rewrite, unlike the user's profile.
+pub const POWERSHELL_LINE: &str = "$c = \"$HOME/.local/share/devkit/poe-completion.ps1\"; if (Test-Path $c) { . $c }";
+
+/// Fragment identifying the *previous* devkit registration, which this one replaces. That
+/// line ran devkit at every shell start merely to fetch the script text, which is precisely
+/// what made a global install mandatory.
+const OLD_DEVKIT_POWERSHELL_LINE: &str = "devkit complete script --powershell";
 
 /// Fragment identifying poe's own registration line, which devkit's replaces: both register
 /// for the `poe` command and the last one loaded wins, so keeping poe's would only pay its
@@ -51,6 +60,11 @@ pub fn patch_profile(original: Option<&str>) -> (String, Vec<String>) {
       log.push(format!("removed poe's own registration: {t}"));
       continue;
     }
+    // Migration: an earlier devkit put a line here that shelled out at every shell start.
+    if t.contains(OLD_DEVKIT_POWERSHELL_LINE) {
+      log.push(format!("removed the previous devkit registration: {t}"));
+      continue;
+    }
     // Case-insensitive so a hand-typed variant (`out-string | invoke-expression`) counts.
     if t.eq_ignore_ascii_case(POWERSHELL_LINE) {
       present = true;
@@ -80,9 +94,12 @@ pub fn bash_file_action(existing: Option<&str>, script: &str) -> FileAction {
   }
 }
 
-/// Where `devkit` resolves from the given `PATH` value, if anywhere.
-pub fn devkit_on_path(path_var: &str) -> Option<PathBuf> {
-  std::env::split_paths(path_var).find_map(|dir| ["devkit.exe", "devkit"].into_iter().map(|n| dir.join(n)).find(|p| p.is_file()))
+/// Where the PowerShell shim is written.
+///
+/// Mirrors the `~/.local/share` convention the bash targets already use, so both shells keep
+/// their generated file in the same place rather than one hiding in the profile itself.
+pub fn powershell_shim_path(home: &Path) -> PathBuf {
+  home.join(".local").join("share").join("devkit").join("poe-completion.ps1")
 }
 
 /// Ask PowerShell where its profile lives, rather than guessing the Documents path.
@@ -99,8 +116,40 @@ pub fn powershell_profile(runner: &dyn Runner) -> Result<PathBuf> {
   Ok(PathBuf::from(path))
 }
 
-/// Install into `profile` (created if missing). Returns the change log.
-pub fn install_powershell(profile: &Path, dry_run: bool) -> Result<Vec<String>> {
+/// Install into `profile` (created if missing), writing the shim file it points at.
+///
+/// Two artifacts, deliberately separate: `script` goes to `shim_path`, which devkit owns and
+/// rewrites freely, while `profile` gets one permanent line and is otherwise the user's.
+pub fn install_powershell(profile: &Path, shim_path: &Path, script: &str, dry_run: bool) -> Result<Vec<String>> {
+  let mut log = install_shim_file(shim_path, script, dry_run)?;
+  log.extend(install_profile_line(profile, dry_run)?);
+  Ok(log)
+}
+
+/// Write the shim script, unless it is already byte-identical.
+fn install_shim_file(shim_path: &Path, script: &str, dry_run: bool) -> Result<Vec<String>> {
+  // `Ok(text)` when readable, `None` when absent; any other error is a real problem and
+  // propagates rather than being silently treated as "missing".
+  let existing = match std::fs::read_to_string(shim_path) {
+    Ok(text) => Some(text),
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+    Err(e) => return Err(e).with_context(|| format!("reading {}", shim_path.display())),
+  };
+  if existing.as_deref() == Some(script) {
+    return Ok(Vec::new());
+  }
+  let verb = if existing.is_some() { "updated" } else { "created" };
+  if !dry_run {
+    if let Some(dir) = shim_path.parent() {
+      std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::fs::write(shim_path, script).with_context(|| format!("writing {}", shim_path.display()))?;
+  }
+  Ok(vec![format!("{verb} {}", shim_path.display())])
+}
+
+/// Add devkit's line to `profile` (created if missing). Returns the change log.
+fn install_profile_line(profile: &Path, dry_run: bool) -> Result<Vec<String>> {
   let original = match std::fs::read_to_string(profile) {
     Ok(s) => Some(s),
     Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -160,26 +209,4 @@ pub fn install_bash(files: &[PathBuf], script: &str, dry_run: bool) -> Result<Ve
     }
   }
   Ok(log)
-}
-
-/// Check that a profile line invoking bare `devkit` will actually resolve in a fresh shell.
-/// `Err` carries the instruction to print; `Ok(Some(_))` is a warning to print and proceed.
-pub fn preflight(path_var: &str) -> Result<Option<String>> {
-  let Some(found) = devkit_on_path(path_var) else {
-    bail!(
-      "`devkit` is not on PATH, so a profile line calling it would break every new shell.\n\
-       Install it globally the same way poe is: `uv tool install aeth-devkit --index <your index url>`,\n\
-       then re-run this command."
-    );
-  };
-  // A venv's Scripts dir is on PATH only while that venv is activated; a fresh shell won't
-  // have it. Proceed — the user may have arranged PATH deliberately — but say so.
-  let in_venv = found.components().any(|c| c.as_os_str() == ".venv");
-  Ok(in_venv.then(|| {
-    format!(
-      "warning: the `devkit` on PATH is inside a .venv ({}); completion will only work in shells where that venv is on PATH. \
-       For a global install: `uv tool install aeth-devkit --index <your index url>`.",
-      found.display()
-    )
-  }))
 }

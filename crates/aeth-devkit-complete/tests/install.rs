@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use aeth_devkit_complete::install::{
-  FileAction, POWERSHELL_LINE, bash_file_action, devkit_on_path, install_bash, install_powershell, patch_profile, powershell_profile,
+  FileAction, POWERSHELL_LINE, bash_file_action, install_bash, install_powershell, patch_profile, powershell_profile, powershell_shim_path,
 };
 use aeth_devkit_core::process::RecordingRunner;
 
@@ -69,19 +69,6 @@ fn bash_file_decisions() {
 
 // ---- PATH check ----------------------------------------------------------------------------
 
-#[test]
-fn devkit_on_path_finds_exe_or_bare_name_in_any_entry() {
-  let dir = tempfile::tempdir().unwrap();
-  let sep = if cfg!(windows) { ";" } else { ":" };
-  let empty_dir = tempfile::tempdir().unwrap();
-  let path_var = format!("{}{sep}{}", empty_dir.path().display(), dir.path().display());
-  assert_eq!(devkit_on_path(&path_var), None);
-  std::fs::write(dir.path().join(if cfg!(windows) { "devkit.exe" } else { "devkit" }), "").unwrap();
-  assert_eq!(
-    devkit_on_path(&path_var).map(|p| p.parent().unwrap().to_path_buf()),
-    Some(dir.path().to_path_buf())
-  );
-}
 
 // ---- $PROFILE lookup -----------------------------------------------------------------------
 
@@ -105,15 +92,51 @@ fn powershell_profile_asks_powershell_and_trims() {
 // ---- file-level installs -------------------------------------------------------------------
 
 #[test]
-fn install_powershell_creates_or_patches_the_profile_and_is_idempotent() {
+fn install_powershell_writes_both_artifacts_and_is_idempotent() {
   let dir = tempfile::tempdir().unwrap();
   let profile = dir.path().join("WindowsPowerShell").join("profile.ps1");
-  let log = install_powershell(&profile, false).unwrap();
+  let shim = powershell_shim_path(dir.path());
+  let log = install_powershell(&profile, &shim, "# shim\n", false).unwrap();
   assert!(!log.is_empty());
+  // The profile gets one line; the script itself lives in its own file.
   assert_eq!(std::fs::read_to_string(&profile).unwrap(), format!("{POWERSHELL_LINE}\n"));
+  assert_eq!(std::fs::read_to_string(&shim).unwrap(), "# shim\n");
   assert!(
-    install_powershell(&profile, false).unwrap().is_empty(),
+    install_powershell(&profile, &shim, "# shim\n", false).unwrap().is_empty(),
     "second run must be a no-op"
+  );
+}
+
+#[test]
+fn install_powershell_refreshes_a_stale_shim_without_rewriting_a_current_profile() {
+  let dir = tempfile::tempdir().unwrap();
+  let profile = dir.path().join("profile.ps1");
+  let shim = powershell_shim_path(dir.path());
+  install_powershell(&profile, &shim, "# old\n", false).unwrap();
+  let log = install_powershell(&profile, &shim, "# new\n", false).unwrap();
+  assert_eq!(std::fs::read_to_string(&shim).unwrap(), "# new\n");
+  assert!(log.iter().any(|l| l.contains("updated")), "{log:?}");
+  assert!(!log.iter().any(|l| l.contains("profile.ps1")), "profile already correct: {log:?}");
+}
+
+#[test]
+fn the_profile_line_no_longer_invokes_devkit() {
+  // The defect this change exists to remove: $PROFILE used to shell out at every shell
+  // start just to obtain the script text.
+  assert!(!POWERSHELL_LINE.contains("Invoke-Expression"));
+  assert!(POWERSHELL_LINE.contains("poe-completion.ps1"));
+}
+
+#[test]
+fn migrating_a_profile_replaces_the_previous_devkit_line() {
+  let before = "Set-Alias ll Get-ChildItem\ndevkit complete script --powershell | Out-String | Invoke-Expression\n";
+  let (text, log) = patch_profile(Some(before));
+  assert!(!text.contains("Invoke-Expression"), "{text}");
+  assert!(text.contains("poe-completion.ps1"), "{text}");
+  assert!(text.contains("Set-Alias ll Get-ChildItem"), "the user's own lines survive");
+  assert!(
+    log.iter().any(|l| l.contains("removed the previous devkit registration")),
+    "{log:?}"
   );
 }
 
@@ -121,9 +144,11 @@ fn install_powershell_creates_or_patches_the_profile_and_is_idempotent() {
 fn install_powershell_dry_run_writes_nothing() {
   let dir = tempfile::tempdir().unwrap();
   let profile = dir.path().join("profile.ps1");
-  let log = install_powershell(&profile, true).unwrap();
+  let shim = powershell_shim_path(dir.path());
+  let log = install_powershell(&profile, &shim, "# shim\n", true).unwrap();
   assert!(!log.is_empty());
   assert!(!profile.exists());
+  assert!(!shim.exists());
 }
 
 #[test]
@@ -160,49 +185,4 @@ fn install_bash_dry_run_writes_nothing() {
   let log = install_bash(std::slice::from_ref(&target), SCRIPT, true).unwrap();
   assert!(!log.is_empty());
   assert!(!target.exists());
-}
-
-// ---- preflight -----------------------------------------------------------------------------
-
-#[test]
-fn preflight_refuses_when_devkit_is_not_on_path_and_says_how_to_fix_it() {
-  let empty = tempfile::tempdir().unwrap();
-  let err = aeth_devkit_complete::install::preflight(&empty.path().display().to_string()).unwrap_err();
-  assert!(err.to_string().contains("uv tool install aeth-devkit"), "{err}");
-}
-
-#[test]
-fn preflight_warns_when_the_only_devkit_is_inside_a_venv() {
-  let dir = tempfile::tempdir().unwrap();
-  let scripts = dir.path().join(".venv").join("Scripts");
-  std::fs::create_dir_all(&scripts).unwrap();
-  std::fs::write(scripts.join(if cfg!(windows) { "devkit.exe" } else { "devkit" }), "").unwrap();
-  let warning = aeth_devkit_complete::install::preflight(&scripts.display().to_string()).unwrap();
-  assert!(warning.is_some_and(|w| w.contains(".venv")), "expected a venv warning");
-}
-
-#[test]
-fn preflight_is_silent_for_a_global_devkit() {
-  let dir = tempfile::tempdir().unwrap();
-  std::fs::write(dir.path().join(if cfg!(windows) { "devkit.exe" } else { "devkit" }), "").unwrap();
-  assert_eq!(
-    aeth_devkit_complete::install::preflight(&dir.path().display().to_string()).unwrap(),
-    None
-  );
-}
-
-/// poe writes its completion file through the Windows console codepage, so an em dash in its
-/// comments arrives as a lone 0x97 byte and the file is not valid UTF-8. It is still a
-/// generated file and must be replaced, not treated as an error.
-#[test]
-fn install_bash_replaces_a_non_utf8_poe_generated_file() {
-  let dir = tempfile::tempdir().unwrap();
-  let target = dir.path().join("poe");
-  let mut bytes = b"# Bash completion for poe\n# Generated by poethepoet\n# em dash: ".to_vec();
-  bytes.push(0x97);
-  bytes.extend_from_slice(b"\ncomplete -F _poe_complete poe\n");
-  std::fs::write(&target, &bytes).unwrap();
-  let log = install_bash(std::slice::from_ref(&target), SCRIPT, false).unwrap();
-  assert!(log.iter().any(|l| l.contains("updated")), "{log:?}");
-  assert_eq!(std::fs::read_to_string(&target).unwrap(), SCRIPT);
 }

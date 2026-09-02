@@ -197,22 +197,25 @@ fn bash_targets(home: &std::path::Path) -> Vec<PathBuf> {
   ]
 }
 
-/// `install`: print every change, and the warning or refusal from the PATH preflight.
+/// `install`: print every change.
+///
+/// There is no longer a PATH preflight. It existed to prove a fresh shell could resolve
+/// `devkit` for the startup call that fetched the script text — and that call is gone, so
+/// there is nothing left to check. A devkit inside an activated venv is the expected case,
+/// not something to warn about.
 pub fn run_install(powershell: bool, bash: bool, dry_run: bool) -> Result<()> {
-  let path_var = std::env::var("PATH").unwrap_or_default();
-  if let Some(warning) = install::preflight(&path_var)? {
-    eprintln!("{warning}");
-  }
+  // Both shells write into the home directory, so resolve it once up front.
+  let home = std::env::var_os("HOME")
+    .or_else(|| std::env::var_os("USERPROFILE"))
+    .map(PathBuf::from)
+    .ok_or_else(|| anyhow::anyhow!("neither HOME nor USERPROFILE is set"))?;
   let mut log = Vec::new();
   if powershell {
     let profile = install::powershell_profile(&SystemRunner)?;
-    log.extend(install::install_powershell(&profile, dry_run)?);
+    let shim = install::powershell_shim_path(&home);
+    log.extend(install::install_powershell(&profile, &shim, scripts::POWERSHELL, dry_run)?);
   }
   if bash {
-    let home = std::env::var_os("HOME")
-      .or_else(|| std::env::var_os("USERPROFILE"))
-      .map(PathBuf::from)
-      .ok_or_else(|| anyhow::anyhow!("neither HOME nor USERPROFILE is set"))?;
     log.extend(install::install_bash(&bash_targets(&home), scripts::BASH, dry_run)?);
   }
   if log.is_empty() {
