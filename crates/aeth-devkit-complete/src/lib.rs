@@ -13,6 +13,7 @@ pub mod install;
 pub mod parse;
 pub mod resolve;
 pub mod scripts;
+pub mod wire;
 pub mod words;
 
 use std::path::PathBuf;
@@ -69,6 +70,33 @@ pub enum Command {
     #[arg(long)]
     dry_run: bool,
   },
+  /// Answer one completion request from a shell shim. Not meant to be typed by hand.
+  Query {
+    /// Which shim is asking, which decides how the command line was handed over.
+    #[arg(long, value_enum)]
+    shell: engine::Shell,
+    /// The shim's own version, so a drifted shim can be detected and repaired.
+    #[arg(long)]
+    shim_version: u32,
+    /// bash: the raw `COMP_LINE`.
+    #[arg(long)]
+    line: Option<String>,
+    /// bash: `COMP_POINT`, a byte offset into `--line`.
+    #[arg(long)]
+    point: Option<usize>,
+    /// PowerShell: index of the element the cursor is on.
+    #[arg(long)]
+    cword: Option<usize>,
+    /// PowerShell: its own `$wordToComplete`, authoritative for the prefix.
+    #[arg(long)]
+    word_to_complete: Option<String>,
+    /// PowerShell: the parsed command elements, after `--`.
+    ///
+    /// `allow_hyphen_values` is essential: these routinely start with `-` (`poe -C ../x`)
+    /// and clap would otherwise try to parse them as flags of its own.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    words: Vec<String>,
+  },
 }
 
 /// What to print for the data and script subcommands. Separated from the I/O so it can be
@@ -90,6 +118,18 @@ pub fn output(command: &Command, no_cache: bool) -> String {
         .unwrap_or_default()
     }
     Command::Script { bash, .. } => if *bash { scripts::BASH } else { scripts::POWERSHELL }.to_string(),
+    Command::Query {
+      shell,
+      line,
+      point,
+      cword,
+      word_to_complete,
+      words,
+      ..
+    } => {
+      let req = build_request(*shell, line.as_deref(), *point, *cword, word_to_complete.as_deref(), words);
+      wire::render(&engine::complete(&req, &SystemRunner, no_cache))
+    }
     Command::Install { .. } => String::new(),
   }
 }
@@ -102,6 +142,45 @@ fn project_dir(dir: Option<&str>) -> PathBuf {
     Some(d) if !d.is_empty() => PathBuf::from(d),
     _ => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
   }
+}
+
+/// Assemble an [`engine::Request`] from whichever shape the shim sent.
+///
+/// The two shells are deliberately asymmetric: bash hands over raw text because its own
+/// word splitting breaks on `=`, while PowerShell hands over elements its parser already
+/// produced, which are authoritative and would only be degraded by re-parsing.
+fn build_request(
+  shell: engine::Shell,
+  line: Option<&str>,
+  point: Option<usize>,
+  cword: Option<usize>,
+  word_to_complete: Option<&str>,
+  words: &[String],
+) -> engine::Request {
+  let (words, cword, prefix) = match shell {
+    engine::Shell::Bash => {
+      // `unwrap_or_default` covers a shim that somehow omitted the pair: an empty line
+      // completes nothing, which is the correct degenerate answer.
+      let split = words::split_line(line.unwrap_or_default(), point.unwrap_or(0));
+      (split.words, split.cword, split.prefix)
+    }
+    engine::Shell::PowerShell => {
+      // A missing `--cword` means "past the last element", i.e. a fresh word.
+      let cword = cword.unwrap_or(words.len());
+      (words.to_vec(), cword, word_to_complete.unwrap_or_default().to_string())
+    }
+  };
+
+  // `-C ../other` retargets the whole request; without it the process cwd is the project.
+  let cwd = project_dir(None);
+  let root = match parse::parse(&words, cword).target_dir.as_deref() {
+    // `Path::join` replaces the base outright when the argument is absolute, so this one
+    // expression handles both relative and absolute `-C` values.
+    Some(dir) if !dir.is_empty() => cwd.join(dir),
+    _ => cwd,
+  };
+
+  engine::Request { shell, words, cword, prefix, root }
 }
 
 /// The bash completion files, in the order they are written. Both hold the same script;

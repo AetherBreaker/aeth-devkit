@@ -18,9 +18,11 @@ use crate::{cache, parse};
 ///
 /// `Copy` because it is two bytes at most — passing it by value is cheaper than a reference,
 /// and `derive` gives us that for a fieldless enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Shell {
   Bash,
+  // Without this clap would derive the kebab-case name `power-shell` from the variant.
+  #[value(name = "powershell")]
   PowerShell,
 }
 
