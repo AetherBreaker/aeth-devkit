@@ -11,6 +11,7 @@ pub mod engine;
 pub mod format;
 pub mod install;
 pub mod parse;
+pub mod repair;
 pub mod resolve;
 pub mod scripts;
 pub mod wire;
@@ -183,18 +184,12 @@ fn build_request(
   engine::Request { shell, words, cword, prefix, root }
 }
 
-/// The bash completion files, in the order they are written. Both hold the same script;
-/// see the module doc in [`install`] for why there are two.
-fn bash_targets(home: &std::path::Path) -> Vec<PathBuf> {
-  vec![
-    home.join("bash_completion.d").join("poe.bash"),
-    home
-      .join(".local")
-      .join("share")
-      .join("bash-completion")
-      .join("completions")
-      .join("poe"),
-  ]
+/// The user's home directory, however this platform spells it.
+///
+/// `Option` rather than `Result` because the two callers want different things from a
+/// failure: `install` reports it, while a Tab press silently skips the repair.
+fn home_dir() -> Option<PathBuf> {
+  std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
 }
 
 /// `install`: print every change.
@@ -205,10 +200,7 @@ fn bash_targets(home: &std::path::Path) -> Vec<PathBuf> {
 /// not something to warn about.
 pub fn run_install(powershell: bool, bash: bool, dry_run: bool) -> Result<()> {
   // Both shells write into the home directory, so resolve it once up front.
-  let home = std::env::var_os("HOME")
-    .or_else(|| std::env::var_os("USERPROFILE"))
-    .map(PathBuf::from)
-    .ok_or_else(|| anyhow::anyhow!("neither HOME nor USERPROFILE is set"))?;
+  let home = home_dir().ok_or_else(|| anyhow::anyhow!("neither HOME nor USERPROFILE is set"))?;
   let mut log = Vec::new();
   if powershell {
     let profile = install::powershell_profile(&SystemRunner)?;
@@ -216,7 +208,7 @@ pub fn run_install(powershell: bool, bash: bool, dry_run: bool) -> Result<()> {
     log.extend(install::install_powershell(&profile, &shim, scripts::POWERSHELL, dry_run)?);
   }
   if bash {
-    log.extend(install::install_bash(&bash_targets(&home), scripts::BASH, dry_run)?);
+    log.extend(install::install_bash(&install::bash_targets(&home), scripts::BASH, dry_run)?);
   }
   if log.is_empty() {
     println!("Nothing to do — completion is already installed.");
@@ -243,6 +235,18 @@ pub fn run_real(args: &Args) -> ExitCode {
         ExitCode::from(1)
       }
     },
+    Command::Query { shell, shim_version, .. } => {
+      // Answer first. An old shim still gets a best-effort reply, because refusing would
+      // kill completion in every already-open shell until each was restarted -- such a
+      // shell holds the old shim in memory and reports the old version on every press.
+      print!("{}", output(&args.command, args.no_cache));
+      // Then repair for the next shell. The result is deliberately discarded: whether a
+      // write happened is of no interest to the shell, and a failure must stay silent.
+      if let Some(home) = home_dir() {
+        repair::repair_if_stale(&home, *shell, *shim_version);
+      }
+      ExitCode::SUCCESS
+    }
     other => {
       print!("{}", output(other, args.no_cache));
       ExitCode::SUCCESS
