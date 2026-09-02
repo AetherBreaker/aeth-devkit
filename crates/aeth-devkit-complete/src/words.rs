@@ -62,7 +62,11 @@ pub fn split_line(line: &str, point: usize) -> Split {
   if starting_new_word {
     // Nothing typed for the new word, so its index is one past everything parsed so far.
     let cword = parsed.len();
-    Split { words: parsed, cword, prefix: String::new() }
+    Split {
+      words: parsed,
+      cword,
+      prefix: String::new(),
+    }
   } else {
     // The last parsed token *is* the partially typed word. It stays in `words` so that
     // positional counting downstream sees the same shape in both branches, and `cword`
@@ -74,6 +78,10 @@ pub fn split_line(line: &str, point: usize) -> Split {
     if parsed.is_empty() {
       parsed.push(String::new());
     }
-    Split { words: parsed, cword, prefix }
+    Split {
+      words: parsed,
+      cword,
+      prefix,
+    }
   }
 }

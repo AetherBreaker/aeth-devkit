@@ -378,7 +378,11 @@ fn task_arg_items(req: &Request, parsed: &parse::Parsed, args: &[TaskArg]) -> Di
       .filter(|(o, _)| o.starts_with(&req.prefix) && !used.contains(&o.as_str()))
       .map(|(o, a)| {
         // poe renders a blank help as a single space; fall back to something useful.
-        let tooltip = if a.help.trim().is_empty() { format!("Option: {o}") } else { a.help.clone() };
+        let tooltip = if a.help.trim().is_empty() {
+          format!("Option: {o}")
+        } else {
+          a.help.clone()
+        };
         Item::plain(o, &tooltip, ItemKind::Param)
       })
       .collect();

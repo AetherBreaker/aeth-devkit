@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use aeth_devkit_complete::install::{
-  FileAction, POWERSHELL_LINE, bash_file_action, install_bash, install_powershell, patch_profile, powershell_profile, powershell_shim_path,
+  FileAction, POWERSHELL_LINE, bash_file_action, install_bash, install_powershell, patch_profile, powershell_profile,
+  powershell_shim_path,
 };
 use aeth_devkit_core::process::RecordingRunner;
 
@@ -68,7 +69,6 @@ fn bash_file_decisions() {
 }
 
 // ---- PATH check ----------------------------------------------------------------------------
-
 
 // ---- $PROFILE lookup -----------------------------------------------------------------------
 
@@ -193,7 +193,10 @@ fn migration_leaves_a_comment_mentioning_the_old_command_alone() {
   // note the user wrote, not a command the shell would run. $PROFILE is user-owned config.
   let before = "# old way: devkit complete script --powershell | Out-String | Invoke-Expression\n";
   let (text, log) = patch_profile(Some(before));
-  assert!(text.contains("# old way: devkit complete script"), "the user's comment must survive: {text}");
+  assert!(
+    text.contains("# old way: devkit complete script"),
+    "the user's comment must survive: {text}"
+  );
   assert!(
     !log.iter().any(|l| l.contains("removed")),
     "nothing should be reported as removed: {log:?}"
@@ -207,5 +210,8 @@ fn migration_still_removes_the_real_command_with_a_call_operator() {
   let before = "& devkit complete script --powershell | Out-String | Invoke-Expression\n";
   let (text, log) = patch_profile(Some(before));
   assert!(!text.contains("Invoke-Expression"), "{text}");
-  assert!(log.iter().any(|l| l.contains("removed the previous devkit registration")), "{log:?}");
+  assert!(
+    log.iter().any(|l| l.contains("removed the previous devkit registration")),
+    "{log:?}"
+  );
 }
