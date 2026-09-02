@@ -1,6 +1,6 @@
 [project]
   name            = "aeth-devkit"
-  version         = "8.1.0"
+  version         = "8.2.0"
   description     = "Personal project-maintenance toolkit: poe tasks plus the devkit CLI"
   readme          = "README.md"
   requires-python = ">=3.14"
