@@ -10,6 +10,7 @@ pub mod cache;
 pub mod engine;
 pub mod format;
 pub mod install;
+pub mod parse;
 pub mod resolve;
 pub mod scripts;
 pub mod words;
