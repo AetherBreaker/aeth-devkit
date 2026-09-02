@@ -622,7 +622,7 @@ Query {
   #[arg(long)] point: Option<usize>,
   #[arg(long)] cword: Option<usize>,
   #[arg(long)] word_to_complete: Option<String>,
-  #[arg(trailing_var_arg = true)] words: Vec<String>,
+  #[arg(trailing_var_arg = true, allow_hyphen_values = true)] words: Vec<String>,
 }
 ```
 
@@ -787,7 +787,7 @@ Register-ArgumentCompleter -CommandName poe -Native -ScriptBlock {
         if ($cursorPosition -ge $e.StartOffset -and $cursorPosition -le $e.EndOffset) { $cword = $i; break }
     }
     $texts = @($els | ForEach-Object { $_.Extent.Text })
-    $out = & $dk.Source complete query --shell powershell --shim-version 1 --cword $cword --word-to-complete $wordToComplete -- @texts 2>$null
+    $out = & $dk.Source complete query --shell powershell --shim-version 1 --cword $cword --word-to-complete=$wordToComplete -- @texts 2>$null
     if (-not $out) { return }
     $lines = @($out -split "`r?`n" | Where-Object { $_ -ne '' })
     if ($lines.Count -eq 0) { return }

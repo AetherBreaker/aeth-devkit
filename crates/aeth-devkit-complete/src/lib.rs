@@ -7,6 +7,7 @@
 //! natively for TOML and cached for `include_script`.
 
 pub mod cache;
+pub mod engine;
 pub mod format;
 pub mod install;
 pub mod resolve;
