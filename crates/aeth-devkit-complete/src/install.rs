@@ -61,7 +61,13 @@ pub fn patch_profile(original: Option<&str>) -> (String, Vec<String>) {
       continue;
     }
     // Migration: an earlier devkit put a line here that shelled out at every shell start.
-    if t.contains(OLD_DEVKIT_POWERSHELL_LINE) {
+    //
+    // `starts_with` on the normalised form, not `contains` on the raw line: a `contains`
+    // would also match a line that merely mentions the command -- a commented-out note or
+    // an instruction in the user's own profile -- and silently delete it. `drop` has
+    // already stripped a leading `&` and lowercased, so both call-operator and
+    // differently-cased spellings still match.
+    if drop.starts_with(OLD_DEVKIT_POWERSHELL_LINE) {
       log.push(format!("removed the previous devkit registration: {t}"));
       continue;
     }

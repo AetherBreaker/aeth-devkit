@@ -186,3 +186,26 @@ fn install_bash_dry_run_writes_nothing() {
   assert!(!log.is_empty());
   assert!(!target.exists());
 }
+
+#[test]
+fn migration_leaves_a_comment_mentioning_the_old_command_alone() {
+  // A `contains` match would delete this line: it mentions the old registration but is a
+  // note the user wrote, not a command the shell would run. $PROFILE is user-owned config.
+  let before = "# old way: devkit complete script --powershell | Out-String | Invoke-Expression\n";
+  let (text, log) = patch_profile(Some(before));
+  assert!(text.contains("# old way: devkit complete script"), "the user's comment must survive: {text}");
+  assert!(
+    !log.iter().any(|l| l.contains("removed")),
+    "nothing should be reported as removed: {log:?}"
+  );
+}
+
+#[test]
+fn migration_still_removes_the_real_command_with_a_call_operator() {
+  // `& devkit complete script ...` is an actual invocation, and `drop` strips the leading
+  // `&` before matching, so it is still caught.
+  let before = "& devkit complete script --powershell | Out-String | Invoke-Expression\n";
+  let (text, log) = patch_profile(Some(before));
+  assert!(!text.contains("Invoke-Expression"), "{text}");
+  assert!(log.iter().any(|l| l.contains("removed the previous devkit registration")), "{log:?}");
+}

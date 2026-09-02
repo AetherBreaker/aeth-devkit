@@ -1,7 +1,7 @@
 # poe completion: thin shim design
 
 Date: 2026-09-01
-Status: approved design, not yet implemented
+Status: implemented (PR #8)
 Supersedes the shell-heavy half of the original poe-completion work in
 `crates/aeth-devkit-complete`.
 
@@ -56,11 +56,11 @@ One subcommand, shell-tagged, so both input shapes converge on one code path:
 
 ```sh
 # bash - raw line, split on the Rust side
-devkit complete query --shell bash --shim-version 1 \
+devkit complete query --shell bash --shim-version <SHIM_VERSION> \
   --line "$COMP_LINE" --point "$COMP_POINT"
 
 # PowerShell - already-parsed elements, no splitting needed
-devkit complete query --shell powershell --shim-version 1 \
+devkit complete query --shell powershell --shim-version <SHIM_VERSION> \
   --cword N -- <elements...>
 ```
 
@@ -96,6 +96,9 @@ items
 build<TAB>build<TAB>Compile the crate<TAB>command
 --mode<TAB>--mode<TAB>Build profile<TAB>param
 ```
+
+The requests above show the version symbolically: it is `scripts::SHIM_VERSION`, which
+bumps whenever shim text changes, so pinning a literal here would go stale.
 
 The header is exactly one of `items`, `dirs` or `files`; the latter two are the
 file-completion sentinel and carry no item lines. The header carries **no version** — the
