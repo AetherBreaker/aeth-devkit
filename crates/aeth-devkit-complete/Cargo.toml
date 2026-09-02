@@ -16,6 +16,7 @@
   anyhow           = { workspace = true }
   clap             = { workspace = true }
   serde            = { workspace = true, features = ["derive"] }
+  shell-words      = { workspace = true }
   serde_json       = { workspace = true }
   toml_edit        = { workspace = true }
 

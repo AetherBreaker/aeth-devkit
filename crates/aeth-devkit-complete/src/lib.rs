@@ -12,6 +12,7 @@ pub mod format;
 pub mod install;
 pub mod resolve;
 pub mod scripts;
+pub mod words;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
