@@ -260,6 +260,14 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   }
 
   check_interrupt(deps)?;
+  // Runs of an earlier release of this tag (removed in pre-flight) still exist, and
+  // `gh run list` would hand back the newest of them before the new one starts; step 8
+  // waits for a run that is not in this list.
+  let known = if plan.no_wait {
+    Vec::new()
+  } else {
+    crate::ci::list_runs(deps.runner, root, &tag)?
+  };
   println!("[7/8] Creating GitHub release {tag}...");
   // No files: the release workflow attaches the artefacts it builds.
   let mut args: Vec<String> = vec!["release".into(), "create".into(), tag.clone(), "--title".into(), tag.clone()];
@@ -300,7 +308,7 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   // no artefacts is exactly the state the completeness check exists to reject, so it is
   // better rolled back than left for a later `devkit release` to trip over.
   println!("[8/8] Waiting for the release workflow...");
-  let run_url = crate::ci::wait_for_run(deps, root, &tag, &mut std::thread::sleep)?;
+  let run_url = crate::ci::wait_for_run(deps, root, &tag, &known, &mut std::thread::sleep)?;
   crate::ci::verify_published(deps, root, plan.cfg, new)?;
   println!("  workflow succeeded: {run_url}");
   Ok(release_url)

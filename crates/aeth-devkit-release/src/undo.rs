@@ -93,7 +93,7 @@ impl Undo {
       Undo::ForcePushBranch { branch, bump_sha, pre_sha } => {
         format!("git push --force-with-lease={branch}:{bump_sha} origin {pre_sha}:refs/heads/{branch}")
       }
-      Undo::DeleteGithubRelease(t) => format!("gh release delete {t} --yes --cleanup-tag"),
+      Undo::DeleteGithubRelease(t) => format!("gh release delete {t} --yes"),
     }
   }
 
@@ -118,11 +118,11 @@ impl Undo {
       Undo::DeleteLocalTag(t) => git::delete_tag(root, t),
       Undo::DeleteRemoteTag { tag, expected } => git::delete_remote_tag_leased(deps.runner, root, tag, expected),
       Undo::ForcePushBranch { branch, bump_sha, pre_sha } => git::force_push_with_lease(deps.runner, root, branch, bump_sha, pre_sha),
+      // No `--cleanup-tag`: that would delete the remote tag with no lease, ahead of the
+      // `DeleteRemoteTag` entry whose lease is what keeps a tag another publisher pushed
+      // during the (now minutes-long) CI wait out of reach.
       Undo::DeleteGithubRelease(t) => {
-        let args: Vec<String> = ["release", "delete", t, "--yes", "--cleanup-tag"]
-          .iter()
-          .map(|s| s.to_string())
-          .collect();
+        let args: Vec<String> = ["release", "delete", t, "--yes"].iter().map(|s| s.to_string()).collect();
         let out = deps.runner.run_capture("gh", &args, root)?;
         if out.success() {
           Ok(())
@@ -237,7 +237,7 @@ mod tests {
     let failures = unwind(journal, &deps, root);
     assert_eq!(failures.len(), 1);
     assert!(failures[0].what.contains("GitHub release"));
-    assert!(failures[0].manual.contains("gh release delete v2 --yes --cleanup-tag"));
+    assert_eq!(failures[0].manual, "gh release delete v2 --yes");
     let git_calls = runner.calls_for("git");
     assert_eq!(
       git_calls[0],

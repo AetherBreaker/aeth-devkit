@@ -11,8 +11,9 @@ concurrency:
   group: release-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
+# Read-only by default; only the publish job may write (attach assets to the release).
 permissions:
-  contents: write
+  contents: read
 
 env:
   TAG: ${{ github.event.release.tag_name }}
@@ -20,15 +21,17 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # setup-project: if-no-publish-index
     permissions:
       contents: write
+      # setup-project: if-no-publish-index
       id-token: write
-    # setup-project: end
+      # setup-project: end
     steps:
+      # The build backend runs project code; do not leave the token in .git/config for it.
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@v5
 

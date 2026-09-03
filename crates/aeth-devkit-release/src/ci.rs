@@ -27,9 +27,12 @@ fn s(args: &[&str]) -> Vec<String> {
   args.iter().map(|a| a.to_string()).collect()
 }
 
-/// The id of the release workflow run triggered by `tag`, once it exists. For a `release`
-/// event `gh` reports the tag as the run's head branch, which is what selects it.
-pub fn find_run(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Option<String>> {
+/// Ids of every release workflow run for `tag`, newest first. For a `release` event `gh`
+/// reports the tag as the run's head branch, which is what selects them. Runs of an
+/// earlier, since-deleted release of the same tag are included — deleting a release does
+/// not delete its runs — which is why callers snapshot this list before creating the
+/// release and wait for an id that was not in it.
+pub fn list_runs(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Vec<String>> {
   let jq = format!(".[] | select(.headBranch == \"{tag}\") | .databaseId");
   let args = s(&[
     "run",
@@ -47,18 +50,27 @@ pub fn find_run(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Option<St
   if !out.success() {
     bail!("gh run list failed: {}", out.stderr.trim());
   }
-  Ok(out.stdout.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string))
+  Ok(
+    out
+      .stdout
+      .lines()
+      .map(str::trim)
+      .filter(|l| !l.is_empty())
+      .map(str::to_string)
+      .collect(),
+  )
 }
 
-/// Poll until the run exists (bounded by [`RUN_START_TIMEOUT`]), then `gh run watch` it to
-/// completion with inherited stdio so the user sees the job progress. Returns the run URL.
+/// Poll until a run not in `known` (the ids [`list_runs`] returned before the release was
+/// created) exists, bounded by [`RUN_START_TIMEOUT`], then `gh run watch` it to completion
+/// with inherited stdio so the user sees the job progress. Returns the run URL.
 ///
 /// `sleep` is injected so tests can count the waits instead of serving them.
-pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, sleep: &mut dyn FnMut(Duration)) -> Result<String> {
+pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, known: &[String], sleep: &mut dyn FnMut(Duration)) -> Result<String> {
   let mut waited = Duration::ZERO;
   let id = loop {
     deps.check_interrupt()?;
-    if let Some(id) = find_run(deps.runner, root, tag)? {
+    if let Some(id) = list_runs(deps.runner, root, tag)?.into_iter().find(|id| !known.contains(id)) {
       break id;
     }
     if waited >= RUN_START_TIMEOUT {
@@ -181,9 +193,9 @@ mod tests {
   }
 
   #[test]
-  fn find_run_selects_the_run_for_the_tag() {
+  fn list_runs_selects_the_runs_for_the_tag() {
     let r = scripted();
-    assert_eq!(find_run(&r, Path::new("."), "v1.2.3").unwrap().as_deref(), Some("123456"));
+    assert_eq!(list_runs(&r, Path::new("."), "v1.2.3").unwrap(), vec!["123456"]);
     let call = &r.calls_for("gh")[0];
     assert_eq!(
       call[..6].to_vec(),
@@ -191,9 +203,32 @@ mod tests {
     );
     assert!(call.iter().any(|a| a.contains(r#"select(.headBranch == "v1.2.3")"#)), "{call:?}");
     let empty = RecordingRunner::new(0);
-    assert_eq!(find_run(&empty, Path::new("."), "v1.2.3").unwrap(), None);
+    assert!(list_runs(&empty, Path::new("."), "v1.2.3").unwrap().is_empty());
     let broken = RecordingRunner::new(1);
-    assert!(find_run(&broken, Path::new("."), "v1.2.3").is_err());
+    assert!(list_runs(&broken, Path::new("."), "v1.2.3").is_err());
+  }
+
+  #[test]
+  fn runs_that_existed_before_the_release_are_not_the_new_one() {
+    // Newest first, as `gh run list` prints: the re-release's run 777 sits above the
+    // earlier release's 123456, which is still there because deleting a release keeps its runs.
+    let r = RecordingRunner::new(0);
+    r.script("gh", &["run", "list"], 0, "777\n123456\n");
+    r.script("gh", &["run", "view"], 0, "https://github.com/o/r/actions/runs/777\n");
+    let index = StubIndexClient { versions: vec![] };
+    let flag = AtomicBool::new(false);
+    let d = deps(&r, &index, &flag);
+    let known = vec!["123456".to_string()];
+    let url = wait_for_run(&d, Path::new("."), "v1.2.3", &known, &mut |_| {}).unwrap();
+    assert!(url.ends_with("/777"), "{url}");
+    assert!(r.calls_for("gh").iter().any(|c| c == &["run", "watch", "777", "--exit-status"]));
+    // Only the old run exists: keep waiting rather than watch it.
+    let stale = RecordingRunner::new(0);
+    stale.script("gh", &["run", "list"], 0, "123456\n");
+    let d = deps(&stale, &index, &flag);
+    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &known, &mut |_| {}).unwrap_err();
+    assert!(err.to_string().contains("no release workflow run"), "{err}");
+    assert!(stale.calls_for("gh").iter().all(|c| c[1] != "watch"));
   }
 
   #[test]
@@ -207,7 +242,7 @@ mod tests {
     let flag = AtomicBool::new(false);
     let d = deps(&late, &index, &flag);
     let mut slept = Vec::new();
-    let url = wait_for_run(&d, Path::new("."), "v1.2.3", &mut |dur| slept.push(dur)).unwrap();
+    let url = wait_for_run(&d, Path::new("."), "v1.2.3", &[], &mut |dur| slept.push(dur)).unwrap();
     assert_eq!(url, "https://github.com/o/r/actions/runs/123456");
     assert_eq!(slept, vec![POLL_INTERVAL, POLL_INTERVAL]);
     let gh = late.inner.calls_for("gh");
@@ -221,7 +256,7 @@ mod tests {
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
     let d = deps(&r, &index, &flag);
-    assert_eq!(wait_for_run(&d, Path::new("."), "v1.2.3", &mut |_| {}).unwrap(), "run 123456");
+    assert_eq!(wait_for_run(&d, Path::new("."), "v1.2.3", &[], &mut |_| {}).unwrap(), "run 123456");
   }
 
   #[test]
@@ -231,7 +266,7 @@ mod tests {
     let flag = AtomicBool::new(false);
     let d = deps(&r, &index, &flag);
     let mut total = Duration::ZERO;
-    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &mut |dur| total += dur).unwrap_err();
+    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[], &mut |dur| total += dur).unwrap_err();
     assert!(err.to_string().contains("no release workflow run for v1.2.3"), "{err}");
     assert!(total >= RUN_START_TIMEOUT, "{total:?}");
     assert!(r.calls_for("gh").iter().all(|c| c[1] != "watch"));
@@ -244,7 +279,7 @@ mod tests {
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
     let d = deps(&r, &index, &flag);
-    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &mut |_| {}).unwrap_err();
+    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[], &mut |_| {}).unwrap_err();
     assert!(err.to_string().contains("run 123456 failed"), "{err}");
   }
 
@@ -254,7 +289,7 @@ mod tests {
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(true);
     let d = deps(&r, &index, &flag);
-    assert!(wait_for_run(&d, Path::new("."), "v1", &mut |_| {}).is_err());
+    assert!(wait_for_run(&d, Path::new("."), "v1", &[], &mut |_| {}).is_err());
     assert!(r.calls_for("gh").is_empty());
   }
 

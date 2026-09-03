@@ -13,8 +13,10 @@ concurrency:
   group: release-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
+# Read-only by default; only the publish job may write (attach assets to the release).
+# The build jobs run project and dependency code, which must not hold a write token.
 permissions:
-  contents: write
+  contents: read
 
 env:
   TAG: ${{ github.event.release.tag_name }}
@@ -36,6 +38,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -68,6 +71,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -85,10 +89,13 @@ jobs:
   publish:
     needs: [build, sdist]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@v5
 

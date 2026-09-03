@@ -6,6 +6,8 @@
 //! the state of the repository afterwards. For rollback tests, "state afterwards" must be
 //! byte-for-byte what it was before.
 
+use std::cell::Cell;
+use std::ops::Deref;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
@@ -13,7 +15,7 @@ use std::sync::atomic::AtomicBool;
 use aeth_devkit_core::devpi::StubDevpiClient;
 use aeth_devkit_core::git;
 use aeth_devkit_core::index::StubIndexClient;
-use aeth_devkit_core::process::RecordingRunner;
+use aeth_devkit_core::process::{CapturedOutput, RecordingRunner, Runner};
 use aeth_devkit_release::prompt::ScriptedPrompt;
 use aeth_devkit_release::{Args, Deps, run};
 
@@ -26,11 +28,46 @@ const WORKFLOW: &str = ".github/workflows/release.yml";
 /// the `World` is dropped.
 struct World {
   dir: tempfile::TempDir,
-  runner: RecordingRunner,
+  runner: SeqRunner,
   devpi: StubDevpiClient,
   index: StubIndexClient,
   prompt: ScriptedPrompt,
   flag: AtomicBool,
+}
+
+/// A `RecordingRunner` whose `gh run list --workflow …` answers empty until `gh release
+/// create` has been called: the release's run cannot exist before the release does, and
+/// step 8 must be seen to wait for a *new* run rather than adopt one scripted up front.
+/// `Deref` keeps `w.runner.script(…)` / `calls_for(…)` working on the inner recorder.
+struct SeqRunner {
+  inner: RecordingRunner,
+  released: Cell<bool>,
+}
+
+impl Deref for SeqRunner {
+  type Target = RecordingRunner;
+  fn deref(&self) -> &RecordingRunner {
+    &self.inner
+  }
+}
+
+impl Runner for SeqRunner {
+  fn run_inherit_env(&self, program: &str, args: &[String], cwd: &Path, env: &[(&str, &str)]) -> anyhow::Result<Option<i32>> {
+    self.inner.run_inherit_env(program, args, cwd, env)
+  }
+  fn run_capture(&self, program: &str, args: &[String], cwd: &Path) -> anyhow::Result<CapturedOutput> {
+    if program == "gh" && starts(args, &["release", "create"]) {
+      self.released.set(true);
+    }
+    if program == "gh" && starts(args, &["run", "list", "--workflow"]) && !self.released.get() {
+      self.inner.run_capture(program, args, cwd)?; // recorded, answered empty
+      return Ok(CapturedOutput {
+        code: Some(0),
+        ..Default::default()
+      });
+    }
+    self.inner.run_capture(program, args, cwd)
+  }
 }
 
 /// Fake environment: only the two credential variables exist.
@@ -81,7 +118,10 @@ impl World {
     runner.script("uv", &["version", "--bump", "patch", "--dry-run"], 0, "demo 1.0.0 => 1.0.1\n");
     Self {
       dir,
-      runner,
+      runner: SeqRunner {
+        inner: runner,
+        released: Cell::new(false),
+      },
       devpi: StubDevpiClient::new(false),
       // What the workflow published: both candidate versions, so the post-CI check passes.
       index: StubIndexClient {
@@ -184,7 +224,11 @@ fn bump_mode_happy_path() {
   assert!(create.contains(&"--generate-notes".to_string()));
   // No files on the command line: `gh release create <tag> --title <tag> --generate-notes`.
   assert_eq!(create.len(), 6, "{create:?}");
-  // Step 8: the run the release triggered was watched to completion.
+  // Step 8: the runs for the tag were listed before the release was created (so an old
+  // run of a re-released tag is never mistaken for the new one), then the new run watched.
+  let listed_at = gh.iter().position(|c| starts(c, &["run", "list", "--workflow"])).unwrap();
+  let created_at = gh.iter().position(|c| starts(c, &["release", "create"])).unwrap();
+  assert!(listed_at < created_at, "{gh:?}");
   assert!(gh.iter().any(|c| c == &["run", "watch", "123456", "--exit-status"]), "{gh:?}");
   let st = w.state();
   assert_ne!(st.head, before);
