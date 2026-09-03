@@ -30,7 +30,7 @@ carries `"private": true` and the workflow has no `vsce publish` step.
 `vscode-extension/` in the devkit repo, TypeScript, bundled with esbuild (no `tsc`
 output shipped; `vscode` API typings via `@types/vscode`):
 
-```
+```text
 vscode-extension/
   package.json          # name aeth-devkit, publisher aeth, private: true, version 0.0.0
   tsconfig.json
@@ -161,15 +161,18 @@ one-line `waiting for VS Code (Ctrl-C to fall back to the terminal prompt)…`.
    `Apply accepted (n of m)` · `Replace all` (only when offered) · `Keep file`.
 3. The `editor/content` button (or title icons) offers `Replace file` / `Keep file`.
 4. A decision writes the response and closes the diff tab. Closing the tab without a
-   decision (tracked via `window.tabGroups.onDidChangeTabs`) writes `keep`.
+   decision (tracked via `window.tabGroups.onDidChangeTabs`) writes `dismissed`, which
+   the CLI answers by asking the terminal prompt for that file; the next file opens in
+   VS Code again.
 
 ### Response
 
 ```json
-{ "decision": "replace" | "replace_all" | "keep" | "partial", "text": "…" }
+{ "decision": "replace" | "replace_all" | "keep" | "partial" | "dismissed", "text": "…" }
 ```
 
-`partial` carries the proposed document with rejected hunks reverted to the current
+`dismissed` is not a decision: the CLI falls back to the terminal prompt for that file
+only. `partial` carries the proposed document with rejected hunks reverted to the current
 text, computed by the extension from the hunk table; the CLI writes it verbatim. Every
 decision maps onto the Docker design's existing outcomes: `replace_all` stops further
 prompting for the run; `partial` is a replace whose content is the returned text.
