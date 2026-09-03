@@ -12,6 +12,7 @@ use std::sync::atomic::AtomicBool;
 
 use aeth_devkit_core::devpi::StubDevpiClient;
 use aeth_devkit_core::git;
+use aeth_devkit_core::index::StubIndexClient;
 use aeth_devkit_core::process::RecordingRunner;
 use aeth_devkit_release::prompt::ScriptedPrompt;
 use aeth_devkit_release::{Args, Deps, run};
@@ -26,6 +27,7 @@ struct World {
   dir: tempfile::TempDir,
   runner: RecordingRunner,
   devpi: StubDevpiClient,
+  index: StubIndexClient,
   prompt: ScriptedPrompt,
   flag: AtomicBool,
 }
@@ -66,6 +68,7 @@ impl World {
       dir,
       runner,
       devpi: StubDevpiClient::new(false),
+      index: StubIndexClient { versions: vec![] },
       prompt: ScriptedPrompt::new(answers),
       flag: AtomicBool::new(false),
     }
@@ -80,6 +83,7 @@ impl World {
     Deps {
       runner: &self.runner,
       devpi: &self.devpi,
+      index: &self.index,
       prompt: &self.prompt,
       env: &env,
       interrupted: &self.flag,

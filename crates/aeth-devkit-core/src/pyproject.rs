@@ -23,6 +23,16 @@ pub fn normalize_dist_name(name: &str) -> String {
   out
 }
 
+/// The `<KEY>` in uv's `UV_INDEX_<KEY>_USERNAME` / `_PASSWORD`: the index name upper-cased
+/// with `-` mapped to `_`. Shared by the release command (which reads those variables) and
+/// the release workflow template (whose repository secrets are named the same way).
+pub fn index_env_key(index_name: &str) -> String {
+  index_name
+    .chars()
+    .map(|c| if c == '-' { '_' } else { c.to_ascii_uppercase() })
+    .collect()
+}
+
 /// Distribution name at the start of a PEP 508 requirement string, normalized.
 pub fn requirement_name(spec: &str) -> String {
   let end = spec
@@ -379,6 +389,12 @@ mod tests {
   url         = "https://pypi.example.com/user/internal/+simple"
   publish-url = "https://pypi.example.com/user/internal/"
 "#;
+
+  #[test]
+  fn index_env_key_follows_uv_convention() {
+    assert_eq!(index_env_key("SFTPyPI"), "SFTPYPI");
+    assert_eq!(index_env_key("my-index"), "MY_INDEX");
+  }
 
   #[test]
   fn reads_project_name() {
