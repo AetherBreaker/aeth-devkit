@@ -80,26 +80,26 @@ pub fn devpi_url(publish_url: &str, package: &str, version: &str) -> String {
 /// `std::env::var` call so tests can supply variables without touching the real process
 /// environment, which is shared between test threads and therefore racy to mutate.
 ///
-/// `--index` must name an index with a `publish-url`; without the flag, one publish index
-/// selects it, none selects PyPI, and several is an error (the workflow publishes to one
-/// place, and guessing which would be wrong half the time).
+/// One publish index selects it, none selects PyPI, and several is an error even when
+/// `--index` names one of them: the rendered workflow, not this flag, decides where CI
+/// publishes, and setup-project refuses to render one for such a project. `--index` must
+/// name that sole index, and it must carry a `publish-url`.
 pub fn resolve(doc: &DocumentMut, index: Option<&str>, env: &dyn Fn(&str) -> Option<String>) -> Result<Config> {
   let package = pyproject::project_name(doc)?;
   let all = pyproject::publish_indexes(doc)?;
+  if all.len() > 1 {
+    bail!(
+      "several indexes have a publish-url ({}); the release workflow can publish to only one",
+      all.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", ")
+    );
+  }
   let chosen = match index {
     Some(want) => {
       // `publish_index` produces the precise "no such index" / "no publish-url" errors.
       let named = pyproject::publish_index(doc, Some(want))?;
       all.into_iter().find(|i| i.name == named.name)
     }
-    None => match all.len() {
-      0 => None,
-      1 => all.into_iter().next(),
-      _ => bail!(
-        "several indexes have a publish-url ({}); pass --index",
-        all.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", ")
-      ),
-    },
+    None => all.into_iter().next(),
   };
   let Some(idx) = chosen else {
     return Ok(Config {
@@ -224,8 +224,10 @@ mod tests {
         .parse()
         .unwrap();
     let e = resolve(&doc, None, &env).unwrap_err().to_string();
-    assert!(e.contains("SFTPyPI, B") && e.contains("--index"), "{e}");
-    assert_eq!(resolve(&doc, Some("B"), &|_| Some("x".into())).unwrap().target.label(), "B");
+    assert!(e.contains("SFTPyPI, B"), "{e}");
+    // `--index` cannot pick one: CI publishes where the rendered workflow says, not here.
+    let e = resolve(&doc, Some("B"), &|_| Some("x".into())).unwrap_err().to_string();
+    assert!(e.contains("SFTPyPI, B"), "{e}");
   }
 
   #[test]

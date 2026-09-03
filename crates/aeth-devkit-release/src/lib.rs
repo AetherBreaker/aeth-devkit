@@ -64,7 +64,8 @@ pub struct Args {
   #[arg(long)]
   pub dry_run: bool,
 
-  /// `[[tool.uv.index]]` to publish to (default: the one with a publish-url, or PyPI when there is none).
+  /// The `[[tool.uv.index]]` the workflow publishes to; it must be the sole one with a publish-url
+  /// (default: that index, or PyPI when there is none).
   #[arg(long)]
   pub index: Option<String>,
 

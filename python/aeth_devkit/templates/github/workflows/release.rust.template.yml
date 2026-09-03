@@ -15,6 +15,8 @@ concurrency:
 
 # Read-only by default; only the publish job may write (attach assets to the release).
 # The build jobs run project and dependency code, which must not hold a write token.
+# Every checkout uses `github.sha`, the commit the release's tag pointed at when the
+# event fired: the tag itself could be moved while a job is queued.
 permissions:
   contents: read
 
@@ -37,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
@@ -70,7 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@stable
@@ -97,7 +99,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: astral-sh/setup-uv@v5
