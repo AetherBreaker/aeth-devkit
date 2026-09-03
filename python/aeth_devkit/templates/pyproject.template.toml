@@ -183,6 +183,12 @@
     [tool.ruff.lint.pydocstyle]
       convention = "google"
 
+    [tool.ruff.lint.per-file-ignores]
+      # No missing-docstring rules in tests: a test's name is its summary, and test docstrings
+      # read to agents as statements of intent that were never reviewed. D2xx+ still apply to
+      # docstrings a test does have.
+      "tests/**" = ["D1"]
+
     [tool.ruff.lint.isort]
       combine-as-imports = true
       known-first-party  = ["{package}"]
