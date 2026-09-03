@@ -100,6 +100,8 @@ pub struct Deps<'a> {
   pub env: &'a dyn Fn(&str) -> Option<String>,
   /// Set by the Ctrl-C handler; checked between steps.
   pub interrupted: &'a AtomicBool,
+  /// How step 8 waits between polls; tests pass a recorder instead of `thread::sleep`.
+  pub sleep: &'a dyn Fn(std::time::Duration),
 }
 
 impl Deps<'_> {
@@ -163,8 +165,9 @@ pub fn run_outcome(args: &Args, deps: &Deps) -> Result<Outcome> {
 
   // --- Pre-flight: nothing below this line mutates anything until `steps::execute`. ---
   preflight::check_tools(deps.runner, &root)?;
-  preflight::check_workflow_committed(&root)?;
   let branch = preflight::check_branch(deps.runner, &root)?;
+  // After `check_branch`, which fetched: the tag-only case compares against `origin/main`.
+  preflight::check_workflow_committed(&root, parsed.bumps.is_empty())?;
   // `cfg` above came from the *worktree* pyproject.toml; a release builds from `HEAD`'s
   // copy, so the two must agree on everything release-critical (hard error, exit 2).
   preflight::check_config_committed(&root, &cfg, args.index.as_deref(), deps.env)?;
@@ -272,6 +275,7 @@ pub fn run_outcome_real(args: &Args) -> Result<Outcome> {
       prompt: &prompt::StdinPrompt,
       env: &env,
       interrupted: &INTERRUPTED,
+      sleep: &|d| std::thread::sleep(d),
     },
   )
 }

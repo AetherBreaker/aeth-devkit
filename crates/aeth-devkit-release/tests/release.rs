@@ -95,6 +95,8 @@ impl World {
       "init",
     )
     .unwrap();
+    // The remote's view of main, as a fetch would have left it: everything is pushed.
+    git_out(root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
     let runner = RecordingRunner::new(0);
     // Remote-flavoured git answers: an upstream exists, we are on main, not behind, and
     // the remote has no tag for the target version.
@@ -145,6 +147,7 @@ impl World {
       prompt: &self.prompt,
       env: &env,
       interrupted: &self.flag,
+      sleep: &|_| {},
     }
   }
 
@@ -337,6 +340,21 @@ fn missing_workflow_file_is_refused_before_anything() {
 }
 
 #[test]
+fn tag_only_release_needs_the_workflow_on_origin_main() {
+  let w = World::new(&[]);
+  let root = w.root();
+  // A workflow edit committed locally but not pushed: main is ahead of origin/main.
+  write_file(root, WORKFLOW, "name: Release\nedited: true\n");
+  git::commit_paths(root, &[WORKFLOW.into()], "wf").unwrap();
+  let before = w.state();
+  let err = run(&w.args(&[]), &w.deps()).unwrap_err().to_string();
+  assert!(err.contains("origin/main") && err.contains("push main first"), "{err}");
+  assert_eq!(w.state(), before);
+  // A bump release pushes main with the tag, so the same tree releases fine.
+  assert!(ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+}
+
+#[test]
 fn github_failure_unwinds_everything_with_lease() {
   let w = World::new(&[]);
   // `create` fails, and the follow-up `view` confirms nothing was created.
@@ -458,6 +476,10 @@ fn gh_view_errors_other_than_not_found_abort_preflight() {
   assert!(err.contains("gh release view"), "{err}");
   assert_eq!(w.state(), before);
   assert!(w.runner.calls_for("uv").iter().all(|c| c[0] != "lock"));
+}
+
+fn write_file(root: &Path, rel: &str, content: &str) {
+  std::fs::write(root.join(rel), content).unwrap();
 }
 
 /// `git <args>` in the repo, stdout trimmed. For the assertions that need raw git.

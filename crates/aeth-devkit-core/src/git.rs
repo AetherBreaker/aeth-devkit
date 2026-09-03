@@ -242,7 +242,13 @@ pub fn index_entries(root: &Path, paths: &[String]) -> Result<Vec<IndexEntry>> {
 
 /// The bytes of `path` as committed in `HEAD`, or `None` if `HEAD` has no such file.
 pub fn head_blob(root: &Path, path: &str) -> Result<Option<Vec<u8>>> {
-  let spec = format!("HEAD:{path}");
+  blob_at(root, "HEAD", path)
+}
+
+/// The bytes of `path` as committed in `rev` (a ref or sha), or `None` if that revision
+/// has no such file — or does not exist at all, e.g. `origin/main` with no remote.
+pub fn blob_at(root: &Path, rev: &str, path: &str) -> Result<Option<Vec<u8>>> {
+  let spec = format!("{rev}:{path}");
   // `rev-parse -q --verify` exits non-zero (quietly) when the path is not in the tree.
   let out = capture(root, &["rev-parse", "-q", "--verify", &spec])?;
   if !out.success() {
