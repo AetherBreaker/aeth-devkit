@@ -1,6 +1,6 @@
 //! Looking up published versions on a PEP 503 / PEP 691 simple index.
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -10,6 +10,9 @@ pub const PEP691_JSON: &str = "application/vnd.pypi.simple.v1+json";
 
 /// Something that can list the versions published for a package.
 pub trait IndexClient {
+  /// Every version the index lists for `package`. A project page that does not exist yet
+  /// (PyPI before the first upload, devpi for a never-published name) is an empty list,
+  /// not an error — a first release must be able to pass the "already exists?" probe.
   fn versions(&self, simple_url: &str, package: &str) -> Result<Vec<String>>;
 }
 
@@ -89,12 +92,22 @@ impl HttpIndexClient {
 impl IndexClient for HttpIndexClient {
   fn versions(&self, simple_url: &str, package: &str) -> Result<Vec<String>> {
     let url = project_url(simple_url, package);
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(self.timeout).build().into();
+    // 4xx/5xx come back as responses (not errors) so the 404 below can be told apart.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+      .timeout_global(self.timeout)
+      .http_status_as_error(false)
+      .build()
+      .into();
     let mut resp = agent
       .get(&url)
       .header("Accept", &format!("{PEP691_JSON}, text/html;q=0.1"))
       .call()
       .with_context(|| format!("fetching {url}"))?;
+    match resp.status().as_u16() {
+      200 => {}
+      404 => return Ok(Vec::new()),
+      s => bail!("unexpected HTTP {s} from GET {url}"),
+    }
     let content_type = resp
       .headers()
       .get("content-type")
