@@ -23,13 +23,15 @@ pub fn normalize_dist_name(name: &str) -> String {
   out
 }
 
-/// The `<KEY>` in uv's `UV_INDEX_<KEY>_USERNAME` / `_PASSWORD`: the index name upper-cased
-/// with `-` mapped to `_`. Shared by the release command (which reads those variables) and
-/// the release workflow template (whose repository secrets are named the same way).
+/// The `<KEY>` in uv's `UV_INDEX_<KEY>_USERNAME` / `_PASSWORD`: uv's own rule
+/// (`IndexName::to_env_var`) upper-cases ASCII alphanumerics and turns every other
+/// character (`-`, `_`, `.`) into `_`. Shared by the release command (which reads those
+/// variables) and the release workflow template (whose repository secrets are named the
+/// same way).
 pub fn index_env_key(index_name: &str) -> String {
   index_name
     .chars()
-    .map(|c| if c == '-' { '_' } else { c.to_ascii_uppercase() })
+    .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
     .collect()
 }
 
@@ -394,6 +396,7 @@ mod tests {
   fn index_env_key_follows_uv_convention() {
     assert_eq!(index_env_key("SFTPyPI"), "SFTPYPI");
     assert_eq!(index_env_key("my-index"), "MY_INDEX");
+    assert_eq!(index_env_key("company.prod"), "COMPANY_PROD");
   }
 
   #[test]
