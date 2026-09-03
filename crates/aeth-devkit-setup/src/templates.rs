@@ -32,7 +32,8 @@ pub fn template_file_name(target: &str) -> String {
 }
 
 /// Read a template (by its target name, e.g. `pyproject.toml`) and substitute
-/// `{project_root}` / `{package}`.
+/// `{project_root}` / `{package}` / `{python_dir}` / `{devkit_bin}` / `{publish_index}` /
+/// `{publish_index_key}`.
 pub fn load(templates_dir: &Path, name: &str, ctx: &ProjectContext, escape: Escape) -> Result<String> {
   let path = templates_dir.join(template_file_name(name));
   let text = std::fs::read_to_string(&path).with_context(|| format!("reading template {}", path.display()))?;
@@ -62,6 +63,42 @@ pub fn substitute(text: &str, ctx: &ProjectContext, escape: Escape) -> String {
     .replace("{package}", &esc(&ctx.package))
     .replace("{python_dir}", &esc(&ctx.python_dir))
     .replace("{devkit_bin}", &esc(&devkit_bin(&ctx.root)))
+    .replace("{publish_index}", &esc(ctx.publish_index.as_deref().unwrap_or("")))
+    .replace(
+      "{publish_index_key}",
+      &esc(
+        &ctx
+          .publish_index
+          .as_deref()
+          .map(aeth_devkit_core::pyproject::index_env_key)
+          .unwrap_or_default(),
+      ),
+    )
+}
+
+/// Block markers for line-based templates (YAML): `# setup-project: if-publish-index` …
+/// `# setup-project: end` survives only when the project has a publish index,
+/// `# setup-project: if-no-publish-index` … `# setup-project: end` only when it has none.
+/// Marker lines are dropped either way. Markers may be indented; the lines inside keep
+/// their own indentation, so a block can sit anywhere in the document.
+pub fn gate_publish_index(text: &str, has_publish_index: bool) -> String {
+  let mut out = String::with_capacity(text.len());
+  // `Some(keep)` while inside a block, saying whether its lines are emitted.
+  let mut block: Option<bool> = None;
+  for line in text.lines() {
+    match line.trim().strip_prefix("# setup-project: ") {
+      Some("if-publish-index") => block = Some(has_publish_index),
+      Some("if-no-publish-index") => block = Some(!has_publish_index),
+      Some("end") => block = None,
+      _ => {
+        if block.unwrap_or(true) {
+          out.push_str(line);
+          out.push('\n');
+        }
+      }
+    }
+  }
+  out
 }
 
 /// How a hook should invoke `devkit`: the venv's own console script when one exists
@@ -161,6 +198,7 @@ mod devkit_bin_tests {
       has_docker: false,
       python_dir: "src".into(),
       has_rust: false,
+      publish_index: None,
     }
   }
 
@@ -181,5 +219,43 @@ mod devkit_bin_tests {
     std::fs::write(bin.join("devkit"), "").unwrap();
     let out = substitute(r#""cmd": "{devkit_bin} hook x""#, &ctx(dir.path()), Escape::Json);
     assert_eq!(out, r#""cmd": "\"$CLAUDE_PROJECT_DIR/.venv/bin/devkit\" hook x""#);
+  }
+}
+
+#[cfg(test)]
+mod publish_index_tests {
+  use super::*;
+  use std::collections::HashSet;
+
+  fn ctx(publish_index: Option<&str>) -> ProjectContext {
+    ProjectContext {
+      root: std::path::PathBuf::from("/p"),
+      package: "proj".into(),
+      dependencies: HashSet::new(),
+      has_docker: false,
+      python_dir: "src".into(),
+      has_rust: false,
+      publish_index: publish_index.map(str::to_string),
+    }
+  }
+
+  #[test]
+  fn publish_index_placeholders() {
+    let out = substitute("{publish_index} {publish_index_key}", &ctx(Some("my-index")), Escape::None);
+    assert_eq!(out, "my-index MY_INDEX");
+    assert_eq!(substitute("[{publish_index}]", &ctx(None), Escape::None), "[]");
+  }
+
+  const GATED: &str = "a\n# setup-project: if-publish-index\nidx1\n  # setup-project: end\nb\n  # setup-project: if-no-publish-index\n  pypi\n  # setup-project: end\nc\n";
+
+  #[test]
+  fn gate_keeps_exactly_one_variant_and_no_markers() {
+    assert_eq!(gate_publish_index(GATED, true), "a\nidx1\nb\nc\n");
+    assert_eq!(gate_publish_index(GATED, false), "a\nb\n  pypi\nc\n");
+  }
+
+  #[test]
+  fn gate_leaves_unmarked_text_alone() {
+    assert_eq!(gate_publish_index("x\n  y\n", true), "x\n  y\n");
   }
 }

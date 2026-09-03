@@ -194,6 +194,7 @@ mod tests {
       has_docker: false,
       python_dir: "src".into(),
       has_rust: false,
+      publish_index: None,
     }
   }
 

@@ -21,6 +21,9 @@ pub struct ProjectContext {
   pub python_dir: String,
   /// Whether the project also contains a Rust crate (`Cargo.toml` at the root).
   pub has_rust: bool,
+  /// Name of the sole `[[tool.uv.index]]` with a `publish-url`, which the release workflow
+  /// publishes to; `None` means PyPI via trusted publishing.
+  pub publish_index: Option<String>,
 }
 
 impl ProjectContext {
@@ -42,6 +45,17 @@ impl ProjectContext {
       .unwrap_or_else(|| root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
 
     let has_rust = root.join("Cargo.toml").is_file();
+    // The workflow publishes to exactly one place; with several candidates any choice is
+    // wrong half the time, so it is a configuration error rather than a guess.
+    let publish = aeth_devkit_core::pyproject::publish_indexes(&doc)?;
+    let publish_index = match publish.as_slice() {
+      [] => None,
+      [one] => Some(one.name.clone()),
+      many => bail!(
+        "several [[tool.uv.index]] entries have a publish-url ({}); the release workflow can publish to only one",
+        many.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", ")
+      ),
+    };
     let python_dir = if find_package_in(&root.join("python")).is_some() {
       "python"
     } else {
@@ -87,6 +101,7 @@ impl ProjectContext {
       has_docker,
       python_dir,
       has_rust,
+      publish_index,
     })
   }
 
@@ -219,5 +234,42 @@ mod docker_detection {
       let dir = project(files);
       assert!(!ProjectContext::discover(dir.path()).unwrap().has_docker, "{files:?}");
     }
+  }
+}
+
+#[cfg(test)]
+mod publish_index_detection {
+  use super::*;
+
+  fn project(pyproject: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("pyproject.toml"), pyproject).unwrap();
+    dir
+  }
+
+  #[test]
+  fn the_sole_publish_index_is_named() {
+    let dir = project(
+      "[project]\nname = \"p\"\n\n[[tool.uv.index]]\nname = \"Ro\"\nurl = \"https://x/+simple\"\n\n[[tool.uv.index]]\nname = \"SFTPyPI\"\nurl = \"https://y/+simple\"\npublish-url = \"https://y/\"\n",
+    );
+    assert_eq!(
+      ProjectContext::discover(dir.path()).unwrap().publish_index.as_deref(),
+      Some("SFTPyPI")
+    );
+  }
+
+  #[test]
+  fn no_publish_index_is_none() {
+    let dir = project("[project]\nname = \"p\"\n\n[[tool.uv.index]]\nname = \"Ro\"\nurl = \"https://x/+simple\"\n");
+    assert_eq!(ProjectContext::discover(dir.path()).unwrap().publish_index, None);
+  }
+
+  #[test]
+  fn several_publish_indexes_is_an_error() {
+    let dir = project(
+      "[project]\nname = \"p\"\n\n[[tool.uv.index]]\nname = \"A\"\nurl = \"https://a/+simple\"\npublish-url = \"https://a/\"\n\n[[tool.uv.index]]\nname = \"B\"\nurl = \"https://b/+simple\"\npublish-url = \"https://b/\"\n",
+    );
+    let err = ProjectContext::discover(dir.path()).unwrap_err().to_string();
+    assert!(err.contains("A, B"), "{err}");
   }
 }
