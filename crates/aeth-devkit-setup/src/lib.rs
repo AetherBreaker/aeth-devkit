@@ -132,7 +132,8 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
 
   // 10. Create-if-missing files: `.claude/CLAUDE.md` (the project's hook for Claude-only
   //     text; the shared content is one `@../AGENTS.md` import away) and the Claude GitHub
-  //     workflow (a project may have customized it; a routine run must not revert that).
+  //     workflow (a project may have customized it; a routine run must not revert that —
+  //     the release workflow below is the opposite case).
   for (rel, template_name) in [
     (".claude/CLAUDE.md", "claude/CLAUDE.md"),
     (".github/workflows/claude.yml", "github/workflows/claude.yml"),
@@ -143,6 +144,50 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
     }
     let template = templates::load(templates_dir, template_name, &ctx, templates::Escape::None)?;
     changes.record_optional(&path, None, &template, vec!["created from template".into()])?;
+  }
+
+  // 10b. The release workflow is devkit-owned, unlike `claude.yml`: nothing in it is
+  //      project-specific beyond the placeholders, so drift is replaced and reported. The
+  //      one manual step — credentials — is announced the first time the file is installed.
+  {
+    let path = ctx.root.join(".github").join("workflows").join("release.yml");
+    let template_name = if ctx.has_rust {
+      "github/workflows/release.rust.yml"
+    } else {
+      "github/workflows/release.yml"
+    };
+    let raw = templates::load(templates_dir, template_name, &ctx, templates::Escape::None)?;
+    let rendered = templates::gate_publish_index(&raw, ctx.publish_index.is_some());
+    let original = read_optional(&path)?;
+    let first_install = original.is_none();
+    changes.record_optional(
+      &path,
+      original.as_deref(),
+      &rendered,
+      vec!["replaced with the devkit release workflow".into()],
+    )?;
+    if first_install {
+      changes.notes.push(match &ctx.publish_index {
+        Some(name) => {
+          let key = aeth_devkit_core::pyproject::index_env_key(name);
+          format!(
+            "the release workflow publishes to {name}; add the repository secrets UV_INDEX_{key}_USERNAME and \
+             UV_INDEX_{key}_PASSWORD (gh secret set <NAME>) before the first `devkit release`."
+          )
+        }
+        None => {
+          let repo = git::is_git_tracked(&ctx.root)
+            .then(|| aeth_devkit_core::git::origin_url(&ctx.root).ok().flatten())
+            .flatten()
+            .and_then(|u| aeth_devkit_core::github::github_repo_path(&u))
+            .unwrap_or_else(|| "<owner>/<repo>".into());
+          format!(
+            "the release workflow publishes to PyPI with trusted publishing; register {repo} with workflow file name \
+             release.yml as a trusted publisher at https://pypi.org/manage/account/publishing/ before the first `devkit release`."
+          )
+        }
+      });
+    }
   }
 
   // 11. Claude settings, in two halves. `settings.json` is shared and committed; everything

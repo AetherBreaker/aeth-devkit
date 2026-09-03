@@ -659,3 +659,80 @@ fn commit_works_when_the_caller_spells_the_root_differently() {
   let hash = aeth_devkit_setup::git::commit_changes(&odd_root, &changes, &mut bases).unwrap();
   assert!(hash.is_some(), "a differently-spelled root must still commit the managed files");
 }
+
+#[test]
+fn release_workflow_is_installed_and_replaced_on_drift() {
+  let dir = make_project();
+  let root = dir.path();
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let wf = read(root, ".github/workflows/release.yml");
+  // The fixture is a pure-Python project with one publish index (SFTPyPI).
+  assert!(wf.contains("uv publish --index SFTPyPI dist/*"), "{wf}");
+  assert!(wf.contains("secrets.UV_INDEX_SFTPYPI_USERNAME"), "{wf}");
+  assert!(!wf.contains("trusted-publishing") && !wf.contains("id-token"), "{wf}");
+  assert!(!wf.contains("setup-project:"), "markers leaked:\n{wf}");
+  assert!(!wf.contains("maturin"), "pure-Python project got the Rust variant:\n{wf}");
+  assert!(
+    changes
+      .notes
+      .iter()
+      .any(|n| n.contains("UV_INDEX_SFTPYPI_USERNAME") && n.contains("UV_INDEX_SFTPYPI_PASSWORD")),
+    "{:?}",
+    changes.notes
+  );
+
+  // Devkit-owned: a hand edit is put back, and it counts as a change (so `--check` fails).
+  write(root, ".github/workflows/release.yml", "name: mine\n");
+  let changes = aeth_devkit_setup::run(root, &templates(), true).unwrap();
+  assert!(changes.files.iter().any(|f| f.path.ends_with("release.yml")), "{:?}", changes.files);
+  assert_eq!(
+    read(root, ".github/workflows/release.yml"),
+    "name: mine\n",
+    "dry run must not write"
+  );
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  assert_eq!(read(root, ".github/workflows/release.yml"), wf);
+  // The secrets note is for the first install only.
+  let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  assert!(again.notes.iter().all(|n| !n.contains("UV_INDEX_")), "{:?}", again.notes);
+}
+
+#[test]
+fn release_workflow_uses_pypi_when_no_index_publishes() {
+  let dir = make_project();
+  let root = dir.path();
+  let py = read(root, "pyproject.toml").replace("publish-url", "x-publish-url");
+  write(root, "pyproject.toml", &py);
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let wf = read(root, ".github/workflows/release.yml");
+  assert!(wf.contains("uv publish --trusted-publishing always dist/*"), "{wf}");
+  assert!(wf.contains("id-token: write"), "{wf}");
+  assert!(!wf.contains("uv publish --index") && !wf.contains("setup-project:"), "{wf}");
+  assert!(
+    changes
+      .notes
+      .iter()
+      .any(|n| n.contains("trusted publisher") && n.contains("release.yml")),
+    "{:?}",
+    changes.notes
+  );
+}
+
+#[test]
+fn rust_projects_get_the_maturin_matrix_workflow() {
+  let dir = make_project();
+  let root = dir.path();
+  write(root, "Cargo.toml", "[package]\nname = \"x\"\nversion = \"0.1.0\"\n");
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let wf = read(root, ".github/workflows/release.yml");
+  assert!(wf.contains("PyO3/maturin-action@v1"), "{wf}");
+  assert!(
+    wf.contains("x86_64-pc-windows-msvc") && wf.contains("x86_64-unknown-linux-gnu"),
+    "{wf}"
+  );
+  assert!(wf.contains("needs: [build, sdist]"), "{wf}");
+  assert!(
+    wf.contains("uv publish --index SFTPyPI dist/*") && !wf.contains("setup-project:"),
+    "{wf}"
+  );
+}
