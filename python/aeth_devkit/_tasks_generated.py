@@ -14,14 +14,15 @@ _PLACEHOLDER = "@@AETH_DEVKIT_SCRIPTS@@"
 
 _RAW = {'env': {},
  'envfile': [],
- 'tasks': {'release': {'help': 'Bump version, commit, tag, build, and publish to GitHub and the package '
-                               'index. Pass one or more bump types as free positional args; valid values: '
-                               'major, minor, patch, stable, alpha, beta, rc, post, dev. To include release '
-                               'notes, append a multi-word string as the final arg (single-word trailing '
-                               'args are treated as a typo and raise an error). Omit all bump types to '
-                               'publish the current version without bumping. Pass --force / -f to skip the '
-                               'confirmation prompts; --dry-run to only print the plan. Examples: poe '
-                               "release patch | poe release major alpha | poe release minor 'first minor "
+ 'tasks': {'release': {'help': 'Bump version, commit, tag, push, create the GitHub release, then wait for '
+                               'the release workflow to build and publish. Pass one or more bump types as '
+                               'free positional args; valid values: major, minor, patch, stable, alpha, '
+                               'beta, rc, post, dev. To include release notes, append a multi-word string as '
+                               'the final arg (single-word trailing args are treated as a typo and raise an '
+                               'error). Omit all bump types to publish the current version without bumping. '
+                               'Pass --force / -f to skip the confirmation prompts; --dry-run to only print '
+                               'the plan. --no-wait returns as soon as the GitHub release exists. Examples: '
+                               "poe release patch | poe release major alpha | poe release minor 'first minor "
                                "release' | poe release 'publish notes'",
                        'envfile': '.env',
                        'cmd': 'devkit release $POE_EXTRA_ARGS'},

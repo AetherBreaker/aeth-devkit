@@ -36,8 +36,9 @@ design exists. Check items off in place; delete them once released.
 ## Release / packaging
 
 - [ ] Release 7.0.0 (`aeth-devkit`), then migrate downstream projects per README.
-- [ ] Linux wheel (`maturin build --target x86_64-unknown-linux-musl --zig`) if `aeth-devkit`
-      is ever installed outside Windows dev machines.
+- [ ] Docker standardization (`docs/superpowers/specs/2026-09-03-docker-standardization-design.md`)
+      extends the Rust release workflow's matrix with the container binary; the VS Code
+      extension design adds a `vsix` job.
 - [ ] Fix system-level `init.defaultBranch = master` in
       `C:\Program Files\Git\etc\gitconfig` (needs an elevated shell; user config already
       overrides it to `main`).
