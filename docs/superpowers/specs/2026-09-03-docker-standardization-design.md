@@ -2,7 +2,10 @@
 
 Status: draft for review. Depends on
 [the CI release workflow design](2026-09-03-ci-release-workflow-design.md): the container
-binary is a release asset that workflow builds.
+binary is a release asset that workflow builds. The consent prompts here are
+terminal-only and complete on their own;
+[the VS Code extension design](2026-09-03-vscode-extension-design.md) layers an in-editor
+flow on top of them later.
 
 ## Goal
 
