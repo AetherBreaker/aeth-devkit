@@ -19,7 +19,11 @@ pub const WORKFLOW_FILE: &str = ".github/workflows/release.yml";
 /// starts one within seconds; two minutes covers a queue backlog without hiding a workflow
 /// that is never going to start (file missing on the default branch, Actions disabled).
 pub const RUN_START_TIMEOUT: Duration = Duration::from_secs(120);
-/// Spacing between `gh run list` polls.
+/// How long a green run's upload may take to show on the index before the release is
+/// declared failed. PyPI's CDN and devpi both lag a little behind an upload, and a single
+/// request can hit a transient 5xx; neither is a reason to roll a published release back.
+pub const VERIFY_TIMEOUT: Duration = Duration::from_secs(120);
+/// Spacing between polls, for the run start and for the index.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// `&["a", "b"]` → `vec!["a".to_string(), "b".to_string()]`, for the `Runner` API.
@@ -64,9 +68,7 @@ pub fn list_runs(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Vec<Stri
 /// Poll until a run not in `known` (the ids [`list_runs`] returned before the release was
 /// created) exists, bounded by [`RUN_START_TIMEOUT`], then `gh run watch` it to completion
 /// with inherited stdio so the user sees the job progress. Returns the run URL.
-///
-/// `sleep` is injected so tests can count the waits instead of serving them.
-pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, known: &[String], sleep: &mut dyn FnMut(Duration)) -> Result<String> {
+pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, known: &[String]) -> Result<String> {
   let mut waited = Duration::ZERO;
   let id = loop {
     deps.check_interrupt()?;
@@ -79,7 +81,7 @@ pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, known: &[String], sleep
         RUN_START_TIMEOUT.as_secs()
       );
     }
-    sleep(POLL_INTERVAL);
+    (deps.sleep)(POLL_INTERVAL);
     waited += POLL_INTERVAL;
   };
   println!("  run {id} started; watching...");
@@ -104,18 +106,34 @@ pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, known: &[String], sleep
 /// A green run is not the same as an installable release: the version must be listed on
 /// the publish target and the GitHub release must still exist. This is the rule
 /// `docker-pin` applies before pinning, checked here so `Released` means what it says.
+///
+/// The index is polled for up to [`VERIFY_TIMEOUT`]: a request error or an absent version
+/// right after the upload is propagation, not failure, and the rollback this gates is
+/// destructive (for PyPI it cannot even undo the upload).
 pub fn verify_published(deps: &Deps, root: &Path, cfg: &Config, version: &str) -> Result<()> {
   let want = parse_lenient(version).with_context(|| format!("{version} is not a PEP 440 version"))?;
-  let versions = deps
-    .index
-    .versions(cfg.target.simple_url(), &cfg.package)
-    .with_context(|| format!("querying {}", cfg.target.label()))?;
-  if !contains(versions.iter().map(String::as_str), &want) {
-    bail!(
-      "the release workflow succeeded but {}=={version} is not on {}; inspect the publish job's log",
-      cfg.package,
-      cfg.target.label()
-    );
+  let mut waited = Duration::ZERO;
+  loop {
+    deps.check_interrupt()?;
+    let last_error = match deps.index.versions(cfg.target.simple_url(), &cfg.package) {
+      Ok(versions) if contains(versions.iter().map(String::as_str), &want) => break,
+      Ok(_) => None,
+      Err(e) => Some(e),
+    };
+    if waited >= VERIFY_TIMEOUT {
+      let why = match last_error {
+        Some(e) => format!("the last query failed: {e:#}"),
+        None => "the index does not list it".into(),
+      };
+      bail!(
+        "the release workflow succeeded but {}=={version} is not on {} after {}s ({why}); inspect the publish job's log",
+        cfg.package,
+        cfg.target.label(),
+        VERIFY_TIMEOUT.as_secs()
+      );
+    }
+    (deps.sleep)(POLL_INTERVAL);
+    waited += POLL_INTERVAL;
   }
   if !github::release_exists(deps.runner, root, &format!("v{version}"))? {
     bail!("v{version} has no GitHub release any more; it was deleted while the workflow ran");
@@ -134,11 +152,11 @@ pub fn actions_url(root: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::cell::Cell;
+  use std::cell::{Cell, RefCell};
   use std::sync::atomic::AtomicBool;
 
   use aeth_devkit_core::devpi::StubDevpiClient;
-  use aeth_devkit_core::index::StubIndexClient;
+  use aeth_devkit_core::index::{IndexClient, StubIndexClient};
   use aeth_devkit_core::process::{CapturedOutput, RecordingRunner};
 
   use crate::config::PublishTarget;
@@ -171,14 +189,38 @@ mod tests {
     }
   }
 
+  /// An index that errors for the first `failures` queries and lists nothing for the next
+  /// `empty` ones before finally listing `versions` — propagation, as a release sees it.
+  struct SlowIndex {
+    failures: usize,
+    empty: usize,
+    versions: Vec<String>,
+    queries: Cell<usize>,
+  }
+
+  impl IndexClient for SlowIndex {
+    fn versions(&self, _simple_url: &str, _package: &str) -> Result<Vec<String>> {
+      let n = self.queries.get();
+      self.queries.set(n + 1);
+      if n < self.failures {
+        bail!("HTTP 502");
+      }
+      if n < self.failures.saturating_add(self.empty) {
+        return Ok(Vec::new());
+      }
+      Ok(self.versions.clone())
+    }
+  }
+
   fn scripted() -> RecordingRunner {
     let r = RecordingRunner::new(0);
     r.script("gh", &["run", "list"], 0, "123456\n");
     r.script("gh", &["run", "view"], 0, "https://github.com/o/r/actions/runs/123456\n");
+    r.script("gh", &["release", "view"], 0, "url\n");
     r
   }
 
-  fn deps<'a>(runner: &'a dyn Runner, index: &'a StubIndexClient, flag: &'a AtomicBool) -> Deps<'a> {
+  fn deps<'a>(runner: &'a dyn Runner, index: &'a dyn IndexClient, flag: &'a AtomicBool, sleep: &'a dyn Fn(Duration)) -> Deps<'a> {
     // Leaked stubs keep the test short; these tests own tiny amounts of memory.
     let devpi: &'static StubDevpiClient = Box::leak(Box::new(StubDevpiClient::new(false)));
     let prompt: &'static ScriptedPrompt = Box::leak(Box::new(ScriptedPrompt::new(&[])));
@@ -189,6 +231,16 @@ mod tests {
       prompt,
       env: &|_| None,
       interrupted: flag,
+      sleep,
+    }
+  }
+
+  const NO_SLEEP: &dyn Fn(Duration) = &|_| {};
+
+  fn cfg() -> Config {
+    Config {
+      package: "demo".into(),
+      target: PublishTarget::Pypi,
     }
   }
 
@@ -217,16 +269,16 @@ mod tests {
     r.script("gh", &["run", "view"], 0, "https://github.com/o/r/actions/runs/777\n");
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
-    let d = deps(&r, &index, &flag);
+    let d = deps(&r, &index, &flag, NO_SLEEP);
     let known = vec!["123456".to_string()];
-    let url = wait_for_run(&d, Path::new("."), "v1.2.3", &known, &mut |_| {}).unwrap();
+    let url = wait_for_run(&d, Path::new("."), "v1.2.3", &known).unwrap();
     assert!(url.ends_with("/777"), "{url}");
     assert!(r.calls_for("gh").iter().any(|c| c == &["run", "watch", "777", "--exit-status"]));
     // Only the old run exists: keep waiting rather than watch it.
     let stale = RecordingRunner::new(0);
     stale.script("gh", &["run", "list"], 0, "123456\n");
-    let d = deps(&stale, &index, &flag);
-    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &known, &mut |_| {}).unwrap_err();
+    let d = deps(&stale, &index, &flag, NO_SLEEP);
+    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &known).unwrap_err();
     assert!(err.to_string().contains("no release workflow run"), "{err}");
     assert!(stale.calls_for("gh").iter().all(|c| c[1] != "watch"));
   }
@@ -240,11 +292,12 @@ mod tests {
     };
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
-    let d = deps(&late, &index, &flag);
-    let mut slept = Vec::new();
-    let url = wait_for_run(&d, Path::new("."), "v1.2.3", &[], &mut |dur| slept.push(dur)).unwrap();
+    let slept = RefCell::new(Vec::new());
+    let sleep = |d| slept.borrow_mut().push(d);
+    let d = deps(&late, &index, &flag, &sleep);
+    let url = wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap();
     assert_eq!(url, "https://github.com/o/r/actions/runs/123456");
-    assert_eq!(slept, vec![POLL_INTERVAL, POLL_INTERVAL]);
+    assert_eq!(*slept.borrow(), vec![POLL_INTERVAL, POLL_INTERVAL]);
     let gh = late.inner.calls_for("gh");
     assert!(gh.iter().any(|c| c == &["run", "watch", "123456", "--exit-status"]), "{gh:?}");
   }
@@ -255,8 +308,8 @@ mod tests {
     r.script_err("gh", &["run", "view"], 1, "HTTP 502");
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
-    let d = deps(&r, &index, &flag);
-    assert_eq!(wait_for_run(&d, Path::new("."), "v1.2.3", &[], &mut |_| {}).unwrap(), "run 123456");
+    let d = deps(&r, &index, &flag, NO_SLEEP);
+    assert_eq!(wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap(), "run 123456");
   }
 
   #[test]
@@ -264,11 +317,12 @@ mod tests {
     let r = RecordingRunner::new(0); // `gh run list` always empty
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
-    let d = deps(&r, &index, &flag);
-    let mut total = Duration::ZERO;
-    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[], &mut |dur| total += dur).unwrap_err();
+    let total = Cell::new(Duration::ZERO);
+    let sleep = |d| total.set(total.get() + d);
+    let d = deps(&r, &index, &flag, &sleep);
+    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap_err();
     assert!(err.to_string().contains("no release workflow run for v1.2.3"), "{err}");
-    assert!(total >= RUN_START_TIMEOUT, "{total:?}");
+    assert!(total.get() >= RUN_START_TIMEOUT, "{:?}", total.get());
     assert!(r.calls_for("gh").iter().all(|c| c[1] != "watch"));
   }
 
@@ -278,8 +332,8 @@ mod tests {
     r.script("gh", &["run", "watch"], 1, "");
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
-    let d = deps(&r, &index, &flag);
-    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[], &mut |_| {}).unwrap_err();
+    let d = deps(&r, &index, &flag, NO_SLEEP);
+    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap_err();
     assert!(err.to_string().contains("run 123456 failed"), "{err}");
   }
 
@@ -288,30 +342,65 @@ mod tests {
     let r = RecordingRunner::new(0);
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(true);
-    let d = deps(&r, &index, &flag);
-    assert!(wait_for_run(&d, Path::new("."), "v1", &[], &mut |_| {}).is_err());
+    let d = deps(&r, &index, &flag, NO_SLEEP);
+    assert!(wait_for_run(&d, Path::new("."), "v1", &[]).is_err());
     assert!(r.calls_for("gh").is_empty());
   }
 
   #[test]
-  fn verify_requires_the_version_on_the_target_index_and_the_release() {
-    let r = RecordingRunner::new(0);
-    r.script("gh", &["release", "view"], 0, "url\n");
+  fn verify_waits_out_propagation_before_passing() {
+    let r = scripted();
     let flag = AtomicBool::new(false);
-    let cfg = Config {
-      package: "demo".into(),
-      target: PublishTarget::Pypi,
+    // Two transient errors, then two empty pages, then the version: a pass, after four
+    // polls' worth of sleeping.
+    let index = SlowIndex {
+      failures: 2,
+      empty: 2,
+      versions: vec!["1.0.0".into()],
+      queries: Cell::new(0),
     };
+    let slept = RefCell::new(Vec::new());
+    let sleep = |d| slept.borrow_mut().push(d);
+    let d = deps(&r, &index, &flag, &sleep);
+    verify_published(&d, Path::new("."), &cfg(), "1.0.0").unwrap();
+    assert_eq!(slept.borrow().len(), 4);
+    assert_eq!(index.queries.get(), 5);
+  }
+
+  #[test]
+  fn verify_fails_once_the_window_is_spent() {
+    let r = scripted();
+    let flag = AtomicBool::new(false);
+    let absent = StubIndexClient { versions: vec![] };
+    let total = Cell::new(Duration::ZERO);
+    let sleep = |d| total.set(total.get() + d);
+    let d = deps(&r, &absent, &flag, &sleep);
+    let err = verify_published(&d, Path::new("."), &cfg(), "1.0.0").unwrap_err();
+    assert!(err.to_string().contains("demo==1.0.0 is not on PyPI"), "{err}");
+    assert!(err.to_string().contains("does not list it"), "{err}");
+    assert!(total.get() >= VERIFY_TIMEOUT);
+    // A persistent request failure is reported as such, not as "not listed".
+    let broken = SlowIndex {
+      failures: usize::MAX,
+      empty: 0,
+      versions: vec![],
+      queries: Cell::new(0),
+    };
+    let d = deps(&r, &broken, &flag, NO_SLEEP);
+    let err = verify_published(&d, Path::new("."), &cfg(), "1.0.0").unwrap_err();
+    assert!(err.to_string().contains("HTTP 502"), "{err}");
+  }
+
+  #[test]
+  fn verify_requires_the_release_to_still_exist() {
     let present = StubIndexClient {
       versions: vec!["1.0.0".into()],
     };
-    assert!(verify_published(&deps(&r, &present, &flag), Path::new("."), &cfg, "1.0.0").is_ok());
-    let absent = StubIndexClient { versions: vec![] };
-    let err = verify_published(&deps(&r, &absent, &flag), Path::new("."), &cfg, "1.0.0").unwrap_err();
-    assert!(err.to_string().contains("demo==1.0.0 is not on PyPI"), "{err}");
+    let flag = AtomicBool::new(false);
     let no_release = RecordingRunner::new(0);
     no_release.script_err("gh", &["release", "view"], 1, "release not found");
-    let err = verify_published(&deps(&no_release, &present, &flag), Path::new("."), &cfg, "1.0.0").unwrap_err();
+    let d = deps(&no_release, &present, &flag, NO_SLEEP);
+    let err = verify_published(&d, Path::new("."), &cfg(), "1.0.0").unwrap_err();
     assert!(err.to_string().contains("no GitHub release"), "{err}");
   }
 }

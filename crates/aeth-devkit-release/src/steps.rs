@@ -308,7 +308,7 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   // no artefacts is exactly the state the completeness check exists to reject, so it is
   // better rolled back than left for a later `devkit release` to trip over.
   println!("[8/8] Waiting for the release workflow...");
-  let run_url = crate::ci::wait_for_run(deps, root, &tag, &known, &mut std::thread::sleep)?;
+  let run_url = crate::ci::wait_for_run(deps, root, &tag, &known)?;
   crate::ci::verify_published(deps, root, plan.cfg, new)?;
   println!("  workflow succeeded: {run_url}");
   Ok(release_url)

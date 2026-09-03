@@ -128,7 +128,8 @@ on the line.
   reproducible half (build every artefact on CI, attach it to the release, publish to the
   index). Nothing is built or published on the developer's machine.
 - **Pre-flight** - Read-only checks: git/uv/gh present and `gh` able to list workflow
-  runs; `.github/workflows/release.yml` committed at `HEAD`; on `main` with upstream,
+  runs; `.github/workflows/release.yml` committed at `HEAD` (and, for a tag-only release,
+  already identical on `origin/main`, where GitHub reads release workflows from); on `main` with upstream,
   fetched, not behind; release config committed and matching HEAD; `Cargo.toml` version in
   sync; no merge conflicts in managed files; target version computed via `uv version
   --dry-run`.
@@ -150,8 +151,9 @@ on the line.
   git's clean/smudge filters, so a `core.autocrlf` CRLF checkout is neither mistaken for
   an edit nor rewritten to LF) → annotated tag → one atomic `git push` of branch + tag →
   `gh release create` with the notes (or `--generate-notes`) and no files → wait for the
-  release workflow run (`gh run list` until it appears, up to 120 s, then `gh run watch
-  --exit-status`) and verify the version is on the publish target and the release still
+  release workflow run (`gh run list` until a run that did not exist before the release
+  appears, up to 120 s, then `gh run watch --exit-status`) and verify the version is on
+  the publish target (polling up to 120 s for index propagation) and the release still
   exists. `--no-wait` skips the last step and prints the workflow's Actions URL.
 - **Rollback** - On any failure or Ctrl-C — a failed or missing workflow run included —
   the journal is walked backwards (restore files, soft-reset the commit, delete tag /

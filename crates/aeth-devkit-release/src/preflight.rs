@@ -68,15 +68,26 @@ pub fn check_tools(runner: &dyn Runner, root: &Path) -> Result<()> {
 /// The release workflow must be committed: the GitHub release created in step 7 is only a
 /// trigger, and without the workflow nothing would build or publish. Checked at `HEAD`
 /// rather than on disk because the tag points at `HEAD`'s tree.
-pub fn check_workflow_committed(root: &Path) -> Result<()> {
-  if git::head_blob(root, crate::ci::WORKFLOW_FILE)?.is_some() {
-    Ok(())
-  } else {
+///
+/// GitHub runs `release` workflows from the *default branch*, not from the tag. A bump
+/// release pushes `main` together with the tag, so `HEAD`'s copy is what runs. A tag-only
+/// release pushes nothing but the tag while `main` may be ahead of `origin/main`, so for it
+/// the copy on `origin/main` (fresh from `check_branch`'s fetch) must already equal
+/// `HEAD`'s — otherwise the run would use a stale definition, or never start.
+pub fn check_workflow_committed(root: &Path, tag_only: bool) -> Result<()> {
+  let Some(head) = git::head_blob(root, crate::ci::WORKFLOW_FILE)? else {
     bail!(
       "{} is not committed; run `devkit setup-project` and commit the workflow first",
       crate::ci::WORKFLOW_FILE
-    )
+    );
+  };
+  if tag_only && git::blob_at(root, "origin/main", crate::ci::WORKFLOW_FILE)?.as_ref() != Some(&head) {
+    bail!(
+      "{} on origin/main differs from HEAD's copy; push main first — GitHub runs release workflows from the default branch, and a tag-only release pushes only the tag",
+      crate::ci::WORKFLOW_FILE
+    );
   }
+  Ok(())
 }
 
 /// The branch must be `main`, its upstream must be `origin/main` (the ref the release
@@ -449,14 +460,30 @@ mod tests {
     git::init_test_repo(root);
     std::fs::write(root.join("a"), "1").unwrap();
     git::commit_paths(root, &["a".into()], "init").unwrap();
-    let err = check_workflow_committed(root).unwrap_err().to_string();
+    let err = check_workflow_committed(root, false).unwrap_err().to_string();
     assert!(err.contains("release.yml is not committed"), "{err}");
     std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
     std::fs::write(root.join(".github/workflows/release.yml"), "name: Release\n").unwrap();
     // On disk only: still refused.
-    assert!(check_workflow_committed(root).is_err());
+    assert!(check_workflow_committed(root, false).is_err());
     git::commit_paths(root, &[".github/workflows/release.yml".into()], "wf").unwrap();
-    assert!(check_workflow_committed(root).is_ok());
+    assert!(check_workflow_committed(root, false).is_ok());
+    // Committed locally but not on origin/main: fine when bumping (main is pushed with the
+    // tag), refused for a tag-only release (only the tag is pushed).
+    let set_origin_main = |rev: &str| {
+      let ok = std::process::Command::new("git")
+        .args(["update-ref", "refs/remotes/origin/main", rev])
+        .current_dir(root)
+        .status()
+        .unwrap()
+        .success();
+      assert!(ok);
+    };
+    set_origin_main("HEAD~1");
+    let err = check_workflow_committed(root, true).unwrap_err().to_string();
+    assert!(err.contains("origin/main") && err.contains("push main first"), "{err}");
+    set_origin_main("HEAD");
+    assert!(check_workflow_committed(root, true).is_ok());
   }
 
   #[test]
@@ -489,6 +516,7 @@ mod tests {
       prompt: &prompt,
       env: &|_| None,
       interrupted: &flag,
+      sleep: &|_| {},
     };
     let cfg = Config {
       package: "demo".into(),

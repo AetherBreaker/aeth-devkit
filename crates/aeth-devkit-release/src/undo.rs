@@ -213,6 +213,7 @@ mod tests {
       prompt: &prompt,
       env: &|_| None,
       interrupted: &flag,
+      sleep: &|_| {},
     };
 
     let journal = vec![
@@ -289,6 +290,7 @@ mod tests {
       prompt: &prompt,
       env: &|_| None,
       interrupted: &flag,
+      sleep: &|_| {},
     };
     let failures = unwind(
       vec![Undo::ResetCommit {
