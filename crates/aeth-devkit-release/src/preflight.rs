@@ -37,7 +37,9 @@ fn s(args: &[&str]) -> Vec<String> {
   args.iter().map(|a| a.to_string()).collect()
 }
 
-/// `git`, `uv`, and `gh` must all answer `--version`.
+/// `git`, `uv`, and `gh` must all answer `--version`, and `gh` must be able to list
+/// workflow runs — the token needs the `workflow` scope for step 8, and finding that out
+/// after the release exists would mean a rollback for a login problem.
 pub fn check_tools(runner: &dyn Runner, root: &Path) -> Result<()> {
   // `filter` keeps the tools that *fail*; the closure maps a run error or a non-zero exit
   // to `false` via `map(…).unwrap_or(false)`, so any kind of trouble counts as missing.
@@ -50,10 +52,30 @@ pub fn check_tools(runner: &dyn Runner, root: &Path) -> Result<()> {
         .unwrap_or(false)
     })
     .collect();
-  if missing.is_empty() {
+  if !missing.is_empty() {
+    bail!("required tools not found on PATH: {}", missing.join(", "))
+  }
+  let runs = runner.run_capture("gh", &s(&["run", "list", "--limit", "1"]), root)?;
+  if !runs.success() {
+    bail!(
+      "gh cannot read workflow runs ({}); run `gh auth login` (or `gh auth refresh -s workflow`) first",
+      runs.stderr.trim()
+    );
+  }
+  Ok(())
+}
+
+/// The release workflow must be committed: the GitHub release created in step 7 is only a
+/// trigger, and without the workflow nothing would build or publish. Checked at `HEAD`
+/// rather than on disk because the tag points at `HEAD`'s tree.
+pub fn check_workflow_committed(root: &Path) -> Result<()> {
+  if git::head_blob(root, crate::ci::WORKFLOW_FILE)?.is_some() {
     Ok(())
   } else {
-    bail!("required tools not found on PATH: {}", missing.join(", "))
+    bail!(
+      "{} is not committed; run `devkit setup-project` and commit the workflow first",
+      crate::ci::WORKFLOW_FILE
+    )
   }
 }
 
@@ -407,6 +429,34 @@ mod tests {
     assert!(err.contains("current branch is feature"), "{err}");
     // Refused before any fetch: the only git calls are the two rev-parses.
     assert_eq!(r.calls_for("git").len(), 2);
+  }
+
+  #[test]
+  fn tools_check_requires_gh_to_list_runs() {
+    let r = RecordingRunner::new(0);
+    r.script_err("gh", &["run", "list"], 1, "HTTP 403: Resource not accessible");
+    let err = check_tools(&r, Path::new(".")).unwrap_err().to_string();
+    assert!(err.contains("cannot read workflow runs") && err.contains("403"), "{err}");
+    let ok = RecordingRunner::new(0);
+    assert!(check_tools(&ok, Path::new(".")).is_ok());
+    assert_eq!(ok.calls_for("gh").last().unwrap(), &["run", "list", "--limit", "1"]);
+  }
+
+  #[test]
+  fn workflow_must_be_committed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git::init_test_repo(root);
+    std::fs::write(root.join("a"), "1").unwrap();
+    git::commit_paths(root, &["a".into()], "init").unwrap();
+    let err = check_workflow_committed(root).unwrap_err().to_string();
+    assert!(err.contains("release.yml is not committed"), "{err}");
+    std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
+    std::fs::write(root.join(".github/workflows/release.yml"), "name: Release\n").unwrap();
+    // On disk only: still refused.
+    assert!(check_workflow_committed(root).is_err());
+    git::commit_paths(root, &[".github/workflows/release.yml".into()], "wf").unwrap();
+    assert!(check_workflow_committed(root).is_ok());
   }
 
   #[test]

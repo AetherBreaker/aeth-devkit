@@ -30,6 +30,7 @@ pub struct Plan<'a> {
   pub bumps: &'a [String],
   pub notes: Option<&'a str>,
   pub branch: &'a str,
+  pub no_wait: bool,
 }
 
 // `impl Plan<'_>`: the anonymous lifetime says "whatever lifetime the plan has", since the
@@ -70,6 +71,16 @@ pub fn describe(plan: &Plan) -> String {
     "  7. gh release create {tag} ({})\n",
     plan.notes.map_or("--generate-notes".to_string(), |n| format!("--notes {n:?}"))
   );
+  if plan.no_wait {
+    s += "  8. (skipped: --no-wait) wait for the release workflow\n";
+  } else {
+    s += &format!(
+      "  8. wait for the release workflow, then verify {}=={} on {}\n",
+      plan.cfg.package,
+      plan.target.new,
+      plan.cfg.target.label()
+    );
+  }
   s
 }
 
@@ -129,7 +140,7 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   let new = &plan.target.new;
 
   check_interrupt(deps)?;
-  println!("[1/7] Snapshotting files...");
+  println!("[1/8] Snapshotting files...");
   journal.push(Undo::RestoreFiles(snapshot::take(root)?));
 
   // Recorded before any commit so the rollback knows where the branch was.
@@ -140,7 +151,7 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   let mut bases = Vec::new();
   if plan.bumping() {
     check_interrupt(deps)?;
-    println!("[2/7] Bumping version to {new}...");
+    println!("[2/8] Bumping version to {new}...");
     bases = commit::stage_clean_base(root, &TRACKED)?;
     let mut args = vec!["version"];
     for b in plan.bumps {
@@ -155,13 +166,13 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
       run_ok(deps, root, "cargo", &["update", "--workspace", "--quiet"])?;
     }
     check_interrupt(deps)?;
-    println!("[3/7] uv lock...");
+    println!("[3/8] uv lock...");
     run_ok(deps, root, "uv", &["lock"])?;
   }
 
   if plan.bumping() {
     check_interrupt(deps)?;
-    println!("[4/7] Committing...");
+    println!("[4/8] Committing...");
     // A file the tools created during the run (say, a first `Cargo.lock`) has no base;
     // add one so it is committed as-is.
     commit::absorb_created(root, &TRACKED, &mut bases);
@@ -173,7 +184,7 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   }
 
   check_interrupt(deps)?;
-  println!("[5/7] Tagging {tag}...");
+  println!("[5/8] Tagging {tag}...");
   git::create_annotated_tag(root, &tag, &format!("Version {new}"))?;
   journal.push(Undo::DeleteLocalTag(tag.clone()));
   // The tag object's identity, recorded while it is unambiguously ours. Every remote-tag
@@ -182,7 +193,7 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   let tag_sha = git::tag_object_sha(root, &tag)?;
 
   check_interrupt(deps)?;
-  println!("[6/7] Pushing...");
+  println!("[6/8] Pushing...");
   // Shared by both failure paths below: after a failed push, did *our* tag land? Only a
   // remote tag whose object id equals `tag_sha` is ours — a same-named tag with another id
   // is a concurrent publisher's, and rollback must leave it. A probe error means we cannot
@@ -249,7 +260,7 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   }
 
   check_interrupt(deps)?;
-  println!("[7/7] Creating GitHub release {tag}...");
+  println!("[7/8] Creating GitHub release {tag}...");
   // No files: the release workflow attaches the artefacts it builds.
   let mut args: Vec<String> = vec!["release".into(), "create".into(), tag.clone(), "--title".into(), tag.clone()];
   match plan.notes {
@@ -273,6 +284,24 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
     }
     bail!("gh release create failed: {}{}", out.stdout.trim(), out.stderr.trim());
   }
-  journal.push(Undo::DeleteGithubRelease(tag));
-  Ok(out.stdout.trim().to_string())
+  journal.push(Undo::DeleteGithubRelease(tag.clone()));
+  let release_url = out.stdout.trim().to_string();
+
+  check_interrupt(deps)?;
+  if plan.no_wait {
+    println!(
+      "[8/8] Not waiting for the release workflow (--no-wait): {}",
+      crate::ci::actions_url(root).unwrap_or_else(|| "see the repository's Actions tab".into())
+    );
+    return Ok(release_url);
+  }
+  // A failed or missing run is a failed release: the journal is unwound like any other
+  // late failure (release deleted, tag and branch rewound under their leases). A tag with
+  // no artefacts is exactly the state the completeness check exists to reject, so it is
+  // better rolled back than left for a later `devkit release` to trip over.
+  println!("[8/8] Waiting for the release workflow...");
+  let run_url = crate::ci::wait_for_run(deps, root, &tag, &mut std::thread::sleep)?;
+  crate::ci::verify_published(deps, root, plan.cfg, new)?;
+  println!("  workflow succeeded: {run_url}");
+  Ok(release_url)
 }

@@ -1,21 +1,23 @@
-//! `devkit release` — bump, build, tag, publish, and create a GitHub release, rolling back
-//! on failure.
+//! `devkit release` — bump, tag, push, create a GitHub release, and wait for the release
+//! workflow to build and publish, rolling back on failure.
 //!
 //! The crate is split by responsibility so each piece can be read (and tested) alone:
 //!
 //! - [`args`]      — the positional bump/notes heuristic (pure);
+//! - [`ci`]        — waiting for the release workflow and verifying its output;
 //! - [`config`]    — which index, which credentials, which package;
 //! - [`prompt`]    — the typed-`force` confirmations;
 //! - [`preflight`] — read-only checks before anything is touched;
 //! - [`report`]    — the "what already exists" table;
 //! - [`snapshot`]  — byte-exact file backups for rollback;
-//! - [`steps`]     — the nine forward steps;
+//! - [`steps`]     — the forward steps;
 //! - [`undo`]      — the journal that reverses them.
 //!
 //! This file holds the CLI definition, the [`Deps`] bundle of injectable collaborators,
 //! and [`run`], which strings the modules together.
 
 pub mod args;
+pub mod ci;
 pub mod config;
 pub mod preflight;
 pub mod prompt;
@@ -66,6 +68,10 @@ pub struct Args {
   #[arg(long)]
   pub index: Option<String>,
 
+  /// Create the GitHub release and return without waiting for the release workflow.
+  #[arg(long)]
+  pub no_wait: bool,
+
   /// Bump types (major minor patch stable alpha beta rc post dev) followed by optional
   /// multi-word notes.
   // Only `///` doc comments become `--help` text; this `//` note is for readers of the code.
@@ -111,7 +117,8 @@ impl Deps<'_> {
 /// (`devkit release-and-pin` pins the compose file only after `Released`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-  /// The release completed; `version` is the released version (PEP 440, no `v`).
+  /// The release completed and (unless `--no-wait`) the workflow published it; `version` is
+  /// the released version (PEP 440, no `v`).
   Released { version: String },
   /// `--dry-run`: the plan was printed, nothing changed.
   DryRun,
@@ -155,6 +162,7 @@ pub fn run_outcome(args: &Args, deps: &Deps) -> Result<Outcome> {
 
   // --- Pre-flight: nothing below this line mutates anything until `steps::execute`. ---
   preflight::check_tools(deps.runner, &root)?;
+  preflight::check_workflow_committed(&root)?;
   let branch = preflight::check_branch(deps.runner, &root)?;
   // `cfg` above came from the *worktree* pyproject.toml; a release builds from `HEAD`'s
   // copy, so the two must agree on everything release-critical (hard error, exit 2).
@@ -207,6 +215,7 @@ pub fn run_outcome(args: &Args, deps: &Deps) -> Result<Outcome> {
     // `as_deref()` turns `Option<String>` into `Option<&str>` without moving.
     notes: parsed.notes.as_deref(),
     branch: &branch,
+    no_wait: args.no_wait,
   };
   if args.dry_run {
     print!("{}", steps::describe(&plan));
@@ -280,5 +289,7 @@ mod cli_tests {
     let a = Args::try_parse_from(["devkit-release", "--index", "Other", "major", "alpha"]).unwrap();
     assert_eq!(a.index.as_deref(), Some("Other"));
     assert_eq!(a.words, vec!["major", "alpha"]);
+    let a = Args::try_parse_from(["devkit-release", "patch", "--no-wait"]).unwrap();
+    assert!(a.no_wait);
   }
 }

@@ -19,6 +19,7 @@ use aeth_devkit_release::{Args, Deps, run};
 
 const PYPROJECT: &str = "[project]\nname = \"demo\"\nversion = \"1.0.0\"\n\n[[tool.uv.index]]\nname = \"Private\"\nurl = \"https://x/+simple\"\npublish-url = \"https://x/user/internal/\"\n";
 const CARGO: &str = "[workspace]\n  members = []\n\n[workspace.package]\n  version = \"1.0.0\"\n";
+const WORKFLOW: &str = ".github/workflows/release.yml";
 
 /// A temp repo plus every injectable collaborator, owned together so their lifetimes line
 /// up: `deps()` borrows from `self`, and the borrow checker guarantees nothing is used after
@@ -48,8 +49,15 @@ impl World {
     std::fs::write(root.join("pyproject.toml"), PYPROJECT).unwrap();
     std::fs::write(root.join("uv.lock"), "version = 1\n").unwrap();
     std::fs::write(root.join("Cargo.toml"), CARGO).unwrap();
+    std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
+    std::fs::write(root.join(WORKFLOW), "name: Release\n").unwrap();
     git::init_test_repo(root);
-    git::commit_paths(root, &["pyproject.toml".into(), "uv.lock".into(), "Cargo.toml".into()], "init").unwrap();
+    git::commit_paths(
+      root,
+      &["pyproject.toml".into(), "uv.lock".into(), "Cargo.toml".into(), WORKFLOW.into()],
+      "init",
+    )
+    .unwrap();
     let runner = RecordingRunner::new(0);
     // Remote-flavoured git answers: an upstream exists, we are on main, not behind, and
     // the remote has no tag for the target version.
@@ -57,9 +65,16 @@ impl World {
     runner.script("git", &["rev-parse", "--abbrev-ref", "HEAD"], 0, "main\n");
     runner.script("git", &["rev-list", "--count"], 0, "0\n");
     runner.script("git", &["ls-remote"], 0, "");
-    // No GitHub release exists (view fails); create succeeds and prints a URL.
-    runner.script_err("gh", &["release", "view"], 1, "release not found");
+    // The pre-flight probe (`release view <tag> --json …`) finds no release for either
+    // candidate tag; the post-workflow existence check (`release view <tag>`, no `--json`)
+    // finds the one step 7 created. Registered broad-first: newest registration wins.
+    runner.script("gh", &["release", "view"], 0, "https://github.com/o/demo/releases/tag/v1.0.1\n");
+    runner.script_err("gh", &["release", "view", "v1.0.1", "--json"], 1, "release not found");
+    runner.script_err("gh", &["release", "view", "v1.0.0", "--json"], 1, "release not found");
     runner.script("gh", &["release", "create"], 0, "https://github.com/o/demo/releases/tag/v1.0.1\n");
+    // The release workflow: one run exists at once, `gh run watch` succeeds (default exit 0).
+    runner.script("gh", &["run", "list", "--workflow"], 0, "123456\n");
+    runner.script("gh", &["run", "view"], 0, "https://github.com/o/demo/actions/runs/123456\n");
     // Matching is newest-registration-wins, so the broad `uv version` answer goes first and
     // the more specific `--bump … --dry-run` answer overrides it for that call.
     runner.script("uv", &["version"], 0, "demo 1.0.0\n");
@@ -68,7 +83,10 @@ impl World {
       dir,
       runner,
       devpi: StubDevpiClient::new(false),
-      index: StubIndexClient { versions: vec![] },
+      // What the workflow published: both candidate versions, so the post-CI check passes.
+      index: StubIndexClient {
+        versions: vec!["1.0.0".into(), "1.0.1".into()],
+      },
       prompt: ScriptedPrompt::new(answers),
       flag: AtomicBool::new(false),
     }
@@ -96,6 +114,7 @@ impl World {
       force: false,
       dry_run: false,
       index: None,
+      no_wait: false,
       words: words.iter().map(|s| s.to_string()).collect(),
     }
   }
@@ -165,6 +184,8 @@ fn bump_mode_happy_path() {
   assert!(create.contains(&"--generate-notes".to_string()));
   // No files on the command line: `gh release create <tag> --title <tag> --generate-notes`.
   assert_eq!(create.len(), 6, "{create:?}");
+  // Step 8: the run the release triggered was watched to completion.
+  assert!(gh.iter().any(|c| c == &["run", "watch", "123456", "--exit-status"]), "{gh:?}");
   let st = w.state();
   assert_ne!(st.head, before);
   assert_eq!(st.tag.as_deref(), Some(git::short_head(w.root()).unwrap().as_str()));
@@ -230,8 +251,56 @@ fn push_failure_resets_commit_and_tag() {
 }
 
 #[test]
+fn failed_workflow_run_rolls_back_the_whole_release() {
+  let w = rollback_case("gh", &["run", "watch"]);
+  let gh = w.runner.calls_for("gh");
+  assert!(gh.iter().any(|c| starts(c, &["release", "delete", "v1.0.1"])), "{gh:?}");
+}
+
+#[test]
+fn published_version_missing_after_a_green_run_rolls_back() {
+  let mut w = World::new(&[]);
+  w.index = StubIndexClient { versions: vec![] };
+  let before = w.state();
+  assert!(!ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+  assert_eq!(w.state(), before);
+  assert!(w.runner.calls_for("gh").iter().any(|c| starts(c, &["release", "delete", "v1.0.1"])));
+}
+
+#[test]
+fn no_wait_returns_once_the_release_exists() {
+  use aeth_devkit_release::{Outcome, run_outcome};
+  let w = World::new(&[]);
+  let mut a = w.args(&["patch"]);
+  a.no_wait = true;
+  assert_eq!(run_outcome(&a, &w.deps()).unwrap(), Outcome::Released { version: "1.0.1".into() });
+  let gh = w.runner.calls_for("gh");
+  assert!(gh.iter().all(|c| !starts(c, &["run", "watch"])), "{gh:?}");
+  assert!(gh.iter().all(|c| !starts(c, &["run", "list", "--workflow"])), "{gh:?}");
+}
+
+#[test]
+fn missing_workflow_file_is_refused_before_anything() {
+  let w = World::new(&[]);
+  let root = w.root();
+  assert!(git_out(root, &["rm", "-q", WORKFLOW]).is_empty());
+  git_out(root, &["commit", "-q", "-m", "drop workflow"]);
+  let before = w.state();
+  let err = run(&w.args(&["patch"]), &w.deps()).unwrap_err().to_string();
+  assert!(err.contains("release.yml is not committed"), "{err}");
+  assert_eq!(w.state(), before);
+  assert!(w.runner.calls_for("uv").iter().all(|c| c[0] == "--version"));
+}
+
+#[test]
 fn github_failure_unwinds_everything_with_lease() {
-  let w = rollback_case("gh", &["release", "create"]);
+  let w = World::new(&[]);
+  // `create` fails, and the follow-up `view` confirms nothing was created.
+  w.runner.script_err("gh", &["release", "view"], 1, "release not found");
+  let before = w.state();
+  w.runner.script("gh", &["release", "create"], 1, "");
+  assert!(!ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+  assert_eq!(w.state(), before);
   let git_calls = w.runner.calls_for("git");
   assert!(
     git_calls
@@ -664,7 +733,7 @@ fn dry_run_changes_nothing() {
     w.runner
       .calls_for("gh")
       .iter()
-      .all(|c| c[0] == "--version" || starts(c, &["release", "view"]))
+      .all(|c| c[0] == "--version" || starts(c, &["release", "view"]) || starts(c, &["run", "list", "--limit"]))
   );
 }
 
