@@ -160,12 +160,12 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
     let rendered = templates::gate_publish_index(&raw, ctx.publish_index.is_some());
     let original = read_optional(&path)?;
     let first_install = original.is_none();
-    changes.record_optional(
-      &path,
-      original.as_deref(),
-      &rendered,
-      vec!["replaced with the devkit release workflow".into()],
-    )?;
+    let details = if first_install {
+      vec![]
+    } else {
+      vec!["replaced with the devkit release workflow".into()]
+    };
+    changes.record_optional(&path, original.as_deref(), &rendered, details)?;
     if first_install {
       changes.notes.push(match &ctx.publish_index {
         Some(name) => {
