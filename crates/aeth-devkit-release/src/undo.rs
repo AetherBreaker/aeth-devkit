@@ -14,7 +14,6 @@ use anyhow::{Result, bail};
 use aeth_devkit_core::git::{self, IndexEntry};
 
 use crate::Deps;
-use crate::config::Config;
 use crate::snapshot::Snapshot;
 
 /// One reversible action, with the data needed to reverse it.
@@ -30,12 +29,6 @@ pub enum Undo {
     index: Vec<IndexEntry>,
   },
   DeleteLocalTag(String),
-  /// `index_name` is only for the manual command, which must name the credential
-  /// variables the user actually has (`UV_INDEX_<NAME>_USERNAME` / `_PASSWORD`).
-  DeleteDevpi {
-    url: String,
-    index_name: String,
-  },
   /// Delete `refs/tags/<tag>` on `origin`, guarded by a lease on `expected` (the tag
   /// object this release created) so a concurrently replaced tag is refused, not deleted.
   DeleteRemoteTag {
@@ -64,10 +57,9 @@ impl Undo {
   pub fn describe(&self) -> String {
     // `match self` with `Undo::Variant(..)` / `{ .. }` patterns; `..` ignores the payload.
     match self {
-      Undo::RestoreFiles(_) => "Restoring pyproject.toml, uv.lock, Cargo.toml, Cargo.lock, and dist/".into(),
+      Undo::RestoreFiles(_) => "Restoring pyproject.toml, uv.lock, Cargo.toml, Cargo.lock".into(),
       Undo::ResetCommit { .. } => "Resetting the version-bump commit".into(),
       Undo::DeleteLocalTag(t) => format!("Deleting local tag {t}"),
-      Undo::DeleteDevpi { url, .. } => format!("Removing {url} from the index"),
       Undo::DeleteRemoteTag { tag, .. } => format!("Deleting remote tag {tag}"),
       Undo::ForcePushBranch { branch, .. } => format!("Force-pushing the pre-release {branch} to origin"),
       Undo::DeleteGithubRelease(t) => format!("Deleting GitHub release {t}"),
@@ -93,11 +85,6 @@ impl Undo {
         s
       }
       Undo::DeleteLocalTag(t) => format!("git tag -d {t}"),
-      Undo::DeleteDevpi { url, index_name } => {
-        // Reference the variables by name; never embed the secret itself in output.
-        let (user_var, pass_var) = crate::config::env_var_names(index_name);
-        format!("curl -u \"${user_var}:${pass_var}\" -X DELETE {url}")
-      }
       // The same lease `apply` uses, so even the hand-run command cannot delete a tag
       // that is no longer the one this release created.
       Undo::DeleteRemoteTag { tag, expected } => {
@@ -111,7 +98,7 @@ impl Undo {
   }
 
   /// Perform the compensating action.
-  fn apply(&self, deps: &Deps, root: &Path, cfg: &Config) -> Result<()> {
+  fn apply(&self, deps: &Deps, root: &Path) -> Result<()> {
     match self {
       Undo::RestoreFiles(snap) => snap.restore(root),
       Undo::ResetCommit { bump_sha, pre_sha, index } => {
@@ -129,8 +116,6 @@ impl Undo {
         Ok(())
       }
       Undo::DeleteLocalTag(t) => git::delete_tag(root, t),
-      // `.map(|_| ())` throws away the `DeleteOutcome`: gone is gone, either way.
-      Undo::DeleteDevpi { url, .. } => deps.devpi.delete(url, &cfg.username, &cfg.password).map(|_| ()),
       Undo::DeleteRemoteTag { tag, expected } => git::delete_remote_tag_leased(deps.runner, root, tag, expected),
       Undo::ForcePushBranch { branch, bump_sha, pre_sha } => git::force_push_with_lease(deps.runner, root, branch, bump_sha, pre_sha),
       Undo::DeleteGithubRelease(t) => {
@@ -152,12 +137,12 @@ impl Undo {
 /// Walk the journal backwards, attempting every entry even if earlier ones fail, and
 /// return the failures. Taking `journal` by value (`Vec<Undo>`) consumes it: after
 /// unwinding there is nothing left to accidentally unwind twice.
-pub fn unwind(journal: Vec<Undo>, deps: &Deps, root: &Path, cfg: &Config) -> Vec<Failure> {
+pub fn unwind(journal: Vec<Undo>, deps: &Deps, root: &Path) -> Vec<Failure> {
   let mut failures = Vec::new();
   // `into_iter().rev()` yields owned entries last-to-first.
   for undo in journal.into_iter().rev() {
     eprintln!("  -> {}...", undo.describe());
-    if let Err(e) = undo.apply(deps, root, cfg) {
+    if let Err(e) = undo.apply(deps, root) {
       // `{e:#}` prints the error with its full context chain on one line.
       eprintln!("     WARNING: {e:#}");
       failures.push(Failure {
@@ -195,16 +180,6 @@ mod tests {
   use aeth_devkit_core::process::RecordingRunner;
 
   use crate::prompt::ScriptedPrompt;
-
-  fn cfg() -> Config {
-    Config {
-      package: "demo".into(),
-      index_name: "I".into(),
-      publish_url: "https://x/i/".into(),
-      username: "u".into(),
-      password: "p".into(),
-    }
-  }
 
   #[test]
   fn unwinds_in_reverse_and_keeps_going_after_failures() {
@@ -245,10 +220,6 @@ mod tests {
         index: pre_index,
       },
       Undo::DeleteLocalTag("v2".into()),
-      Undo::DeleteDevpi {
-        url: "https://x/i/demo/2".into(),
-        index_name: "I".into(),
-      },
       Undo::DeleteRemoteTag {
         tag: "v2".into(),
         expected: tag_sha.clone(),
@@ -260,19 +231,10 @@ mod tests {
       },
       Undo::DeleteGithubRelease("v2".into()),
     ];
-    let failures = unwind(journal, &deps, root, &cfg());
+    let failures = unwind(journal, &deps, root);
     assert_eq!(failures.len(), 1);
     assert!(failures[0].what.contains("GitHub release"));
     assert!(failures[0].manual.contains("gh release delete v2 --yes --cleanup-tag"));
-    let devpi_manual = Undo::DeleteDevpi {
-      url: "https://x/i/demo/2".into(),
-      index_name: "SFTPyPI".into(),
-    }
-    .manual_command();
-    assert!(
-      devpi_manual.contains("$UV_INDEX_SFTPYPI_USERNAME:$UV_INDEX_SFTPYPI_PASSWORD"),
-      "{devpi_manual}"
-    );
     let git_calls = runner.calls_for("git");
     assert_eq!(
       git_calls[0],
@@ -292,7 +254,6 @@ mod tests {
         ":refs/tags/v2".into()
       ]
     );
-    assert_eq!(*devpi.calls.borrow(), vec!["DELETE https://x/i/demo/2"]);
     assert_eq!(git::tag_target(root, "v2").unwrap(), None);
     assert_eq!(git::head_sha(root).unwrap(), pre);
     assert_eq!(std::fs::read_to_string(root.join("pyproject.toml")).unwrap(), "v=1\n");
@@ -332,7 +293,6 @@ mod tests {
       }],
       &deps,
       root,
-      &cfg(),
     );
     assert_eq!(failures.len(), 1);
     assert!(failures[0].error.contains("HEAD"));

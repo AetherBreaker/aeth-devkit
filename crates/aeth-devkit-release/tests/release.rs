@@ -6,11 +6,11 @@
 //! the state of the repository afterwards. For rollback tests, "state afterwards" must be
 //! byte-for-byte what it was before.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
-use aeth_devkit_core::devpi::{DeleteOutcome, DevpiClient, StubDevpiClient};
+use aeth_devkit_core::devpi::StubDevpiClient;
 use aeth_devkit_core::git;
 use aeth_devkit_core::process::RecordingRunner;
 use aeth_devkit_release::prompt::ScriptedPrompt;
@@ -46,23 +46,8 @@ impl World {
     std::fs::write(root.join("pyproject.toml"), PYPROJECT).unwrap();
     std::fs::write(root.join("uv.lock"), "version = 1\n").unwrap();
     std::fs::write(root.join("Cargo.toml"), CARGO).unwrap();
-    // `dist/` is ignored, as in a real project; otherwise the old wheel would make the
-    // tree look dirty and the run would stop at the dirty-tree prompt.
-    std::fs::write(
-      root.join(".gitignore"),
-      "dist/
-",
-    )
-    .unwrap();
-    std::fs::create_dir(root.join("dist")).unwrap();
-    std::fs::write(root.join("dist/demo-0.9.0-py3-none-any.whl"), "old").unwrap();
     git::init_test_repo(root);
-    git::commit_paths(
-      root,
-      &["pyproject.toml".into(), "uv.lock".into(), "Cargo.toml".into(), ".gitignore".into()],
-      "init",
-    )
-    .unwrap();
+    git::commit_paths(root, &["pyproject.toml".into(), "uv.lock".into(), "Cargo.toml".into()], "init").unwrap();
     let runner = RecordingRunner::new(0);
     // Remote-flavoured git answers: an upstream exists, we are on main, not behind, and
     // the remote has no tag for the target version.
@@ -112,8 +97,8 @@ impl World {
   }
 
   /// Everything a rollback must restore, as one comparable value: `HEAD`, the tag, every
-  /// managed file (absent ones as `None`), the artefacts, whether `dist/` exists at all,
-  /// and the whole index (`git ls-files -s`, so staged blobs and modes are covered).
+  /// managed file (absent ones as `None`), and the whole index (`git ls-files -s`, so
+  /// staged blobs and modes are covered).
   fn state(&self) -> State {
     let r = self.root();
     let read = |rel: &str| std::fs::read_to_string(r.join(rel)).ok();
@@ -124,8 +109,6 @@ impl World {
       uv_lock: read("uv.lock"),
       cargo_toml: read("Cargo.toml"),
       cargo_lock: read("Cargo.lock"),
-      dist: aeth_devkit_release::snapshot::dist_artifacts(r).unwrap(),
-      dist_dir_exists: r.join("dist").is_dir(),
       index: git_out(r, &["ls-files", "-s"]),
     }
   }
@@ -140,8 +123,6 @@ struct State {
   uv_lock: Option<String>,
   cargo_toml: Option<String>,
   cargo_lock: Option<String>,
-  dist: Vec<PathBuf>,
-  dist_dir_exists: bool,
   index: String,
 }
 
@@ -162,11 +143,8 @@ fn bump_mode_happy_path() {
   let uv = w.runner.calls_for("uv");
   assert!(uv.contains(&vec!["version".to_string(), "--bump".into(), "patch".into()]));
   assert!(uv.contains(&vec!["lock".to_string()]));
-  assert!(uv.contains(&vec!["build".to_string()]));
-  // Exactly this and nothing more on argv: credentials travel in the child's environment,
-  // never where an error message could echo them.
-  assert!(uv.contains(&vec!["publish".to_string(), "--index".into(), "Private".into()]));
-  assert!(uv.iter().flatten().all(|a| a != "--password" && a != "p"));
+  // Nothing is built or published here; the workflow does that.
+  assert!(uv.iter().all(|c| c[0] != "build" && c[0] != "publish"));
   // Cargo.lock does not exist in the fixture, so `cargo update` must not run; Cargo.toml
   // itself is still rewritten.
   assert!(w.runner.calls_for("cargo").is_empty());
@@ -181,6 +159,8 @@ fn bump_mode_happy_path() {
   let gh = w.runner.calls_for("gh");
   let create = gh.iter().find(|c| starts(c, &["release", "create"])).unwrap();
   assert!(create.contains(&"--generate-notes".to_string()));
+  // No files on the command line: `gh release create <tag> --title <tag> --generate-notes`.
+  assert_eq!(create.len(), 6, "{create:?}");
   let st = w.state();
   assert_ne!(st.head, before);
   assert_eq!(st.tag.as_deref(), Some(git::short_head(w.root()).unwrap().as_str()));
@@ -240,22 +220,8 @@ fn rollback_case(fail_program: &str, fail_args: &[&str]) -> World {
 }
 
 #[test]
-fn build_failure_rolls_back_files_only() {
-  let w = rollback_case("uv", &["build"]);
-  assert!(w.runner.calls_for("git").iter().all(|c| c[0] != "push"));
-  assert!(w.devpi.calls.borrow().iter().all(|c| !c.starts_with("DELETE")));
-}
-
-#[test]
-fn publish_failure_resets_commit_and_tag() {
-  let w = rollback_case("uv", &["publish"]);
-  assert!(w.runner.calls_for("git").iter().all(|c| c[0] != "push"));
-}
-
-#[test]
-fn push_failure_deletes_devpi_version() {
+fn push_failure_resets_commit_and_tag() {
   let w = rollback_case("git", &["push", "--atomic", "origin", "main"]);
-  assert_eq!(*w.devpi.calls.borrow().last().unwrap(), "DELETE https://x/user/internal/demo/1.0.1");
   assert!(w.runner.calls_for("gh").iter().all(|c| !starts(c, &["release", "delete"])));
 }
 
@@ -276,57 +242,6 @@ fn github_failure_unwinds_everything_with_lease() {
     && c[3] == ":refs/tags/v1.0.1"));
   // The GitHub release was never created, so nothing tries to delete it.
   assert!(w.runner.calls_for("gh").iter().all(|c| !starts(c, &["release", "delete"])));
-}
-
-/// A devpi where the version is *always* present — models the partial upload where the
-/// wheel landed before the sdist failed, so `uv publish` exits non-zero yet the index
-/// holds a release. The stub's flip-on-delete would hide that case.
-struct StickyDevpi {
-  calls: std::cell::RefCell<Vec<String>>,
-}
-
-impl DevpiClient for StickyDevpi {
-  fn exists(&self, url: &str, _u: &str, _p: &str) -> anyhow::Result<bool> {
-    self.calls.borrow_mut().push(format!("GET {url}"));
-    Ok(true)
-  }
-  fn delete(&self, url: &str, _u: &str, _p: &str) -> anyhow::Result<DeleteOutcome> {
-    self.calls.borrow_mut().push(format!("DELETE {url}"));
-    Ok(DeleteOutcome::Deleted)
-  }
-}
-
-#[test]
-fn partial_publish_is_deleted_on_rollback() {
-  let w = World::new(&[]);
-  let devpi = StickyDevpi {
-    calls: std::cell::RefCell::new(Vec::new()),
-  };
-  let deps = Deps {
-    runner: &w.runner,
-    devpi: &devpi,
-    prompt: &w.prompt,
-    env: &env,
-    interrupted: &w.flag,
-  };
-  let before = w.state();
-  w.runner.script("uv", &["publish"], 1, "");
-  // `force`: the pre-flight probe also sees the sticky version and would otherwise prompt.
-  let mut a = w.args(&["patch"]);
-  a.force = true;
-  assert!(!ok(run(&a, &deps).unwrap()));
-  assert_eq!(w.state(), before);
-  let url = "https://x/user/internal/demo/1.0.1";
-  // Pre-flight probe + removal, then the post-failure probe and the rollback delete.
-  assert_eq!(
-    *devpi.calls.borrow(),
-    vec![
-      format!("GET {url}"),
-      format!("DELETE {url}"),
-      format!("GET {url}"),
-      format!("DELETE {url}")
-    ]
-  );
 }
 
 #[test]
@@ -364,7 +279,7 @@ fn rollback_keeps_unrelated_staged_changes() {
       .success()
   );
   let before = w.state();
-  w.runner.script("uv", &["publish"], 1, "");
+  w.runner.script("gh", &["release", "create"], 1, "");
   let mut a = w.args(&["patch"]);
   a.force = true;
   assert!(!ok(run(&a, &w.deps()).unwrap()));
@@ -425,7 +340,7 @@ fn gh_view_errors_other_than_not_found_abort_preflight() {
   let err = run(&w.args(&["patch"]), &w.deps()).unwrap_err().to_string();
   assert!(err.contains("gh release view"), "{err}");
   assert_eq!(w.state(), before);
-  assert!(w.runner.calls_for("uv").iter().all(|c| c[0] != "build"));
+  assert!(w.runner.calls_for("uv").iter().all(|c| c[0] != "lock"));
 }
 
 /// `git <args>` in the repo, stdout trimmed. For the assertions that need raw git.
@@ -481,7 +396,7 @@ fn rollback_restores_user_edits_and_index_exactly() {
   let root = w.root();
   let before = w.state();
   let staged_before = git_out(root, &["ls-files", "-s"]);
-  w.runner.script("uv", &["publish"], 1, "");
+  w.runner.script("gh", &["release", "create"], 1, "");
   let mut a = w.args(&["patch"]);
   a.force = true;
   assert!(!ok(run(&a, &w.deps()).unwrap()));
@@ -515,7 +430,7 @@ fn deleted_lockfile_rollback_is_exact() {
   let w = World::new(&[]);
   std::fs::remove_file(w.root().join("uv.lock")).unwrap();
   let before = w.state();
-  w.runner.script("uv", &["publish"], 1, "");
+  w.runner.script("gh", &["release", "create"], 1, "");
   let mut a = w.args(&["patch"]);
   a.force = true;
   assert!(!ok(run(&a, &w.deps()).unwrap()));
@@ -544,7 +459,7 @@ fn untracked_lockfile_rollback_is_exact() {
   let w = World::new(&[]);
   std::fs::write(w.root().join("Cargo.lock"), "# the user's lockfile\n").unwrap();
   let before = w.state();
-  w.runner.script("uv", &["publish"], 1, "");
+  w.runner.script("gh", &["release", "create"], 1, "");
   let mut a = w.args(&["patch"]);
   a.force = true;
   assert!(!ok(run(&a, &w.deps()).unwrap()));
@@ -595,7 +510,7 @@ fn unmerged_managed_file_is_refused_before_anything() {
   let err = run(&a, &w.deps()).unwrap_err().to_string();
   assert!(err.contains("unmerged"), "{err}");
   assert_eq!(w.state(), before);
-  assert!(w.runner.calls_for("uv").iter().all(|c| c[0] != "build"));
+  assert!(w.runner.calls_for("uv").iter().all(|c| c[0] != "lock"));
 }
 
 #[test]
@@ -630,55 +545,6 @@ fn ambiguous_push_failure_leaves_foreign_refs_alone() {
   assert!(git_calls.iter().all(|c| !c.iter().any(|arg| arg.starts_with("--force-with-lease"))));
 }
 
-/// A devpi holding this version with a file this run never built — a concurrent
-/// publisher's release. `exists` answers `false` for the pre-flight probe, modelling the
-/// concurrent upload landing *between* pre-flight and our failed publish.
-struct ForeignDevpi {
-  calls: std::cell::RefCell<Vec<String>>,
-}
-
-impl DevpiClient for ForeignDevpi {
-  fn exists(&self, url: &str, _u: &str, _p: &str) -> anyhow::Result<bool> {
-    self.calls.borrow_mut().push(format!("GET {url}"));
-    Ok(false)
-  }
-  fn delete(&self, url: &str, _u: &str, _p: &str) -> anyhow::Result<DeleteOutcome> {
-    self.calls.borrow_mut().push(format!("DELETE {url}"));
-    Ok(DeleteOutcome::Deleted)
-  }
-  fn files(&self, _url: &str, _u: &str, _p: &str) -> anyhow::Result<Option<Vec<(String, String)>>> {
-    Ok(Some(vec![("demo-1.0.1-py3-none-any.whl".into(), "https://x/f.whl".into())]))
-  }
-  fn fetch(&self, _href: &str, _u: &str, _p: &str) -> anyhow::Result<Vec<u8>> {
-    Ok(b"someone else's wheel".to_vec())
-  }
-}
-
-#[test]
-fn foreign_devpi_version_is_not_deleted_on_rollback() {
-  let w = World::new(&[]);
-  let devpi = ForeignDevpi {
-    calls: std::cell::RefCell::new(Vec::new()),
-  };
-  let deps = Deps {
-    runner: &w.runner,
-    devpi: &devpi,
-    prompt: &w.prompt,
-    env: &env,
-    interrupted: &w.flag,
-  };
-  let before = w.state();
-  w.runner.script("uv", &["publish"], 1, "");
-  assert!(!ok(run(&w.args(&["patch"]), &deps).unwrap()));
-  assert_eq!(w.state(), before);
-  // Everything local was rolled back, but the foreign index version was left alone.
-  assert!(
-    devpi.calls.borrow().iter().all(|c| !c.starts_with("DELETE")),
-    "{:?}",
-    devpi.calls.borrow()
-  );
-}
-
 #[test]
 fn uncommitted_config_edit_is_refused() {
   let w = World::new(&[]);
@@ -709,7 +575,7 @@ fn overlapping_user_edit_is_an_error_and_rolls_back() {
   a.force = true;
   assert!(!ok(run(&a, &w.deps()).unwrap()));
   assert_eq!(w.state(), before);
-  assert!(w.runner.calls_for("uv").iter().all(|c| c[0] != "publish"));
+  assert!(w.runner.calls_for("git").iter().all(|c| c[0] != "push"));
 }
 
 #[test]
@@ -804,41 +670,4 @@ fn cargo_mismatch_is_refused_before_anything() {
   std::fs::write(w.root().join("Cargo.toml"), CARGO.replace("1.0.0", "0.9.9")).unwrap();
   let e = run(&w.args(&["patch"]), &w.deps()).unwrap_err().to_string();
   assert!(e.contains("0.9.9"), "{e}");
-}
-
-#[test]
-fn publish_hands_uv_the_credential_variables_it_actually_reads() {
-  // uv keeps two separate credential sets: `UV_INDEX_<NAME>_*` authenticate *reads* from an
-  // index during resolution, while `uv publish` looks for `UV_PUBLISH_USERNAME` /
-  // `_PASSWORD`. Supplying only the first pair leaves uv with no publish credentials, so it
-  // prompts on the terminal at step 7 of 9 — after the commit and tag are already made.
-  let w = World::new(&[]);
-  assert!(ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
-
-  let calls = w.runner.calls.borrow();
-  let publish = calls
-    .iter()
-    .find(|c| c.program == "uv" && c.args.first().is_some_and(|a| a == "publish"))
-    .expect("uv publish must run");
-  let env: std::collections::HashMap<&str, &str> = publish.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-  assert_eq!(env.get("UV_PUBLISH_USERNAME"), Some(&"u"), "{:?}", publish.env);
-  assert_eq!(env.get("UV_PUBLISH_PASSWORD"), Some(&"p"), "{:?}", publish.env);
-
-  // And still nowhere near argv, which is what `run_ok`'s error message interpolates.
-  assert!(!publish.args.iter().any(|a| a == "p" || a == "u"));
-}
-
-#[test]
-fn no_other_step_is_handed_the_publish_credentials() {
-  // The password should reach exactly one child process. Anything else inheriting it widens
-  // the blast radius of a compromised tool for no benefit.
-  let w = World::new(&[]);
-  assert!(ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
-  let calls = w.runner.calls.borrow();
-  let with_creds: Vec<&str> = calls
-    .iter()
-    .filter(|c| c.env.iter().any(|(k, _)| k == "UV_PUBLISH_PASSWORD"))
-    .map(|c| c.program.as_str())
-    .collect();
-  assert_eq!(with_creds, ["uv"], "only `uv publish` may carry them");
 }

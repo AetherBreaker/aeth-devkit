@@ -209,7 +209,7 @@ pub fn run_outcome(args: &Args, deps: &Deps) -> Result<Outcome> {
     }
     Err(e) => {
       eprintln!("\nERROR: Release failed: {e:#}\nRolling back...");
-      let failures = undo::unwind(journal, deps, &root, &cfg);
+      let failures = undo::unwind(journal, deps, &root);
       if failures.is_empty() {
         eprintln!("\nRollback complete.");
       } else {
