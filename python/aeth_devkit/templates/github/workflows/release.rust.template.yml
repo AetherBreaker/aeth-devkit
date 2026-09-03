@@ -1,0 +1,127 @@
+# Installed and kept current by `devkit setup-project`; edits are replaced on the next run.
+# Triggered by `devkit release`, which creates the GitHub release with no assets and then
+# waits for this workflow to build, attach and publish them. Wheels are built per platform
+# with maturin; every artefact is attached and published from one job, so a partial
+# publish can only follow a complete build.
+name: Release
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.release.tag_name }}
+
+jobs:
+  build:
+    name: Wheel (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: "2_17"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: The tag must name the committed version
+        shell: bash
+        run: |
+          v="$(uv version --short)"
+          [ "v$v" = "$TAG" ] || { echo "tag $TAG does not match pyproject.toml version $v" >&2; exit 1; }
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          # Empty on Windows, where the input is ignored.
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --strip --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build the sdist
+        run: uv build --sdist --out-dir dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [build, sdist]
+    runs-on: ubuntu-latest
+    # setup-project: if-no-publish-index
+    permissions:
+      contents: write
+      id-token: write
+    # setup-project: end
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: astral-sh/setup-uv@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: The tag must name the committed version
+        shell: bash
+        run: |
+          v="$(uv version --short)"
+          [ "v$v" = "$TAG" ] || { echo "tag $TAG does not match pyproject.toml version $v" >&2; exit 1; }
+          ls -l dist
+
+      - name: Attach artefacts to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/* --clobber
+
+      # setup-project: if-publish-index
+      - name: Publish to {publish_index}
+        env:
+          UV_PUBLISH_USERNAME: ${{ secrets.UV_INDEX_{publish_index_key}_USERNAME }}
+          UV_PUBLISH_PASSWORD: ${{ secrets.UV_INDEX_{publish_index_key}_PASSWORD }}
+        run: uv publish --index {publish_index} dist/*
+      # setup-project: end
+      # setup-project: if-no-publish-index
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always dist/*
+      # setup-project: end
