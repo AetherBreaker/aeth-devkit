@@ -24,7 +24,7 @@ platform.
 ## Division of labour
 
 | Concern | Where | Why |
-|---|---|---|
+| --- | --- | --- |
 | Version bump, `uv lock`, commit, annotated tag, push | local | needs the developer's judgement and git identity |
 | `gh release create` (notes, title) | local | the release object is the CI trigger |
 | `uv build` (wheel + sdist), platform matrix | CI | clean checkout of the tagged commit, every platform, no laptop toolchains |
@@ -80,6 +80,13 @@ artefacts is the state the complete-release check exists to reject.
   commit.
 - `gh` must be able to read workflow runs; the existing `check_tools` probe is extended
   with `gh run list --limit 1`.
+- **No publish index is no longer an error.** `config::resolve` returns a `PublishTarget`
+  enum: `Index { name, publish_url, username, password }` or `Pypi`. In `Pypi` mode the
+  existing-artefact probe checks `https://pypi.org/simple/<package>/` (the existing
+  `IndexClient`, PEP 691) instead of devpi, offers no removal (PyPI files are immutable;
+  an existing version is reported and the release aborts), and the post-CI completeness
+  check reads the same URL. Credentials and the `--index` flag are meaningless in `Pypi`
+  mode; `--index` naming an index without a `publish-url` stays an error.
 
 ### Unchanged
 
@@ -114,13 +121,28 @@ Every job checks out `github.event.release.tag_name`, installs uv (`astral-sh/se
 and, before anything is uploaded, asserts that `uv version --short` equals the tag without
 its `v` prefix — a tag pointing at the wrong commit fails before it can publish.
 
+### Publish target
+
+Where the wheels go is decided from `pyproject.toml` at template-render time:
+
+- **A private index** — the sole `[[tool.uv.index]]` with a `publish-url`:
+  `uv publish --index {publish_index} dist/*` with `UV_PUBLISH_USERNAME` /
+  `UV_PUBLISH_PASSWORD` taken from repository secrets
+  `UV_INDEX_{publish_index_key}_USERNAME` / `_PASSWORD`. The key is the index name
+  upper-cased with `-` mapped to `_`, the same mapping `config::env_var_names` uses, so
+  one naming rule covers laptops and CI.
+- **No publish index** — PyPI via trusted publishing: `uv publish --trusted-publishing
+  always dist/*`, with `id-token: write` added to the job's permissions. No secrets. The
+  project must be registered as a trusted publisher on PyPI (repository, workflow file
+  name `release.yml`); setup-project prints a `note:` with those values the first time it
+  installs the file, in place of the secret-names note.
+
+Two or more publish indexes remain a config error, as today.
+
 ### Pure-Python job
 
-`uv build`, then `gh release upload "$TAG" dist/* --clobber`, then `uv publish --index
-{publish_index} dist/*` with `UV_PUBLISH_USERNAME` / `UV_PUBLISH_PASSWORD` taken from
-repository secrets `UV_INDEX_{publish_index_key}_USERNAME` / `_PASSWORD`. The key is the
-index name upper-cased with `-` mapped to `_`, the same mapping `config::env_var_names`
-uses, so one naming rule covers laptops and CI.
+`uv build`, then `gh release upload "$TAG" dist/* --clobber`, then the publish step
+above.
 
 ### Rust (maturin) jobs
 
@@ -132,7 +154,8 @@ uses, so one naming rule covers laptops and CI.
   this matrix; the job is written so an extra `cargo build` step and artefact slot in.
 - `sdist` on `ubuntu-latest`: `uv build --sdist`, upload as artifact `sdist`.
 - `publish` needs `[build, sdist]`: download all artifacts into `dist/`, the version
-  assertion, `gh release upload` with `--clobber`, then `uv publish` as above.
+  assertion, `gh release upload` with `--clobber`, then the publish step from
+  "Publish target".
 
 Wheels are uploaded and published from one job so a partial publish can only happen after
 every build succeeded.
@@ -141,17 +164,19 @@ every build succeeded.
 
 New setup-project placeholders: `{publish_index}`, the name of the sole
 `[[tool.uv.index]]` with a `publish-url`, resolved the way the release crate's
-`config::resolve` does; and `{publish_index_key}`, its secret-name form. A project with
-no publish index gets no release workflow and a `note:` saying why; `devkit release`
-already refuses such a project in pre-flight.
+`config::resolve` does; and `{publish_index_key}`, its secret-name form. The publish
+step is selected at render time, so the two templates each carry both variants behind a
+`# setup-project: if-publish-index` / `if-no-publish-index` block marker (the YAML
+analogue of the TOML `if-dep` markers), and the rendered file contains only one.
 
 ### setup-project merge rule
 
 The release workflow is devkit-owned: it is replaced whenever it differs from the
 rendered template, reported as a normal change, and counts as drift for `--check`. This
 differs from `claude.yml` (create-if-missing) because nothing in the release workflow is
-project-specific beyond the placeholders. The repository secrets are the one manual step;
-setup-project prints a `note:` naming the two secret names the first time it installs the
+project-specific beyond the placeholders. The one manual step is the credential setup:
+the two repository secrets for a private index, or the PyPI trusted-publisher
+registration; setup-project prints the matching `note:` the first time it installs the
 file.
 
 ## Devkit-specific consequences
@@ -167,8 +192,9 @@ file.
 Rust unit tests with `RecordingRunner` for: the eight-step plan text, the `gh run`
 polling state machine (no run yet, run appears, success, failure, timeout), the
 `--no-wait` path, the workflow-missing pre-flight, and the journal on CI failure.
-Template rendering tests in the setup crate for both workflow variants and the
-`{publish_index}` placeholders. No live GitHub calls in tests.
+Template rendering tests in the setup crate for both workflow variants, both publish
+targets, and the `{publish_index}` placeholders; release-crate tests for `PublishTarget`
+resolution and the PyPI-mode probe. No live GitHub or PyPI calls in tests.
 
 ## Documentation
 
@@ -178,5 +204,5 @@ TODO.md: close the Linux-wheel item; note the Docker design as the next consumer
 
 ## Out of scope
 
-Trusted publishing (devpi has none), signing or attestations, `rescind-release.sh`
-migration, changing the sister projects' release cadence.
+Trusted publishing against devpi (it has none), signing or attestations,
+`rescind-release.sh` migration, changing the sister projects' release cadence.

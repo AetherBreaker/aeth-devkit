@@ -139,7 +139,7 @@ rewritten), **presence** (inserted with the default when missing, never changed)
 Per listed service:
 
 | Key | Kind | Standard |
-|---|---|---|
+| --- | --- | --- |
 | `container_name` | pattern | equals the service key |
 | `build.context` | exact | `.` |
 | `build.dockerfile` | exact | `docker/Dockerfile` |
