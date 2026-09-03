@@ -134,9 +134,9 @@ on the line.
   sync; no merge conflicts in managed files; target version computed via `uv version
   --dry-run`.
 - **Publish target** - The sole `[[tool.uv.index]]` with a `publish-url` (credentials
-  `UV_INDEX_<KEY>_USERNAME/_PASSWORD` must be set locally for the pre-flight probe; CI
-  reads the same names from repository secrets), or PyPI when no index publishes (no
-  credentials; trusted publishing in CI).
+  `UV_INDEX_<KEY>_USERNAME/_PASSWORD` must be set locally for the pre-flight probe and the
+  post-CI check; CI reads the same names from repository secrets), or PyPI when no index
+  publishes (no credentials; trusted publishing in CI).
 - **Artefact detection** - Detects existing artefacts of the target tag (local/remote tag,
   GitHub release, index version — devpi's REST endpoint for a private index, the simple
   index for PyPI), shows a table, and removes them after confirmation (commits are never
@@ -159,8 +159,9 @@ on the line.
   the journal is walked backwards (restore files, soft-reset the commit, delete tag /
   remote tag / GitHub release), with force-with-lease guards so a concurrent release is
   never clobbered; anything that can't be undone prints an exact manual cleanup command.
-  Artefacts the workflow already published are not removed; the next `devkit release` of
-  the same version detects and offers to remove them.
+  Artefacts the workflow already published are not removed: on a private index the next
+  `devkit release` of the same version detects and offers to remove them; on PyPI, where
+  files are immutable, it aborts and the version must be bumped past.
 - **Exit codes** - 0 released, 1 aborted or rolled back, 2 pre-flight/config error.
 
 ### `devkit docker-pin`

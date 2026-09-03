@@ -19,6 +19,9 @@ use anyhow::{Context as _, Result};
 use crate::changes::Changes;
 use crate::context::ProjectContext;
 
+/// First line of every rendered release workflow; a file without it is the project's own.
+const DEVKIT_WORKFLOW_HEADER: &str = "# Installed and kept current by `devkit setup-project`";
+
 /// Apply every template to the project at `root`. Returns the collected change log;
 /// nothing is written when `dry_run` is set.
 pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> {
@@ -148,7 +151,9 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
 
   // 10b. The release workflow is devkit-owned, unlike `claude.yml`: nothing in it is
   //      project-specific beyond the placeholders, so drift is replaced and reported. The
-  //      one manual step — credentials — is announced the first time the file is installed.
+  //      one manual step — credentials — is announced whenever the devkit workflow displaces
+  //      something else (nothing, or a workflow the project wrote): that is when its
+  //      secret / trusted-publisher requirement arrives.
   {
     let path = ctx.root.join(".github").join("workflows").join("release.yml");
     let template_name = if ctx.has_rust {
@@ -159,8 +164,9 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
     let raw = templates::load(templates_dir, template_name, &ctx, templates::Escape::None)?;
     let rendered = templates::gate_publish_index(&raw, ctx.publish_index.is_some());
     let original = read_optional(&path)?;
-    let first_install = original.is_none();
-    let details = if first_install {
+    let devkit_owned = original.as_deref().is_some_and(|o| o.starts_with(DEVKIT_WORKFLOW_HEADER));
+    let first_install = !devkit_owned;
+    let details = if original.is_none() {
       vec![]
     } else {
       vec!["replaced with the devkit release workflow".into()]

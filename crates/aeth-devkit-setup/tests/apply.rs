@@ -259,6 +259,8 @@ fn commits_only_changed_trackable_files_in_a_git_repo() {
   let committed = git(&["show", "--name-only", "--format=", "HEAD"]);
   assert!(committed.contains("pyproject.toml"), "{committed}");
   assert!(committed.contains(".vscode/settings.json"), "{committed}");
+  // Installed by this run; `devkit release` refuses an uncommitted workflow.
+  assert!(committed.contains(".github/workflows/release.yml"), "{committed}");
   assert!(
     !committed.contains(".env"),
     ".env is gitignored and must not be committed: {committed}"
@@ -695,6 +697,16 @@ fn release_workflow_is_installed_and_replaced_on_drift() {
   // The secrets note is for the first install only.
   let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
   assert!(again.notes.iter().all(|n| !n.contains("UV_INDEX_")), "{:?}", again.notes);
+
+  // Replacing a workflow the project wrote itself introduces the credential requirement
+  // just like an install into an empty project, so the note is printed again.
+  write(root, ".github/workflows/release.yml", "name: mine\n");
+  let replaced = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  assert!(
+    replaced.notes.iter().any(|n| n.contains("UV_INDEX_SFTPYPI_USERNAME")),
+    "{:?}",
+    replaced.notes
+  );
 }
 
 #[test]

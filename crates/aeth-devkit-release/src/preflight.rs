@@ -276,6 +276,25 @@ pub fn confirm_dirty_tree(root: &Path, force: bool, prompt: &dyn Prompt) -> Resu
   }
 }
 
+/// Whether the publish target lists `version`. A private index answers its devpi REST
+/// endpoint with the configured credentials — its simple index is behind the same login
+/// uv needs to read it, so an anonymous page fetch would be a 401/404 on every call. PyPI
+/// has no such endpoint, so its public simple index is read instead — the same page
+/// `docker-pin` reads. Used by the pre-flight probe and the post-CI verification alike.
+pub(crate) fn target_has_version(deps: &Deps, cfg: &Config, version: &str) -> Result<bool> {
+  match &cfg.target {
+    PublishTarget::Index { username, password, .. } => {
+      let url = cfg.devpi_url(version).expect("an index target has a devpi url");
+      deps.devpi.exists(&url, username, password)
+    }
+    PublishTarget::Pypi => {
+      let want = parse_lenient(version).with_context(|| format!("{version} is not a PEP 440 version"))?;
+      let versions = deps.index.versions(cfg.target.simple_url(), &cfg.package)?;
+      Ok(contains(versions.iter().map(String::as_str), &want))
+    }
+  }
+}
+
 /// Probe every place `v<version>` could already exist.
 pub fn probe(deps: &Deps, root: &Path, cfg: &Config, version: &str) -> Result<Existing> {
   let tag = format!("v{version}");
@@ -291,20 +310,7 @@ pub fn probe(deps: &Deps, root: &Path, cfg: &Config, version: &str) -> Result<Ex
   } else {
     bail!("gh release view {tag} failed: {}", gh.stderr.trim());
   };
-  // A private index answers its devpi REST endpoint (authenticated, exact). PyPI has no
-  // such endpoint, so its simple index is read instead — the same page the post-CI check
-  // and `docker-pin` read.
-  let index = match &cfg.target {
-    PublishTarget::Index { username, password, .. } => {
-      let url = cfg.devpi_url(version).expect("an index target has a devpi url");
-      deps.devpi.exists(&url, username, password)?
-    }
-    PublishTarget::Pypi => {
-      let want = parse_lenient(version).with_context(|| format!("{version} is not a PEP 440 version"))?;
-      let versions = deps.index.versions(cfg.target.simple_url(), &cfg.package)?;
-      contains(versions.iter().map(String::as_str), &want)
-    }
-  };
+  let index = target_has_version(deps, cfg, version)?;
   Ok(Existing {
     local_tag: git::tag_target(root, &tag)?,
     remote_tag: git::remote_tag_exists(deps.runner, root, &tag)?,

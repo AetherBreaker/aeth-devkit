@@ -114,13 +114,14 @@ tasks.add(
   task_name="release-and-pin",
   task_config={
     "help": (
-      "Bump version, commit, tag, build, and publish to GitHub and the package index, "
-      "then pin the docker-compose package version. "
+      "Bump version, commit, tag, push, create the GitHub release, wait for the release workflow "
+      "to build and publish, then pin the docker-compose package version. "
       "Pass one or more bump types as free positional args; "
       "valid values: major, minor, patch, stable, alpha, beta, rc, post, dev. "
       "To include release notes, append a multi-word string as the final arg "
       "(single-word trailing args are treated as a typo and raise an error). "
       "Pass --force / -f to skip the confirmation prompts; --dry-run stays dry (the pin step is skipped). "
+      "--no-wait is refused: the pin needs the artefacts the workflow publishes. "
       "Examples: "
       "poe release-and-pin patch | "
       "poe release-and-pin major alpha | "
