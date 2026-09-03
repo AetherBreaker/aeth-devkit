@@ -177,6 +177,7 @@ mod tests {
   use std::sync::atomic::AtomicBool;
 
   use aeth_devkit_core::devpi::StubDevpiClient;
+  use aeth_devkit_core::index::StubIndexClient;
   use aeth_devkit_core::process::RecordingRunner;
 
   use crate::prompt::ScriptedPrompt;
@@ -203,10 +204,12 @@ mod tests {
     runner.script("gh", &["release", "delete"], 1, "");
     let devpi = StubDevpiClient::new(true);
     let prompt = ScriptedPrompt::new(&[]);
+    let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
     let deps = Deps {
       runner: &runner,
       devpi: &devpi,
+      index: &index,
       prompt: &prompt,
       env: &|_| None,
       interrupted: &flag,
@@ -277,10 +280,12 @@ mod tests {
     let runner = RecordingRunner::new(0);
     let devpi = StubDevpiClient::new(false);
     let prompt = ScriptedPrompt::new(&[]);
+    let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
     let deps = Deps {
       runner: &runner,
       devpi: &devpi,
+      index: &index,
       prompt: &prompt,
       env: &|_| None,
       interrupted: &flag,

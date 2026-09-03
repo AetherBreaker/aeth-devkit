@@ -35,12 +35,15 @@ use clap::Parser;
 use toml_edit::DocumentMut;
 
 use aeth_devkit_core::devpi::DevpiClient;
+use aeth_devkit_core::index::IndexClient;
 use aeth_devkit_core::paths::strip_verbatim;
 use aeth_devkit_core::process::Runner;
 
+use crate::config::PublishTarget;
 use crate::prompt::{Prompt, confirm_force};
 
-/// Bump version, commit, tag, build, publish to the index, and create a GitHub release.
+/// Bump version, commit, tag, push, create the GitHub release, and wait for the release
+/// workflow to build and publish.
 ///
 /// `#[derive(Parser)]` makes clap generate the argument parser from the struct: each field
 /// becomes a flag or positional, and the doc comments become `--help` text.
@@ -59,7 +62,7 @@ pub struct Args {
   #[arg(long)]
   pub dry_run: bool,
 
-  /// `[[tool.uv.index]]` to publish to (default: the one with a publish-url).
+  /// `[[tool.uv.index]]` to publish to (default: the one with a publish-url, or PyPI when there is none).
   #[arg(long)]
   pub index: Option<String>,
 
@@ -82,6 +85,9 @@ pub struct Args {
 pub struct Deps<'a> {
   pub runner: &'a dyn Runner,
   pub devpi: &'a dyn DevpiClient,
+  /// Reads simple-index pages: the PyPI existence probe, and the post-CI completeness check
+  /// on whichever target the workflow published to.
+  pub index: &'a dyn IndexClient,
   pub prompt: &'a dyn Prompt,
   /// Environment lookup, injected so tests never mutate the real process environment.
   pub env: &'a dyn Fn(&str) -> Option<String>,
@@ -172,7 +178,16 @@ pub fn run_outcome(args: &Args, deps: &Deps) -> Result<Outcome> {
 
   let existing = preflight::probe(deps, &root, &cfg, &target.new)?;
   if existing.any() {
-    print!("{}", report::render(&target.new, &existing, &cfg.package, &cfg.index_name));
+    print!("{}", report::render(&target.new, &existing, &cfg.package, cfg.target.label()));
+    // PyPI files are immutable: nothing here can make room for the version, so the only
+    // way forward is a different version number.
+    if existing.index && cfg.target == PublishTarget::Pypi {
+      eprintln!(
+        "aborted: {}=={} is already on PyPI and PyPI releases cannot be removed; bump to a new version",
+        cfg.package, target.new
+      );
+      return Ok(Outcome::Aborted);
+    }
     if !args.dry_run && !confirm_force(deps.prompt, force, "Remove these and continue? Type 'force' to continue:")? {
       eprintln!("aborted: artefacts for v{} already exist", target.new);
       return Ok(Outcome::Aborted);
@@ -237,11 +252,13 @@ pub fn run_outcome_real(args: &Args) -> Result<Outcome> {
   // installed, so a second Ctrl-C during rollback does not kill us mid-unwind.
   ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst)).context("installing Ctrl-C handler")?;
   let env = |key: &str| std::env::var(key).ok();
+  let index = aeth_devkit_core::index::HttpIndexClient::with_timeout(std::time::Duration::from_secs(30));
   run_outcome(
     args,
     &Deps {
       runner: &aeth_devkit_core::process::SystemRunner,
       devpi: &aeth_devkit_core::devpi::HttpDevpiClient,
+      index: &index,
       prompt: &prompt::StdinPrompt,
       env: &env,
       interrupted: &INTERRUPTED,

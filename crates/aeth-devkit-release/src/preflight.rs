@@ -12,10 +12,11 @@ use toml_edit::DocumentMut;
 
 use aeth_devkit_core::devpi::DeleteOutcome;
 use aeth_devkit_core::process::Runner;
+use aeth_devkit_core::version::{contains, parse_lenient};
 use aeth_devkit_core::{cargo_toml, git};
 
 use crate::Deps;
-use crate::config::Config;
+use crate::config::{Config, PublishTarget};
 use crate::prompt::{Prompt, confirm_force};
 use crate::report::Existing;
 
@@ -167,11 +168,33 @@ pub fn check_config_committed(root: &Path, cfg: &Config, index: Option<&str>, en
   if committed.package != cfg.package {
     differ.push("the project name");
   }
-  if committed.index_name != cfg.index_name {
-    differ.push("the publish index");
-  }
-  if committed.publish_url != cfg.publish_url {
-    differ.push("the index publish-url");
+  match (&committed.target, &cfg.target) {
+    (PublishTarget::Pypi, PublishTarget::Pypi) => {}
+    (
+      PublishTarget::Index {
+        name: a,
+        url: ua,
+        publish_url: pa,
+        ..
+      },
+      PublishTarget::Index {
+        name: b,
+        url: ub,
+        publish_url: pb,
+        ..
+      },
+    ) => {
+      if a != b {
+        differ.push("the publish index");
+      }
+      if ua != ub {
+        differ.push("the index url");
+      }
+      if pa != pb {
+        differ.push("the index publish-url");
+      }
+    }
+    _ => differ.push("the publish target (private index vs PyPI)"),
   }
   if differ.is_empty() {
     Ok(())
@@ -235,11 +258,25 @@ pub fn probe(deps: &Deps, root: &Path, cfg: &Config, version: &str) -> Result<Ex
   } else {
     bail!("gh release view {tag} failed: {}", gh.stderr.trim());
   };
+  // A private index answers its devpi REST endpoint (authenticated, exact). PyPI has no
+  // such endpoint, so its simple index is read instead — the same page the post-CI check
+  // and `docker-pin` read.
+  let index = match &cfg.target {
+    PublishTarget::Index { username, password, .. } => {
+      let url = cfg.devpi_url(version).expect("an index target has a devpi url");
+      deps.devpi.exists(&url, username, password)?
+    }
+    PublishTarget::Pypi => {
+      let want = parse_lenient(version).with_context(|| format!("{version} is not a PEP 440 version"))?;
+      let versions = deps.index.versions(cfg.target.simple_url(), &cfg.package)?;
+      contains(versions.iter().map(String::as_str), &want)
+    }
+  };
   Ok(Existing {
     local_tag: git::tag_target(root, &tag)?,
     remote_tag: git::remote_tag_exists(deps.runner, root, &tag)?,
     github,
-    devpi: deps.devpi.exists(&cfg.devpi_url(version), &cfg.username, &cfg.password)?,
+    index,
   })
 }
 
@@ -271,12 +308,18 @@ pub fn remove_existing(deps: &Deps, root: &Path, cfg: &Config, version: &str, ex
     }
   }
   deps.check_interrupt()?;
-  if ex.devpi {
-    println!("  -> {verb} {}=={version} from {}", cfg.package, cfg.index_name);
+  if ex.index {
+    // Only a private index can drop a version; `run` aborts before reaching here for
+    // PyPI, so a PyPI target with `index: true` is a caller bug, not a user error.
+    let PublishTarget::Index { username, password, .. } = &cfg.target else {
+      bail!("{}=={version} exists on PyPI and cannot be removed", cfg.package);
+    };
+    println!("  -> {verb} {}=={version} from {}", cfg.package, cfg.target.label());
     if !dry_run {
+      let url = cfg.devpi_url(version).expect("an index target has a devpi url");
       // Both outcomes are fine: the goal is "not there afterwards". Matching exhaustively
       // (rather than `let _ =`) means a future third variant would be a compile error here.
-      match deps.devpi.delete(&cfg.devpi_url(version), &cfg.username, &cfg.password)? {
+      match deps.devpi.delete(&url, username, password)? {
         DeleteOutcome::Deleted | DeleteOutcome::NotFound => {}
       }
     }
@@ -364,6 +407,46 @@ mod tests {
     assert!(err.contains("current branch is feature"), "{err}");
     // Refused before any fetch: the only git calls are the two rev-parses.
     assert_eq!(r.calls_for("git").len(), 2);
+  }
+
+  #[test]
+  fn probe_reads_pypi_when_there_is_no_publish_index() {
+    use std::sync::atomic::AtomicBool;
+
+    use aeth_devkit_core::devpi::StubDevpiClient;
+    use aeth_devkit_core::index::StubIndexClient;
+
+    use crate::prompt::ScriptedPrompt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    git::init_test_repo(root);
+    std::fs::write(root.join("a"), "1").unwrap();
+    git::commit_paths(root, &["a".into()], "init").unwrap();
+    let runner = RecordingRunner::new(0);
+    runner.script_err("gh", &["release", "view"], 1, "release not found");
+    runner.script("git", &["ls-remote"], 0, "");
+    let devpi = StubDevpiClient::new(true); // must not be consulted
+    let index = StubIndexClient {
+      versions: vec!["1.0.0".into(), "2.0.0".into()],
+    };
+    let prompt = ScriptedPrompt::new(&[]);
+    let flag = AtomicBool::new(false);
+    let deps = Deps {
+      runner: &runner,
+      devpi: &devpi,
+      index: &index,
+      prompt: &prompt,
+      env: &|_| None,
+      interrupted: &flag,
+    };
+    let cfg = Config {
+      package: "demo".into(),
+      target: PublishTarget::Pypi,
+    };
+    assert!(probe(&deps, root, &cfg, "2.0.0").unwrap().index);
+    assert!(!probe(&deps, root, &cfg, "3.0.0").unwrap().index);
+    assert!(devpi.calls.borrow().is_empty(), "PyPI mode must not touch devpi");
   }
 
   #[test]

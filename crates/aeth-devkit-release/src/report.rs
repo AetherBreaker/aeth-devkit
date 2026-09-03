@@ -9,24 +9,24 @@
 ///
 /// The fields use different shapes on purpose: a local tag has a target commit worth
 /// showing (`Option<String>`), a GitHub release has a URL (`Option<String>`), while
-/// remote tag and devpi are simple yes/no (`bool`).
+/// remote tag and index presence are simple yes/no (`bool`).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Existing {
   pub local_tag: Option<String>,
   pub remote_tag: bool,
   pub github: Option<String>,
-  pub devpi: bool,
+  pub index: bool,
 }
 
 impl Existing {
   /// Does anything exist at all? If not, no prompt is needed.
   pub fn any(&self) -> bool {
-    self.local_tag.is_some() || self.remote_tag || self.github.is_some() || self.devpi
+    self.local_tag.is_some() || self.remote_tag || self.github.is_some() || self.index
   }
 }
 
 /// Render the table shown to the user.
-pub fn render(version: &str, ex: &Existing, package: &str, index_name: &str) -> String {
+pub fn render(version: &str, ex: &Existing, package: &str, label: &str) -> String {
   let tag = format!("v{version}");
   // A closure that formats one row. `{label:<15}` left-aligns `label` in a 15-column
   // field so the values line up.
@@ -48,9 +48,9 @@ pub fn render(version: &str, ex: &Existing, package: &str, index_name: &str) -> 
   );
   s += &row("GitHub release", ex.github.clone().unwrap_or_else(|| "none".into()));
   s += &row(
-    "devpi",
-    if ex.devpi {
-      format!("{package}=={version} on {index_name}")
+    "index",
+    if ex.index {
+      format!("{package}=={version} on {label}")
     } else {
       "none".into()
     },
@@ -67,12 +67,12 @@ mod tests {
     let none = Existing::default();
     assert!(!none.any());
     let s = render("1.2.3", &none, "demo", "SFTPyPI");
-    assert!(s.contains("local tag       none") && s.contains("devpi           none"), "{s}");
+    assert!(s.contains("local tag       none") && s.contains("index           none"), "{s}");
     let all = Existing {
       local_tag: Some("abc1234".into()),
       remote_tag: true,
       github: Some("https://gh/r/v1.2.3".into()),
-      devpi: true,
+      index: true,
     };
     assert!(all.any());
     let s = render("1.2.3", &all, "demo", "SFTPyPI");
