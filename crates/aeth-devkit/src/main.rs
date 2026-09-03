@@ -50,6 +50,10 @@ impl Command {
 /// release must not move the pin.
 fn release_and_pin(args: &aeth_devkit_release::Args) -> anyhow::Result<ExitCode> {
   use aeth_devkit_release::Outcome;
+  // The pin's completeness preflight needs the artefacts the workflow publishes.
+  if args.no_wait {
+    anyhow::bail!("release-and-pin waits for the release workflow so it can pin the result; drop --no-wait");
+  }
   match aeth_devkit_release::run_outcome_real(args)? {
     Outcome::Aborted => Ok(ExitCode::from(1)),
     Outcome::DryRun => {
