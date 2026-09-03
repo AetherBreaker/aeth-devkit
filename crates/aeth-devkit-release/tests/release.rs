@@ -10,9 +10,10 @@ use std::cell::Cell;
 use std::ops::Deref;
 use std::path::Path;
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 
-use aeth_devkit_core::devpi::StubDevpiClient;
+use aeth_devkit_core::devpi::{DeleteOutcome, DevpiClient, StubDevpiClient};
 use aeth_devkit_core::git;
 use aeth_devkit_core::index::StubIndexClient;
 use aeth_devkit_core::process::{CapturedOutput, RecordingRunner, Runner};
@@ -29,7 +30,7 @@ const WORKFLOW: &str = ".github/workflows/release.yml";
 struct World {
   dir: tempfile::TempDir,
   runner: SeqRunner,
-  devpi: StubDevpiClient,
+  devpi: SeqDevpi,
   index: StubIndexClient,
   prompt: ScriptedPrompt,
   flag: AtomicBool,
@@ -41,7 +42,34 @@ struct World {
 /// `Deref` keeps `w.runner.script(…)` / `calls_for(…)` working on the inner recorder.
 struct SeqRunner {
   inner: RecordingRunner,
-  released: Cell<bool>,
+  released: Rc<Cell<bool>>,
+}
+
+/// The private index as the release sees it: `exists` is the stub's own answer until the
+/// GitHub release has been created, after which the workflow "has published" and the
+/// version is there — unless `publishes` is cleared to model a run that uploaded nothing.
+/// The simple index (`StubIndexClient`) is not consulted for an index target at all.
+struct SeqDevpi {
+  inner: StubDevpiClient,
+  released: Rc<Cell<bool>>,
+  publishes: Cell<bool>,
+}
+
+impl Deref for SeqDevpi {
+  type Target = StubDevpiClient;
+  fn deref(&self) -> &StubDevpiClient {
+    &self.inner
+  }
+}
+
+impl DevpiClient for SeqDevpi {
+  fn exists(&self, url: &str, username: &str, password: &str) -> anyhow::Result<bool> {
+    let own = self.inner.exists(url, username, password)?;
+    Ok(own || (self.released.get() && self.publishes.get()))
+  }
+  fn delete(&self, url: &str, username: &str, password: &str) -> anyhow::Result<DeleteOutcome> {
+    self.inner.delete(url, username, password)
+  }
 }
 
 impl Deref for SeqRunner {
@@ -118,17 +146,20 @@ impl World {
     // the more specific `--bump … --dry-run` answer overrides it for that call.
     runner.script("uv", &["version"], 0, "demo 1.0.0\n");
     runner.script("uv", &["version", "--bump", "patch", "--dry-run"], 0, "demo 1.0.0 => 1.0.1\n");
+    let released = Rc::new(Cell::new(false));
     Self {
       dir,
       runner: SeqRunner {
         inner: runner,
-        released: Cell::new(false),
+        released: Rc::clone(&released),
       },
-      devpi: StubDevpiClient::new(false),
-      // What the workflow published: both candidate versions, so the post-CI check passes.
-      index: StubIndexClient {
-        versions: vec!["1.0.0".into(), "1.0.1".into()],
+      devpi: SeqDevpi {
+        inner: StubDevpiClient::new(false),
+        released,
+        publishes: Cell::new(true),
       },
+      // Only a PyPI target reads the simple index; the fixture publishes to `Private`.
+      index: StubIndexClient { versions: vec![] },
       prompt: ScriptedPrompt::new(answers),
       flag: AtomicBool::new(false),
     }
@@ -306,8 +337,8 @@ fn failed_workflow_run_rolls_back_the_whole_release() {
 
 #[test]
 fn published_version_missing_after_a_green_run_rolls_back() {
-  let mut w = World::new(&[]);
-  w.index = StubIndexClient { versions: vec![] };
+  let w = World::new(&[]);
+  w.devpi.publishes.set(false);
   let before = w.state();
   assert!(!ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
   assert_eq!(w.state(), before);

@@ -61,16 +61,17 @@ _RAW = {'env': {},
                                     'default': '',
                                     'help': 'Compose file to edit (default: auto-discover from the repo '
                                             'root)'}]},
-           'release-and-pin': {'help': 'Bump version, commit, tag, build, and publish to GitHub and the '
-                                       'package index, then pin the docker-compose package version. Pass one '
-                                       'or more bump types as free positional args; valid values: major, '
-                                       'minor, patch, stable, alpha, beta, rc, post, dev. To include release '
-                                       'notes, append a multi-word string as the final arg (single-word '
-                                       'trailing args are treated as a typo and raise an error). Pass '
-                                       '--force / -f to skip the confirmation prompts; --dry-run stays dry '
-                                       '(the pin step is skipped). Examples: poe release-and-pin patch | poe '
-                                       "release-and-pin major alpha | poe release-and-pin minor 'first minor "
-                                       "release'",
+           'release-and-pin': {'help': 'Bump version, commit, tag, push, create the GitHub release, wait for '
+                                       'the release workflow to build and publish, then pin the '
+                                       'docker-compose package version. Pass one or more bump types as free '
+                                       'positional args; valid values: major, minor, patch, stable, alpha, '
+                                       'beta, rc, post, dev. To include release notes, append a multi-word '
+                                       'string as the final arg (single-word trailing args are treated as a '
+                                       'typo and raise an error). Pass --force / -f to skip the confirmation '
+                                       'prompts; --dry-run stays dry (the pin step is skipped). --no-wait is '
+                                       'refused: the pin needs the artefacts the workflow publishes. '
+                                       'Examples: poe release-and-pin patch | poe release-and-pin major '
+                                       "alpha | poe release-and-pin minor 'first minor release'",
                                'envfile': '.env',
                                'cmd': 'devkit release-and-pin $POE_EXTRA_ARGS'},
            'rescind-release': {'help': 'Fully rescind a release: removes the package from the package index, '

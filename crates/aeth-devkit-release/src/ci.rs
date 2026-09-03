@@ -4,14 +4,14 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Result, bail};
 
 use aeth_devkit_core::process::Runner;
-use aeth_devkit_core::version::{contains, parse_lenient};
 use aeth_devkit_core::{git, github};
 
 use crate::Deps;
 use crate::config::Config;
+use crate::preflight::target_has_version;
 
 /// The workflow setup-project installs; the release requires it at `HEAD`.
 pub const WORKFLOW_FILE: &str = ".github/workflows/release.yml";
@@ -107,17 +107,17 @@ pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, known: &[String]) -> Re
 /// the publish target and the GitHub release must still exist. This is the rule
 /// `docker-pin` applies before pinning, checked here so `Released` means what it says.
 ///
-/// The index is polled for up to [`VERIFY_TIMEOUT`]: a request error or an absent version
+/// The target is polled for up to [`VERIFY_TIMEOUT`] through the same authenticated,
+/// target-specific check as the pre-flight probe: a request error or an absent version
 /// right after the upload is propagation, not failure, and the rollback this gates is
 /// destructive (for PyPI it cannot even undo the upload).
 pub fn verify_published(deps: &Deps, root: &Path, cfg: &Config, version: &str) -> Result<()> {
-  let want = parse_lenient(version).with_context(|| format!("{version} is not a PEP 440 version"))?;
   let mut waited = Duration::ZERO;
   loop {
     deps.check_interrupt()?;
-    let last_error = match deps.index.versions(cfg.target.simple_url(), &cfg.package) {
-      Ok(versions) if contains(versions.iter().map(String::as_str), &want) => break,
-      Ok(_) => None,
+    let last_error = match target_has_version(deps, cfg, version) {
+      Ok(true) => break,
+      Ok(false) => None,
       Err(e) => Some(e),
     };
     if waited >= VERIFY_TIMEOUT {
@@ -241,6 +241,19 @@ mod tests {
     Config {
       package: "demo".into(),
       target: PublishTarget::Pypi,
+    }
+  }
+
+  fn private_cfg() -> Config {
+    Config {
+      package: "demo".into(),
+      target: PublishTarget::Index {
+        name: "Private".into(),
+        url: "https://x/+simple".into(),
+        publish_url: "https://x/user/internal/".into(),
+        username: "u".into(),
+        password: "p".into(),
+      },
     }
   }
 
@@ -389,6 +402,32 @@ mod tests {
     let d = deps(&r, &broken, &flag, NO_SLEEP);
     let err = verify_published(&d, Path::new("."), &cfg(), "1.0.0").unwrap_err();
     assert!(err.to_string().contains("HTTP 502"), "{err}");
+  }
+
+  #[test]
+  fn verify_asks_a_private_index_through_its_authenticated_endpoint() {
+    let r = scripted();
+    let flag = AtomicBool::new(false);
+    // The simple index is never consulted: a private one needs the login the devpi
+    // endpoint gets, and this stub would fail the check if it were queried.
+    let broken = SlowIndex {
+      failures: usize::MAX,
+      empty: 0,
+      versions: vec![],
+      queries: Cell::new(0),
+    };
+    let devpi = StubDevpiClient::new(true);
+    let mut d = deps(&r, &broken, &flag, NO_SLEEP);
+    d.devpi = &devpi;
+    verify_published(&d, Path::new("."), &private_cfg(), "1.0.0").unwrap();
+    assert_eq!(broken.queries.get(), 0);
+    assert_eq!(devpi.calls.borrow().as_slice(), ["GET https://x/user/internal/demo/1.0.0"]);
+
+    let absent = StubDevpiClient::new(false);
+    let mut d = deps(&r, &broken, &flag, NO_SLEEP);
+    d.devpi = &absent;
+    let err = verify_published(&d, Path::new("."), &private_cfg(), "1.0.0").unwrap_err();
+    assert!(err.to_string().contains("demo==1.0.0 is not on Private"), "{err}");
   }
 
   #[test]

@@ -22,7 +22,7 @@ pub const COMMIT_SUBJECT: &str = "Standardize project configuration with devkit"
 /// `.claude/settings.local.json` — are exactly the intentionally-local ones that are never
 /// committed, so this list is static. `.dockerignore` and the Rust overlays only apply to
 /// some projects, but staging a path the project does not have is a no-op.
-const COMMITTABLE: [&str; 13] = [
+const COMMITTABLE: [&str; 14] = [
   "pyproject.toml",
   ".vscode/settings.json",
   ".vscode/extensions.json",
@@ -35,6 +35,7 @@ const COMMITTABLE: [&str; 13] = [
   ".claude/CLAUDE.md",
   ".claude/settings.json",
   ".github/workflows/claude.yml",
+  ".github/workflows/release.yml",
   ".mcp.json",
 ];
 

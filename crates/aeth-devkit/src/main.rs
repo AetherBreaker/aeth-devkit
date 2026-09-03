@@ -18,11 +18,13 @@ enum Command {
   SetupProject(aeth_devkit_setup::cli::Args),
   /// Bump the aeth-devkit pin, run `uv sync`, and commit uv.lock.
   Lock(aeth_devkit_lock::Args),
-  /// Bump version, build, tag, publish to the index, and create a GitHub release.
+  /// Bump version, commit, tag, push and create the GitHub release, then wait for the
+  /// release workflow to build, attach and publish the artefacts.
   Release(aeth_devkit_release::Args),
   /// Pin the docker compose file to a released version of this project.
   DockerPin(aeth_devkit_pin::Args),
-  /// Release, then pin the docker compose file to the freshly released version.
+  /// Release (always waiting for the workflow; `--no-wait` is refused), then pin the docker
+  /// compose file to the freshly released version.
   ReleaseAndPin(aeth_devkit_release::Args),
   /// Shell-completion data for poe tasks (fast replacement for poe's `_list_tasks`).
   Complete(aeth_devkit_complete::Args),
