@@ -76,10 +76,17 @@ pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, sleep: &mut dyn FnMut(D
     Some(code) => bail!("release workflow run {id} failed (gh run watch exited with {code})"),
     None => bail!("gh run watch was terminated by a signal"),
   }
+  // The URL is informational: the run already succeeded, so a failed lookup (auth or API
+  // blip) must not turn a good release into a rollback. Fall back to naming the run.
   let out = deps
     .runner
     .run_capture("gh", &s(&["run", "view", &id, "--json", "url", "--jq", ".url"]), root)?;
-  Ok(out.stdout.trim().to_string())
+  let url = out.stdout.trim();
+  Ok(if out.success() && !url.is_empty() {
+    url.to_string()
+  } else {
+    format!("run {id}")
+  })
 }
 
 /// A green run is not the same as an installable release: the version must be listed on
@@ -205,6 +212,16 @@ mod tests {
     assert_eq!(slept, vec![POLL_INTERVAL, POLL_INTERVAL]);
     let gh = late.inner.calls_for("gh");
     assert!(gh.iter().any(|c| c == &["run", "watch", "123456", "--exit-status"]), "{gh:?}");
+  }
+
+  #[test]
+  fn a_failed_url_lookup_does_not_fail_a_green_run() {
+    let r = scripted();
+    r.script_err("gh", &["run", "view"], 1, "HTTP 502");
+    let index = StubIndexClient { versions: vec![] };
+    let flag = AtomicBool::new(false);
+    let d = deps(&r, &index, &flag);
+    assert_eq!(wait_for_run(&d, Path::new("."), "v1.2.3", &mut |_| {}).unwrap(), "run 123456");
   }
 
   #[test]
