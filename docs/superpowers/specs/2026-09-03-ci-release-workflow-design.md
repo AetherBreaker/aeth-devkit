@@ -151,7 +151,8 @@ above.
   Steps: checkout, `dtolnay/rust-toolchain@stable` with the target,
   `PyO3/maturin-action` (`--release --strip --out dist`, `manylinux` on Linux only),
   upload `dist/*` as artifact `wheel-<target>`. The Docker design adds a second binary to
-  this matrix; the job is written so an extra `cargo build` step and artefact slot in.
+  this matrix, and the VS Code extension design adds a `vsix` job; the workflow is
+  written so extra build steps and artefacts slot in.
 - `sdist` on `ubuntu-latest`: `uv build --sdist`, upload as artifact `sdist`.
 - `publish` needs `[build, sdist]`: download all artifacts into `dist/`, the version
   assertion, `gh release upload` with `--clobber`, then the publish step from
