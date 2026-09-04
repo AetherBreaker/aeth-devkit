@@ -149,7 +149,9 @@ pub fn merge_gitignore(original: Option<&str>, template: &str, log: &mut Vec<Str
       .skip_while(|l| l.trim().is_empty())
       .cloned()
       .collect();
-    let expected_tail: Vec<String> = std::iter::once(PROJECT_SPECIFIC_MARKER.to_string()).chain(cleaned.iter().cloned()).collect();
+    let expected_tail: Vec<String> = std::iter::once(PROJECT_SPECIFIC_MARKER.to_string())
+      .chain(cleaned.iter().cloned())
+      .collect();
     if tail == expected_tail {
       return original.to_string();
     }
@@ -258,7 +260,10 @@ mod tests {
       # mine\nsecrets/\n";
     let mut log = vec![];
     let out = merge_gitignore(Some(orig), tpl, &mut log);
-    assert_eq!(out, "# Python\n__pycache__/\n.venv\n.cache\n\n# ---- project-specific ----\n# mine\nsecrets/\n");
+    assert_eq!(
+      out,
+      "# Python\n__pycache__/\n.venv\n.cache\n\n# ---- project-specific ----\n# mine\nsecrets/\n"
+    );
     let mut log2 = vec![];
     assert_eq!(merge_gitignore(Some(&out), tpl, &mut log2), out);
     assert!(log2.is_empty(), "{log2:?}");
