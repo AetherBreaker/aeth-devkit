@@ -36,7 +36,7 @@ pub fn normalize_newlines(s: &str) -> String {
 /// endings are normalised first: a CRLF checkout against an LF template must show the real
 /// changes, not every line.
 pub fn unified_diff(rel: &str, old: &str, new: &str) -> String {
-  TextDiff::from_lines(&normalize_newlines(old), &normalize_newlines(new))
+  TextDiff::from_lines(normalize_newlines(old), normalize_newlines(new))
     .unified_diff()
     .context_radius(3)
     .header(&format!("{rel} (project)"), &format!("{rel} (devkit template)"))
