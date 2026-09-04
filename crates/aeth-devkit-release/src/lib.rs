@@ -167,7 +167,7 @@ pub fn run_outcome(args: &Args, deps: &Deps) -> Result<Outcome> {
   preflight::check_tools(deps.runner, &root)?;
   let branch = preflight::check_branch(deps.runner, &root)?;
   // After `check_branch`, which fetched: the tag-only case compares against `origin/main`.
-  preflight::check_workflow_committed(&root, parsed.bumps.is_empty())?;
+  preflight::check_workflow_committed(&root, parsed.bumps.is_empty(), &cfg)?;
   // `cfg` above came from the *worktree* pyproject.toml; a release builds from `HEAD`'s
   // copy, so the two must agree on everything release-critical (hard error, exit 2).
   preflight::check_config_committed(&root, &cfg, args.index.as_deref(), deps.env)?;
@@ -235,6 +235,20 @@ pub fn run_outcome(args: &Args, deps: &Deps) -> Result<Outcome> {
       Ok(Outcome::Released {
         version: target.new.clone(),
       })
+    }
+    // A run whose state is unknown may still publish: unwinding under it would delete the
+    // release and tag it is about to upload to, and could never un-publish. Leave every
+    // step in place and hand the user the same commands the unwind would have run.
+    Err(e) if e.downcast_ref::<ci::Unsettled>().is_some() => {
+      eprintln!(
+        "\nERROR: Release failed: {e:#}\nNOT rolling back: the run may still publish. When it has stopped (see Actions), \
+         either run `devkit release` again for this version — it detects what exists and offers to remove it — \
+         or undo by hand, in this order:"
+      );
+      for undo in journal.iter().rev() {
+        eprintln!("  {}", undo.manual_command());
+      }
+      Ok(Outcome::Aborted)
     }
     Err(e) => {
       eprintln!("\nERROR: Release failed: {e:#}\nRolling back...");

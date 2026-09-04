@@ -23,6 +23,8 @@ use aeth_devkit_release::{Args, Deps, run};
 const PYPROJECT: &str = "[project]\nname = \"demo\"\nversion = \"1.0.0\"\n\n[[tool.uv.index]]\nname = \"Private\"\nurl = \"https://x/+simple\"\npublish-url = \"https://x/user/internal/\"\n";
 const CARGO: &str = "[workspace]\n  members = []\n\n[workspace.package]\n  version = \"1.0.0\"\n";
 const WORKFLOW: &str = ".github/workflows/release.yml";
+/// What setup-project would render for the fixture: the publish step names its index.
+const WORKFLOW_TEXT: &str = "name: Release\n  run: uv publish --index Private dist/*\n";
 
 /// A temp repo plus every injectable collaborator, owned together so their lifetimes line
 /// up: `deps()` borrows from `self`, and the borrow checker guarantees nothing is used after
@@ -43,6 +45,8 @@ struct World {
 struct SeqRunner {
   inner: RecordingRunner,
   released: Rc<Cell<bool>>,
+  /// How many run-state queries still answer `in_progress` before the scripted answer.
+  live_polls: Cell<usize>,
   /// Cleared by a test that scripts runs which exist *before* the release (an earlier
   /// release of the tag), which the pre-flight must see.
   gate_runs: Cell<bool>,
@@ -90,6 +94,15 @@ impl Runner for SeqRunner {
     if program == "gh" && starts(args, &["release", "create"]) {
       self.released.set(true);
     }
+    if program == "gh" && starts(args, &["run", "view", "123456", "--json", "status,conclusion"]) && self.live_polls.get() > 0 {
+      self.live_polls.set(self.live_polls.get() - 1);
+      self.inner.run_capture(program, args, cwd)?; // recorded
+      return Ok(CapturedOutput {
+        code: Some(0),
+        stdout: "in_progress \n".into(),
+        ..Default::default()
+      });
+    }
     if program == "gh" && starts(args, &["run", "list", "--workflow"]) && self.gate_runs.get() && !self.released.get() {
       self.inner.run_capture(program, args, cwd)?; // recorded, answered empty
       return Ok(CapturedOutput {
@@ -118,7 +131,7 @@ impl World {
     std::fs::write(root.join("uv.lock"), "version = 1\n").unwrap();
     std::fs::write(root.join("Cargo.toml"), CARGO).unwrap();
     std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
-    std::fs::write(root.join(WORKFLOW), "name: Release\n").unwrap();
+    std::fs::write(root.join(WORKFLOW), WORKFLOW_TEXT).unwrap();
     git::init_test_repo(root);
     git::commit_paths(
       root,
@@ -162,6 +175,7 @@ impl World {
       runner: SeqRunner {
         inner: runner,
         released: Rc::clone(&released),
+        live_polls: Cell::new(0),
         gate_runs: Cell::new(true),
       },
       devpi: SeqDevpi {
@@ -351,10 +365,8 @@ fn failed_workflow_run_rolls_back_the_whole_release() {
 fn a_run_still_going_when_its_watcher_dies_is_cancelled_before_the_rollback() {
   let w = World::new(&[]);
   w.runner.script("gh", &["run", "watch"], 130, "");
-  // Never reports completed: the settle window is spent (sleeps are no-ops here) and the
-  // rollback still happens, with the cancel having been requested first.
-  w.runner
-    .script("gh", &["run", "view", "123456", "--json", "status,conclusion"], 0, "in_progress \n");
+  // Live for two polls after the cancel, then the scripted "completed failure".
+  w.runner.live_polls.set(2);
   let before = w.state();
   assert!(!ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
   assert_eq!(w.state(), before);
@@ -362,6 +374,46 @@ fn a_run_still_going_when_its_watcher_dies_is_cancelled_before_the_rollback() {
   let cancel = gh.iter().position(|c| c[..] == ["run", "cancel", "123456"]).unwrap();
   let delete = gh.iter().position(|c| starts(c, &["release", "delete", "v1.0.1"])).unwrap();
   assert!(cancel < delete, "{gh:?}");
+}
+
+#[test]
+fn a_run_that_never_settles_is_left_in_place_not_rolled_back() {
+  let w = World::new(&[]);
+  w.runner.script("gh", &["run", "watch"], 1, "");
+  // Never reports completed: the settle window is spent (sleeps are no-ops here). The
+  // release, tag and bump commit all stay, because the run may still upload to them.
+  w.runner
+    .script("gh", &["run", "view", "123456", "--json", "status,conclusion"], 0, "in_progress \n");
+  let before = w.state();
+  assert!(!ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+  let after = w.state();
+  assert_ne!(after.head, before.head);
+  assert!(after.tag.is_some());
+  let gh = w.runner.calls_for("gh");
+  assert!(gh.iter().any(|c| c[..] == ["run", "cancel", "123456"]), "{gh:?}");
+  assert!(gh.iter().all(|c| !starts(c, &["release", "delete"])), "{gh:?}");
+  assert!(
+    w.runner
+      .calls_for("git")
+      .iter()
+      .all(|c| !starts(c, &["push", "--force-with-lease"]))
+  );
+}
+
+#[test]
+fn a_workflow_for_the_wrong_publish_target_is_refused_before_anything() {
+  let w = World::new(&[]);
+  let root = w.root();
+  write_file(
+    root,
+    WORKFLOW,
+    "name: Release\n  run: uv publish --trusted-publishing always dist/*\n",
+  );
+  git::commit_paths(root, &[WORKFLOW.into()], "stale wf").unwrap();
+  let before = w.state();
+  let err = run(&w.args(&["patch"]), &w.deps()).unwrap_err().to_string();
+  assert!(err.contains("does not publish to Private"), "{err}");
+  assert_eq!(w.state(), before);
 }
 
 #[test]
@@ -426,7 +478,7 @@ fn tag_only_release_needs_the_workflow_on_origin_main() {
   let w = World::new(&[]);
   let root = w.root();
   // A workflow edit committed locally but not pushed: main is ahead of origin/main.
-  write_file(root, WORKFLOW, "name: Release\nedited: true\n");
+  write_file(root, WORKFLOW, &format!("{WORKFLOW_TEXT}edited: true\n"));
   git::commit_paths(root, &[WORKFLOW.into()], "wf").unwrap();
   let before = w.state();
   let err = run(&w.args(&[]), &w.deps()).unwrap_err().to_string();
