@@ -36,12 +36,12 @@ fn run(root: &Path, dry_run: bool) -> anyhow::Result<aeth_devkit_setup::changes:
   let deps = aeth_devkit_setup::docker::Deps {
     runner: &runner,
     prompt: &aeth_devkit_core::prompt::ScriptedPrompt::new(&[]),
+    reviewer: None,
     mode: if dry_run {
       aeth_devkit_setup::docker::Mode::DryRun
     } else {
       aeth_devkit_setup::docker::Mode::KeepAll
     },
-    interactive: false,
   };
   let ctx = aeth_devkit_setup::context::ProjectContext::discover(root)?;
   aeth_devkit_setup::run_with(&ctx, &templates(), dry_run, &deps)
