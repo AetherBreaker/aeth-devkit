@@ -81,37 +81,107 @@ export function cancelPath(req: Request): string {
   return req.response_path.replace(/\.response\.json$/, '.cancel');
 }
 
-/** Per-hunk accept/reject, accepted by default. */
+export type HunkDecision = 'accept' | 'reject' | undefined;
+
+/**
+ * Per-hunk decisions. Undecided hunks stay highlighted in the diff and count as accepted
+ * when applying, so the default answer is still "take the whole proposal".
+ */
 export class HunkState {
-  readonly accepted: boolean[];
+  readonly decisions: HunkDecision[];
 
   constructor(count: number) {
-    this.accepted = Array<boolean>(count).fill(true);
+    this.decisions = Array<HunkDecision>(count).fill(undefined);
   }
 
-  toggle(i: number): void {
-    if (i >= 0 && i < this.accepted.length) this.accepted[i] = !this.accepted[i];
-  }
-
-  set(i: number, on: boolean): void {
-    if (i >= 0 && i < this.accepted.length) this.accepted[i] = on;
+  decide(i: number, d: HunkDecision): void {
+    if (i >= 0 && i < this.decisions.length) this.decisions[i] = d;
   }
 
   acceptAll(): void {
-    this.accepted.fill(true);
+    this.decisions.fill('accept');
+  }
+
+  rejected(i: number): boolean {
+    return this.decisions[i] === 'reject';
+  }
+
+  accepted(i: number): boolean {
+    return this.decisions[i] === 'accept';
   }
 
   get acceptedCount(): number {
-    return this.accepted.filter(Boolean).length;
+    return this.decisions.filter((d) => d !== 'reject').length;
+  }
+
+  get undecidedCount(): number {
+    return this.decisions.filter((d) => d === undefined).length;
   }
 
   /** `Apply accepted`: every hunk is a plain replace, none a keep, otherwise partial. */
   response(): Response {
-    const idx = this.accepted.flatMap((a, i) => (a ? [i] : []));
-    if (idx.length === this.accepted.length) return { decision: 'replace' };
+    const idx = this.decisions.flatMap((d, i) => (d === 'reject' ? [] : [i]));
+    if (idx.length === this.decisions.length) return { decision: 'replace' };
     if (idx.length === 0) return { decision: 'keep' };
     return { decision: 'partial', accepted: idx };
   }
+}
+
+/** Lines with their `\n` kept, like Rust's `split_inclusive`, so joins are lossless. */
+export function splitLines(text: string): string[] {
+  return text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+}
+
+/**
+ * `base` with every hunk where `takeOther(i)` replaced by the other text's lines. The
+ * display-side twin of the CLI's `assemble`: with base = proposed and other = current it
+ * reverts rejected hunks; with the sides swapped it applies accepted ones to the current
+ * text, so a decided hunk shows the same lines in both panels and its diff collapses.
+ */
+export function merge(
+  base: string,
+  other: string,
+  ranges: { base: [number, number]; other: [number, number] }[],
+  takeOther: (i: number) => boolean,
+): string {
+  const b = splitLines(base);
+  const o = splitLines(other);
+  let out = '';
+  let cursor = 0;
+  ranges.forEach((r, i) => {
+    out += b.slice(cursor, r.base[0]).join('');
+    out += (takeOther(i) ? o.slice(r.other[0], r.other[1]) : b.slice(r.base[0], r.base[1])).join('');
+    cursor = r.base[1];
+  });
+  return out + b.slice(cursor).join('');
+}
+
+/** The two panel texts for the current decisions: only undecided hunks still differ. */
+export function panels(current: string, proposed: string, hunks: Hunk[], state: HunkState): { left: string; right: string } {
+  return {
+    left: merge(
+      current,
+      proposed,
+      hunks.map((h) => ({ base: h.current, other: h.proposed })),
+      (i) => state.accepted(i),
+    ),
+    right: merge(
+      proposed,
+      current,
+      hunks.map((h) => ({ base: h.proposed, other: h.current })),
+      (i) => state.rejected(i),
+    ),
+  };
+}
+
+/** Where each hunk starts in the right panel once rejected hunks carry current lines. */
+export function rightPanelLines(hunks: Hunk[], state: HunkState): number[] {
+  let offset = 0;
+  return hunks.map((h, i) => {
+    const line = h.proposed[0] + offset;
+    if (state.rejected(i)) offset += h.current[1] - h.current[0] - (h.proposed[1] - h.proposed[0]);
+    return line;
+  });
 }
 
 /** Temp file + rename: the CLI polls this path and must never read a half-written file. */

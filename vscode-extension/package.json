@@ -21,12 +21,14 @@
       { "command": "aeth-devkit.acceptAllHunks", "title": "Accept all hunks", "category": "devkit", "icon": "$(checklist)" },
       { "command": "aeth-devkit.acceptHunk", "title": "Accept hunk", "category": "devkit" },
       { "command": "aeth-devkit.rejectHunk", "title": "Reject hunk", "category": "devkit" },
+      { "command": "aeth-devkit.undoHunk", "title": "Undo hunk decision", "category": "devkit" },
       { "command": "aeth-devkit.addToRuntimeBaseClasses", "title": "Add to runtime-evaluated-base-classes", "category": "devkit" }
     ],
     "menus": {
       "commandPalette": [
         { "command": "aeth-devkit.acceptHunk", "when": "false" },
         { "command": "aeth-devkit.rejectHunk", "when": "false" },
+        { "command": "aeth-devkit.undoHunk", "when": "false" },
         { "command": "aeth-devkit.applyAccepted", "when": "resourceScheme == aeth-devkit-proposed" },
         { "command": "aeth-devkit.acceptAllHunks", "when": "resourceScheme == aeth-devkit-proposed" },
         { "command": "aeth-devkit.replaceFile", "when": "resourceScheme == aeth-devkit-proposed" },
