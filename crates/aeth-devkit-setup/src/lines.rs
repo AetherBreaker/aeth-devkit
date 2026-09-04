@@ -78,6 +78,8 @@ fn is_rule(line: &str) -> bool {
   !t.is_empty() && !t.starts_with('#')
 }
 
+const PROJECT_SPECIFIC_MARKER: &str = "# ---- project-specific ----";
+
 /// If the existing file has no rules outside the template, replace it. Otherwise prepend
 /// the template and drop duplicated rules (and orphaned comments) from the remainder.
 pub fn merge_gitignore(original: Option<&str>, template: &str, log: &mut Vec<String>) -> String {
@@ -102,10 +104,17 @@ pub fn merge_gitignore(original: Option<&str>, template: &str, log: &mut Vec<Str
     return join(&template_lines, eol);
   }
 
-  // Prepend the template; keep only non-duplicate rules from the original.
+  // Prepend the template; keep only non-duplicate rules from the original. Drop any
+  // pre-existing marker line(s) too — a fresh one is added below, and leaving stale ones
+  // in place would duplicate the marker on every run whose template text drifted even
+  // slightly (trailing whitespace, a reordered rule, …), since that's the only thing that
+  // breaks the byte-identical "already prepended" fast path further down.
   let mut remainder: Vec<String> = Vec::new();
   for l in &orig_lines {
     if is_rule(l) && template_rules.contains(&norm(l)) {
+      continue;
+    }
+    if l.trim() == PROJECT_SPECIFIC_MARKER {
       continue;
     }
     remainder.push(l.clone());
@@ -129,7 +138,10 @@ pub fn merge_gitignore(original: Option<&str>, template: &str, log: &mut Vec<Str
     cleaned.pop();
   }
 
-  // Already in the prepended form? Then the file is unchanged.
+  // Already in the canonical prepended form (template, blank, single marker, cleaned
+  // remainder)? Then the file is unchanged. `cleaned` never contains the marker (it's
+  // stripped above), so compare against the tail with exactly one marker reinstated —
+  // not against `cleaned` directly, or an already-canonical file would never short-circuit.
   let already: Vec<String> = split_lines(original.trim_end_matches(['\n', '\r']));
   if already.starts_with(&template_lines) {
     let tail: Vec<String> = already[template_lines.len()..]
@@ -137,7 +149,8 @@ pub fn merge_gitignore(original: Option<&str>, template: &str, log: &mut Vec<Str
       .skip_while(|l| l.trim().is_empty())
       .cloned()
       .collect();
-    if tail == cleaned {
+    let expected_tail: Vec<String> = std::iter::once(PROJECT_SPECIFIC_MARKER.to_string()).chain(cleaned.iter().cloned()).collect();
+    if tail == expected_tail {
       return original.to_string();
     }
   }
@@ -145,7 +158,7 @@ pub fn merge_gitignore(original: Option<&str>, template: &str, log: &mut Vec<Str
   log.push(format!("prepended template; kept {} project-specific rule(s)", extra.len()));
   let mut out = template_lines;
   out.push(String::new());
-  out.push("# ---- project-specific ----".into());
+  out.push(PROJECT_SPECIFIC_MARKER.into());
   out.extend(cleaned);
   join(&out, eol)
 }
@@ -235,6 +248,32 @@ mod tests {
     let mut log2 = vec![];
     assert_eq!(merge_gitignore(Some(&out), tpl, &mut log2), out);
     assert!(log2.is_empty(), "{log2:?}");
+  }
+
+  #[test]
+  fn gitignore_collapses_stale_duplicate_markers() {
+    let tpl = "# Python\n__pycache__/\n.venv\n.cache\n";
+    let orig = "# Python\n__pycache__/\n.venv\n.cache\n\n\
+      # ---- project-specific ----\n# ---- project-specific ----\n# ---- project-specific ----\n\
+      # mine\nsecrets/\n";
+    let mut log = vec![];
+    let out = merge_gitignore(Some(orig), tpl, &mut log);
+    assert_eq!(out, "# Python\n__pycache__/\n.venv\n.cache\n\n# ---- project-specific ----\n# mine\nsecrets/\n");
+    let mut log2 = vec![];
+    assert_eq!(merge_gitignore(Some(&out), tpl, &mut log2), out);
+    assert!(log2.is_empty(), "{log2:?}");
+  }
+
+  #[test]
+  fn gitignore_marker_stays_singular_across_template_drift() {
+    let orig = "# generated\n__pycache__/\n.venv\n\n# mine\nsecrets/\n.cache/\n";
+    let mut log = vec![];
+    let out1 = merge_gitignore(Some(orig), "# Python\n__pycache__/\n.venv\n.cache\n", &mut log);
+    let mut log2 = vec![];
+    // A trailing-space drift in the template (e.g. a re-vendored comment line) must not
+    // defeat marker dedup the way it broke the "already prepended" byte-identical check.
+    let out2 = merge_gitignore(Some(&out1), "# Python \n__pycache__/\n.venv\n.cache\n", &mut log2);
+    assert_eq!(out2.matches("# ---- project-specific ----").count(), 1, "{out2:?}");
   }
 
   #[test]
