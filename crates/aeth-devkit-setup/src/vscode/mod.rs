@@ -36,7 +36,11 @@ impl Drop for VsCode {
 /// apply `PATHEXT`, so the candidates are spelled out (std runs `.cmd` through `cmd.exe`
 /// with its own argument escaping, which is why the URL we pass carries no `%`).
 pub fn find_launcher(path: &OsStr) -> Option<PathBuf> {
-  let names: &[&str] = if cfg!(windows) { &["code.cmd", "code.exe", "code"] } else { &["code"] };
+  let names: &[&str] = if cfg!(windows) {
+    &["code.cmd", "code.exe", "code"]
+  } else {
+    &["code"]
+  };
   std::env::split_paths(path)
     .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
     .find(|p| p.is_file())
@@ -62,7 +66,9 @@ pub fn grant_proposal(argv: Option<&str>) -> Result<Option<String>> {
       if items.iter().any(|v| v.as_str() == Some(EXTENSION_ID)) {
         return Ok(None);
       }
-      let key_at = text.rfind(&format!("\"{ARGV_KEY}\"")).context("argv.json: key not found in the text")?;
+      let key_at = text
+        .rfind(&format!("\"{ARGV_KEY}\""))
+        .context("argv.json: key not found in the text")?;
       let open = key_at + text[key_at..].find('[').context("argv.json: array not found")? + 1;
       let rest = &text[open..];
       let sep = if rest.trim_start().starts_with(']') {
@@ -83,7 +89,11 @@ pub fn grant_proposal(argv: Option<&str>) -> Result<Option<String>> {
         .find(|l| l.trim_start().starts_with('"'))
         .map(|l| l[..l.len() - l.trim_start().len()].to_string())
         .unwrap_or_else(|| "\t".into());
-      Ok(Some(format!("{}\n{indent}\"{ARGV_KEY}\": [{entry}]{comma}{}", &text[..brace], &text[brace..])))
+      Ok(Some(format!(
+        "{}\n{indent}\"{ARGV_KEY}\": [{entry}]{comma}{}",
+        &text[..brace],
+        &text[brace..]
+      )))
     }
   }
 }
@@ -105,7 +115,8 @@ pub fn stray_notes(home: &Path, project_root: &Path) -> Vec<String> {
     }
   }
   if project_root.join(".vscode").join("extension").is_dir() {
-    notes.push(".vscode/extension/ is the old Drekker extension source; the devkit extension replaces it, so it can be deleted.".into());
+    notes
+      .push(".vscode/extension/ is the old Drekker extension source; the devkit extension replaces it, so it can be deleted.".into());
   }
   notes
 }
@@ -175,7 +186,10 @@ pub fn prepare(opts: &Options, runner: &dyn aeth_devkit_core::process::Runner, f
     Ok(None) => true,
     Ok(Some(granted)) if opts.install => {
       if let Err(e) = std::fs::create_dir_all(argv_path.parent().unwrap()).and_then(|()| std::fs::write(&argv_path, granted)) {
-        notes.push(format!("could not edit {}: {e}; the in-editor buttons stay hidden", argv_path.display()));
+        notes.push(format!(
+          "could not edit {}: {e}; the in-editor buttons stay hidden",
+          argv_path.display()
+        ));
       } else {
         notes.push("restart VS Code once to enable the in-editor devkit buttons".into());
       }
@@ -243,11 +257,19 @@ mod tests {
     let tmp = tempfile::tempdir().unwrap();
     let mut o = options(tmp.path(), true);
     o.term_program = None;
-    assert!(matches!(prepare(&o, &installed_runner(tmp.path()), &StubFetch::default()), Prepared::Inert));
+    assert!(matches!(
+      prepare(&o, &installed_runner(tmp.path()), &StubFetch::default()),
+      Prepared::Inert
+    ));
     o.force = true;
-    assert!(matches!(prepare(&o, &installed_runner(tmp.path()), &StubFetch::default()), Prepared::Ready(_)));
+    assert!(matches!(
+      prepare(&o, &installed_runner(tmp.path()), &StubFetch::default()),
+      Prepared::Ready(_)
+    ));
     o.path = Some(std::env::join_paths([tmp.path()]).unwrap());
-    assert!(matches!(prepare(&o, &installed_runner(tmp.path()), &StubFetch::default()), Prepared::Unavailable(m) if m.contains("PATH")));
+    assert!(
+      matches!(prepare(&o, &installed_runner(tmp.path()), &StubFetch::default()), Prepared::Unavailable(m) if m.contains("PATH"))
+    );
   }
 
   #[test]
@@ -300,7 +322,8 @@ mod tests {
     let old = RecordingRunner::new(0);
     old.script(&code(tmp.path()), &["--list-extensions"], 0, "aeth.aeth-devkit@0.0.0\n");
     let mut f = StubFetch::default();
-    f.bodies.insert(install::refs_url(), r#"[{"ref":"refs/tags/vscode-extension-v1"}]"#.into());
+    f.bodies
+      .insert(install::refs_url(), r#"[{"ref":"refs/tags/vscode-extension-v1"}]"#.into());
     assert!(matches!(prepare(&o, &old, &f), Prepared::ReloadNeeded));
   }
 
@@ -331,7 +354,10 @@ mod tests {
       out,
       "// header\n{\n\t\"enable-proposed-api\": [\"aeth.aeth-devkit\"],\n\t// Use software rendering.\n\t// \"disable-hardware-acceleration\": true,\n\t\"enable-crash-reporter\": true,\n\t\"crash-reporter-id\": \"x\"\n}\n"
     );
-    assert_eq!(grant_proposal(Some("{}")).unwrap().unwrap(), "{\n\t\"enable-proposed-api\": [\"aeth.aeth-devkit\"]}");
+    assert_eq!(
+      grant_proposal(Some("{}")).unwrap().unwrap(),
+      "{\n\t\"enable-proposed-api\": [\"aeth.aeth-devkit\"]}"
+    );
     assert_eq!(grant_proposal(Some(&out)).unwrap(), None, "second run: already granted");
   }
 
@@ -346,7 +372,9 @@ mod tests {
       "{\"enable-proposed-api\": [\"aeth.aeth-devkit\", \"other.ext\"]}"
     );
     assert_eq!(
-      grant_proposal(Some("{\n  \"enable-proposed-api\": [\n    \"other.ext\"\n  ]\n}\n")).unwrap().unwrap(),
+      grant_proposal(Some("{\n  \"enable-proposed-api\": [\n    \"other.ext\"\n  ]\n}\n"))
+        .unwrap()
+        .unwrap(),
       "{\n  \"enable-proposed-api\": [\"aeth.aeth-devkit\",\n    \"other.ext\"\n  ]\n}\n"
     );
     assert!(grant_proposal(Some("{\"enable-proposed-api\": true}")).is_err());

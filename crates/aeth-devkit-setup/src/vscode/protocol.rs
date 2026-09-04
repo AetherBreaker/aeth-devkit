@@ -136,7 +136,10 @@ mod tests {
       title: "t".into(),
       current_path: "c".into(),
       proposed_path: "p".into(),
-      hunks: vec![Hunk { current: [0, 1], proposed: [0, 2] }],
+      hunks: vec![Hunk {
+        current: [0, 1],
+        proposed: [0, 2],
+      }],
       offer_replace_all: true,
       content_menu: false,
       response_path: "r".into(),
@@ -153,7 +156,13 @@ mod tests {
   fn proposal_normalises_line_endings_and_computes_hunks() {
     let p = Proposal::new("t", "q?", "a\r\nb\r\n", "a\nc\n");
     assert_eq!(p.current, "a\nb\n");
-    assert_eq!(p.hunks, vec![Hunk { current: [1, 2], proposed: [1, 2] }]);
+    assert_eq!(
+      p.hunks,
+      vec![Hunk {
+        current: [1, 2],
+        proposed: [1, 2]
+      }]
+    );
   }
 
   #[test]

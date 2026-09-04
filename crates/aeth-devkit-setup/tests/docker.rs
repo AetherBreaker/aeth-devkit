@@ -383,10 +383,14 @@ fn a_missing_service_is_its_own_diff_and_sidecars_are_untouched() {
 fn adding_a_missing_service_always_needs_a_human() {
   let dir = project(&["demo-app", "worker"], "https://github.com/O/Demo.git");
   let root = dir.path();
-  write(root, "docker/compose.yaml", "services:
+  write(
+    root,
+    "docker/compose.yaml",
+    "services:
   demo-app:
     container_name: demo-app
-");
+",
+  );
   // Nobody to ask: nothing added and the note says so; a dry run still counts the add as
   // drift.
   let (changes, prompt, _) = run(root, Mode::KeepAll, &[], false);
@@ -407,7 +411,10 @@ fn adding_a_missing_service_always_needs_a_human() {
     vec!["Add service worker to docker/compose.yaml? [replace / anything else keeps it]:"]
   );
   let out = read(root, "docker/compose.yaml");
-  assert!(!out.contains("  worker:") && out.contains("    build:"), "edits applied, add kept: {out}");
+  assert!(
+    !out.contains("  worker:") && out.contains("    build:"),
+    "edits applied, add kept: {out}"
+  );
   // A human answering `replace` gets the service and clears the drift.
   let (changes, _, _) = run(root, Mode::Ask, &["replace"], false);
   assert!(read(root, "docker/compose.yaml").contains(
@@ -474,7 +481,8 @@ fn a_partial_answer_from_the_reviewer_writes_the_assembled_text() {
   write(
     root,
     "docker/Dockerfile",
-    &(good.replace("PYTHONOPTIMIZE=1", "PYTHONOPTIMIZE=2") + "# trailing
+    &(good.replace("PYTHONOPTIMIZE=1", "PYTHONOPTIMIZE=2")
+      + "# trailing
 "),
   );
   let prompt = ScriptedPrompt::new(&[]);
@@ -489,8 +497,14 @@ fn a_partial_answer_from_the_reviewer_writes_the_assembled_text() {
   let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
   let changes = aeth_devkit_setup::run_with(&ctx, &templates(), false, &deps).unwrap();
   let out = read(root, "docker/Dockerfile");
-  assert!(out.contains("PYTHONOPTIMIZE=1") && out.ends_with("# trailing
-"), "{out}");
+  assert!(
+    out.contains("PYTHONOPTIMIZE=1")
+      && out.ends_with(
+        "# trailing
+"
+      ),
+    "{out}"
+  );
   assert!(
     changes.files.iter().any(|f| f.details.iter().any(|d| d.contains("1 of 2 hunks"))),
     "{}",
