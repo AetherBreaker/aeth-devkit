@@ -14,8 +14,19 @@ pub struct ProjectContext {
   pub package: String,
   /// Normalized names of every declared dependency (runtime, optional, and groups).
   pub dependencies: HashSet<String>,
-  /// Whether the project has a Docker setup (`docker/` dir or `Dockerfile*`).
+  /// Whether `[tool.docker].services` lists at least one service — the only Docker
+  /// switch. Docker files alone do not count (see `docker_files_present`).
   pub has_docker: bool,
+  /// `[project].name` as written (dist name; `package` is the import name).
+  pub name: String,
+  /// `[project].version`, when present.
+  pub version: Option<String>,
+  /// The `origin` remote URL when the project is git-tracked and has one.
+  pub origin: Option<String>,
+  /// `[tool.docker].services`: the compose services setup-project manages.
+  pub docker_services: Vec<String>,
+  /// Legacy `[tool.docker]` keys still present (`chown_paths`, `mkdirs`); only reported.
+  pub docker_legacy_keys: Vec<String>,
   /// Directory holding the Python package: `python` for mixed Rust/Python projects
   /// (where `src/` is Rust), otherwise `src`.
   pub python_dir: String,
@@ -90,15 +101,42 @@ impl ProjectContext {
       }
     }
 
-    // A bare `docker/` directory (empty, or a stray leftover) is not a Docker setup; it
-    // has to hold a Dockerfile or a compose file, or the root has to have a Dockerfile.
-    let has_docker = dir_has_docker_content(&root) || dir_has_docker_content(&root.join("docker"));
+    let docker = doc.get("tool").and_then(|t| t.get("docker"));
+    // Only string entries count; a malformed list is treated as empty rather than fatal.
+    let docker_services: Vec<String> = docker
+      .and_then(|d| d.get("services"))
+      .and_then(|s| s.as_array())
+      .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+      .unwrap_or_default();
+    let docker_legacy_keys: Vec<String> = ["chown_paths", "mkdirs"]
+      .into_iter()
+      .filter(|k| docker.is_some_and(|d| d.get(k).is_some()))
+      .map(str::to_string)
+      .collect();
+    let has_docker = !docker_services.is_empty();
+    let version = doc
+      .get("project")
+      .and_then(|p| p.get("version"))
+      .and_then(|v| v.as_str())
+      .map(str::to_string);
+    // `git remote get-url` outside a repository fails; `ok().flatten()` folds both "not a
+    // repo" and "no origin" into `None`.
+    let origin = if aeth_devkit_core::git::is_git_tracked(&root) {
+      aeth_devkit_core::git::origin_url(&root).ok().flatten()
+    } else {
+      None
+    };
 
     Ok(Self {
       root,
       package,
       dependencies,
       has_docker,
+      name: project_name,
+      version,
+      origin,
+      docker_services,
+      docker_legacy_keys,
       python_dir,
       has_rust,
       publish_index,
@@ -109,28 +147,33 @@ impl ProjectContext {
     self.dependencies.contains(&normalize_dist_name(name))
   }
 
+  /// The project depends on aeth_ext, or *is* aeth_ext: both get its compose conventions
+  /// (the ALERTS_* environment).
+  pub fn uses_aeth_ext(&self) -> bool {
+    self.has_dependency("aeth-ext") || normalize_dist_name(&self.name) == "aeth-ext"
+  }
+
+  /// A Dockerfile at the root or under `docker/`, or a compose file anywhere docker-pin
+  /// would find one. Used only for the "services is empty but files exist" advisory.
+  pub fn docker_files_present(&self) -> bool {
+    let dockerfile_in = |dir: &Path| {
+      std::fs::read_dir(dir)
+        .map(|rd| {
+          rd.flatten()
+            .any(|e| e.path().is_file() && e.file_name().to_string_lossy().starts_with("Dockerfile"))
+        })
+        .unwrap_or(false)
+    };
+    dockerfile_in(&self.root)
+      || dockerfile_in(&self.root.join("docker"))
+      || aeth_devkit_core::compose::find_compose_file(&self.root).ok().flatten().is_some()
+  }
+
   /// Replace `${workspaceFolder}` with the project root and normalize separators.
   pub fn resolve_workspace_var(&self, value: &str) -> PathBuf {
     let replaced = value.replace("${workspaceFolder}", &self.root.to_string_lossy());
     PathBuf::from(replaced.replace('/', std::path::MAIN_SEPARATOR_STR))
   }
-}
-
-/// Whether `dir` directly contains a `Dockerfile*` or a compose file. Both the modern
-/// (`compose.yml`) and the legacy (`docker-compose.yml`) spellings count: the legacy one is
-/// still the more common in the wild, and the previous `docker/` -is-a-directory probe
-/// accepted it, so leaving it out would silently demote real Docker projects.
-fn dir_has_docker_content(dir: &Path) -> bool {
-  let Ok(entries) = std::fs::read_dir(dir) else { return false };
-  entries.flatten().any(|e| {
-    let name = e.file_name().to_string_lossy().to_string();
-    e.path().is_file() && (name.starts_with("Dockerfile") || is_compose_file(&name))
-  })
-}
-
-/// The four compose filenames Docker itself looks for, modern spelling first.
-fn is_compose_file(name: &str) -> bool {
-  matches!(name, "compose.yml" | "compose.yaml" | "docker-compose.yml" | "docker-compose.yaml")
 }
 
 /// The sole package directory under `dir` (has `__init__.py`), if unambiguous.
@@ -192,9 +235,9 @@ mod tests {
 mod docker_detection {
   use super::*;
 
-  fn project(files: &[&str]) -> tempfile::TempDir {
+  fn project(pyproject: &str, files: &[&str]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("pyproject.toml"), "[project]\nname = \"p\"\n").unwrap();
+    std::fs::write(dir.path().join("pyproject.toml"), pyproject).unwrap();
     for f in files {
       let p = dir.path().join(f);
       std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -204,36 +247,42 @@ mod docker_detection {
   }
 
   #[test]
-  fn a_bare_docker_directory_is_not_a_docker_setup() {
-    let dir = project(&["docker/.keep"]);
-    assert!(!ProjectContext::discover(dir.path()).unwrap().has_docker);
+  fn services_is_the_only_switch() {
+    let on = project("[project]\nname = \"p\"\n[tool.docker]\nservices = [\"p\"]\n", &[]);
+    let ctx = ProjectContext::discover(on.path()).unwrap();
+    assert!(ctx.has_docker);
+    assert_eq!(ctx.docker_services, vec!["p"]);
+    // Real Docker files without a services list are not a Docker setup any more…
+    let files = project("[project]\nname = \"p\"\n", &["docker/Dockerfile", "docker/compose.yaml"]);
+    let ctx = ProjectContext::discover(files.path()).unwrap();
+    assert!(!ctx.has_docker);
+    // …but the advisory needs to know they exist.
+    assert!(ctx.docker_files_present());
+    let empty = project("[project]\nname = \"p\"\n[tool.docker]\nservices = []\n", &[]);
+    let ctx = ProjectContext::discover(empty.path()).unwrap();
+    assert!(!ctx.has_docker && !ctx.docker_files_present());
   }
 
   #[test]
-  fn real_docker_content_is() {
-    for files in [
-      &["Dockerfile"][..],
-      &["Dockerfile.dev"],
-      &["docker/Dockerfile"],
-      &["docker/compose.yaml"],
-      &["docker/compose.yml"],
-      // The legacy spelling is still the common one, and the old `docker/`-is-a-directory
-      // probe accepted it; dropping it would demote real Docker projects.
-      &["docker-compose.yml"],
-      &["docker-compose.yaml"],
-      &["docker/docker-compose.yml"],
-    ] {
-      let dir = project(files);
-      assert!(ProjectContext::discover(dir.path()).unwrap().has_docker, "{files:?}");
-    }
+  fn legacy_keys_name_and_version_are_read() {
+    let dir = project(
+      "[project]\nname = \"Aeth-Ext\"\nversion = \"8.1.0\"\n[tool.docker]\nchown_paths = [\"x\"]\nmkdirs = [\"\"]\n",
+      &[],
+    );
+    let ctx = ProjectContext::discover(dir.path()).unwrap();
+    assert_eq!(ctx.docker_legacy_keys, vec!["chown_paths", "mkdirs"]);
+    assert_eq!(ctx.name, "Aeth-Ext");
+    assert_eq!(ctx.version.as_deref(), Some("8.1.0"));
+    assert!(ctx.uses_aeth_ext(), "aeth_ext itself counts");
+    assert_eq!(ctx.origin, None, "not a git repo");
   }
 
   #[test]
-  fn unrelated_yaml_is_not_a_docker_setup() {
-    for files in [&["docker/notes.yml"][..], &["compose-overrides.yml"], &["docker/README.md"]] {
-      let dir = project(files);
-      assert!(!ProjectContext::discover(dir.path()).unwrap().has_docker, "{files:?}");
-    }
+  fn a_dependency_on_aeth_ext_counts() {
+    let dir = project("[project]\nname = \"p\"\ndependencies = [\"aeth-ext[sftp]>=8\"]\n", &[]);
+    assert!(ProjectContext::discover(dir.path()).unwrap().uses_aeth_ext());
+    let dir = project("[project]\nname = \"p\"\ndependencies = [\"requests\"]\n", &[]);
+    assert!(!ProjectContext::discover(dir.path()).unwrap().uses_aeth_ext());
   }
 }
 

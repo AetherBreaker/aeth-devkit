@@ -42,7 +42,6 @@ fn make_project() -> tempfile::TempDir {
   write(root, ".gitignore", &fs::read_to_string(fx.join("gitignore-custom")).unwrap());
   write(root, ".env", &fs::read_to_string(fx.join("env")).unwrap());
   write(root, "src/imap_report_collector/__init__.py", "");
-  write(root, "docker/Dockerfile", "FROM scratch\n");
   dir
 }
 
@@ -96,6 +95,12 @@ fn applies_and_is_idempotent() {
   assert!(!py.contains("[tool.mypy]"), "{py}");
   assert!(py.contains("\"poe-tasks>=4.0.0\""), "poe-tasks pin must be untouched: {py}");
   assert!(py.contains("[tool.docker]"), "project-only sections must survive: {py}");
+  assert!(py.contains("required_persisted_dirs = [\"persisted_data\"]"), "{py}");
+  assert!(
+    changes.notes.iter().any(|n| n.contains("chown_paths and mkdirs")),
+    "{:?}",
+    changes.notes
+  );
   assert!(py.contains("[[tool.uv.index]]"), "{py}");
 
   // .env: in-place replacement, secrets untouched
@@ -457,10 +462,9 @@ fn strip_tool_docker(py: &str) -> String {
 fn docker_less_project_gets_no_tool_docker_and_no_dockerignore() {
   let dir = make_project();
   let root = dir.path();
-  fs::remove_dir_all(root.join("docker")).unwrap();
   write(root, "pyproject.toml", &strip_tool_docker(&read(root, "pyproject.toml")));
-  // A stray empty `docker/` dir must not count either.
-  fs::create_dir_all(root.join("docker")).unwrap();
+  // Docker files without `[tool.docker].services` must not count either.
+  write(root, "docker/Dockerfile", "FROM scratch\n");
   aeth_devkit_setup::run(root, &templates(), false).unwrap();
   assert!(!read(root, "pyproject.toml").contains("[tool.docker]"));
   assert!(!root.join(".dockerignore").exists());
@@ -477,7 +481,6 @@ fn git_init(root: &Path) {
 fn obsolete_artifacts_are_reported_not_removed() {
   let dir = make_project();
   let root = dir.path();
-  fs::remove_dir_all(root.join("docker")).unwrap();
   write(root, ".github/copilot-instructions.md", "old\n");
   assert!(
     read(root, "pyproject.toml").contains("[tool.docker]"),
