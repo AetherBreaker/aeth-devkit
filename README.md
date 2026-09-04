@@ -36,12 +36,14 @@ only once they migrate to Rust. -->
 ### `devkit setup-project`
 
 Flags: `--root`, `--templates-dir` (or `DEVKIT_TEMPLATES`), `--dry-run`, `--check`
-(dry-run that exits 1 on drift), `--no-commit`. No prompts; idempotent — a second run is a
-byte-for-byte no-op.
+(dry-run that exits 1 on drift), `--no-commit`, `--replace-docker`. Prompts only before
+replacing a Docker file (see **Docker** below); otherwise no prompts. Idempotent — a second
+run is a byte-for-byte no-op.
 
 - **Project discovery** - Detects the package name and layout (`src/` vs `python/`), Rust
-  (`Cargo.toml` enables the Rust overlays), Docker (a real Dockerfile/compose file enables
-  `.dockerignore` and `[tool.docker]`), and the declared dependencies (drives `if-dep` gating).
+  (`Cargo.toml` enables the Rust overlays), Docker (`[tool.docker].services` non-empty
+  enables `.dockerignore`, `[tool.docker]`, and the Docker step), and the declared
+  dependencies (drives `if-dep` gating).
 - **pyproject merge** - Comment-preserving deep merge of the template into
   `pyproject.toml` — scalars replace, arrays union, dependency arrays match by normalized
   package name so pins upgrade in place, `[tool.setup-project].keep` opts paths out,
@@ -72,15 +74,35 @@ byte-for-byte no-op.
   the workflow checks that the release owning the tag is still the one that triggered
   it, so a release deleted and recreated mid-build gets nothing from the old run. The
   first install prints a `note:` with the secret names or the trusted-publisher
-  registration values.
+  registration values. The maturin-matrix variant also builds `aeth-devkit-container`
+  per platform (static musl on Linux) and attaches both binaries to the release.
 - **Claude config** - `.claude/settings.json` (shared, no machine-specific paths) vs
   `settings.local.json` (absolute env paths + hook commands). Hook merge keeps exactly one
   entry per devkit hook, updates it in place, and leaves user hooks alone. `.mcp.json`:
   adds missing servers, never edits ones the project already defines.
+- **Docker** - Runs whenever `[tool.docker].services` lists at least one compose service.
+  `docker/Dockerfile` (and any other templated file under `docker/`) is created when
+  missing; when present and different — ignoring CRLF/LF — a unified diff is printed and
+  the file is replaced only on `replace` (`replace all` answers every remaining Docker
+  question; anything else keeps it). The compose file (docker-pin's discovery; created as
+  `docker/compose.yaml` when absent) is edited in place, format-preserving, per listed
+  service: exact keys (`build.context`, `build.dockerfile`, `container_name`,
+  `healthcheck.*`), pattern (`GIT_REPO` vs origin), presence (`GIT_TAG`, `restart`,
+  `networks`) and at-least (`volumes` mounting `/app/persisted_data`; the ALERTS_*
+  environment when the project uses aeth_ext), plus top-level `networks.coolify.external`.
+  All compose edits are one diff and one prompt; a listed service missing from the file is
+  offered as a scaffold block (`add`). Keys the standard does not name are never touched.
+  `--replace-docker` answers `replace all` up front; without a terminal every answer is
+  "keep" and a `note:` says so; `--dry-run`/`--check` print everything and count Docker
+  drift. `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to delete, never
+  removed.
 - **Placeholders** - `{project_root}`, `{package}`, `{python_dir}`, `{devkit_bin}`,
-  `{publish_index}`, `{publish_index_key}` with per-format escaping; `{devkit_bin}`
-  prefers the venv binary over `uv run devkit`. YAML templates gate blocks with
-  `# setup-project: if-publish-index` / `if-no-publish-index` … `end` markers.
+  `{publish_index}`, `{publish_index_key}`, `{devkit_version}`, `{git_repo}` with
+  per-format escaping; `{devkit_bin}` prefers the venv binary over `uv run devkit`;
+  `{git_tag}` (latest stable remote tag, resolved lazily, falling back to `v<pyproject
+  version>` with a note) and `{service}` are filled per compose scaffold block. YAML
+  templates gate blocks with `# setup-project: if-<name>` / `if-no-<name>` … `end` markers
+  (`publish-index`, `aeth-ext`).
 - **Post-apply** - `tombi format` on pyproject (non-fatal), then a quiet auto-commit of
   exactly the changed files (`Standardize project configuration with devkit`, per-file
   body; never env files or `settings.local.json`) via the machinery shared with `lock` and
@@ -89,8 +111,8 @@ byte-for-byte no-op.
   overlapping edits reject the run and roll it back (exit 3); unrelated staged work is
   left alone. Then `note:` advisories (git-ignored managed files, stale `[tool.docker]`,
   `copilot-instructions.md`).
-- **Not yet implemented** - (see TODO.md) `--docker` scaffolding flags, `--python-dir`
-  override, vendored-gitignore refresh task.
+- **Not yet implemented** - (see TODO.md) `--python-dir` override, vendored-gitignore
+  refresh task.
 
 ### `devkit lock`
 
@@ -206,6 +228,25 @@ no push), `--no-push`, `-c/--compose-file`, `--root`.
   user's uncommitted edits merged back on top of the working tree (3-way, through git's
   clean/smudge filters so a CRLF checkout merges cleanly and stays CRLF); overlapping
   edits abort before anything is committed.
+
+### `devkit-container`
+
+A separate static binary (crate `aeth-devkit-container`, release assets
+`devkit-container-x86_64-unknown-linux-musl` and `devkit-container-x86_64-pc-windows-msvc.exe`)
+that the templated Dockerfile downloads at build time, pinned to the devkit version that
+rendered it. No Python runs in the image outside the app itself.
+
+- `app-extra` - prints `--extra app` when `[project.optional-dependencies].app` exists.
+- `readme` - prints `project.readme` (string or `{ file = … }` form).
+- `run` - the entrypoint (Linux only). Must be root. Resolves the single `run-app-*`
+  script in `[project.scripts]`; checks every `[tool.docker].required_persisted_dirs`
+  entry is backed by a bind mount (the path or an ancestor below `/app`, per
+  `/proc/self/mountinfo`) and refuses to start otherwise; `mkdir -p` + recursive chown to
+  `999:999`; `setgroups([])`, `setgid`, `setuid`; `exec /app/.venv/bin/<script>`. `/app`
+  itself stays root-owned: the app writes only to its mounted dirs or temp dirs. Entries
+  that are empty, `.`, `..`, absolute or escape `/app` are errors; a table still carrying
+  `chown_paths`/`mkdirs` without `required_persisted_dirs` is refused with the migration
+  hint. Flags `--pyproject`, `--app-root`, `--mountinfo` exist for tests.
 
 ### `devkit release-and-pin`
 
