@@ -341,13 +341,16 @@ pub struct PinIndex {
 
 /// Every `[[tool.uv.index]]` entry carrying a `publish-url`, in document order. Empty when
 /// no index publishes. An entry with a `publish-url` but missing `name` or `url` is an
-/// error: readers resolve versions through the simple `url`, so it must exist.
+/// error: the name is how `uv publish --index` and the `UV_INDEX_<NAME>_*` credentials
+/// address it, and readers resolve versions through the simple `url`.
 pub fn publish_indexes(doc: &DocumentMut) -> Result<Vec<PinIndex>> {
   let str_of = |t: &dyn TableLike, key: &str| t.get(key).and_then(Item::as_str).map(str::to_string);
   let mut out = Vec::new();
   for t in index_tables(doc) {
     let Some(publish_url) = str_of(t, "publish-url") else { continue };
-    let name = str_of(t, "name").unwrap_or_else(|| "<unnamed>".into());
+    let Some(name) = str_of(t, "name") else {
+      bail!("a [[tool.uv.index]] with publish-url {publish_url} has no name; publishing needs one to address it");
+    };
     let Some(url) = str_of(t, "url") else {
       bail!("[[tool.uv.index]] {name} has a publish-url but no url; the pin command needs the simple url to read versions");
     };
@@ -359,6 +362,15 @@ pub fn publish_indexes(doc: &DocumentMut) -> Result<Vec<PinIndex>> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn a_publish_index_without_a_name_is_an_error() {
+    let doc: DocumentMut = "[[tool.uv.index]]\nurl = \"https://x/+simple\"\npublish-url = \"https://x/up\"\n"
+      .parse()
+      .unwrap();
+    let err = publish_indexes(&doc).unwrap_err().to_string();
+    assert!(err.contains("has no name"), "{err}");
+  }
 
   const DOC: &str = r#"
 [project]

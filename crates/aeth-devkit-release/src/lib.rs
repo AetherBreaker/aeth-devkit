@@ -172,6 +172,7 @@ pub fn run_outcome(args: &Args, deps: &Deps) -> Result<Outcome> {
   // copy, so the two must agree on everything release-critical (hard error, exit 2).
   preflight::check_config_committed(&root, &cfg, args.index.as_deref(), deps.env)?;
   let target = preflight::target_version(deps.runner, &root, &parsed.bumps)?;
+  ci::check_no_active_run(deps.runner, &root, &format!("v{}", target.new))?;
   if parsed.bumps.is_empty() {
     println!("Releasing {} {} (no bump)", cfg.package, target.new);
   } else {
