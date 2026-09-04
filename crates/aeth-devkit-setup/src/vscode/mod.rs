@@ -2,6 +2,7 @@
 //! place of the typed terminal prompt, when the run happens inside a VS Code terminal.
 //! `prepare` runs the detection/install/grant pipeline; the pure pieces live here.
 
+pub mod install;
 pub mod protocol;
 
 use std::ffi::OsStr;
