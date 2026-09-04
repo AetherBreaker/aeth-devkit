@@ -12,6 +12,7 @@ pub mod lines;
 pub mod md_block;
 pub mod templates;
 pub mod toml_merge;
+pub mod vscode;
 
 use std::path::Path;
 
