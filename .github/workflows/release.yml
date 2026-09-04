@@ -113,6 +113,17 @@ jobs:
           [ "v$v" = "$TAG" ] || { echo "tag $TAG does not match pyproject.toml version $v" >&2; exit 1; }
           ls -l dist
 
+      # The tag is mutable: the release for it can be deleted and recreated while the
+      # build ran. `github.event.release.id` is the release this run was triggered by; a
+      # different one now owning the tag must not receive these artefacts.
+      - name: The release must still be the one that triggered this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ github.event.release.id }}
+        run: |
+          current="$(gh release view "$TAG" --json databaseId --jq .databaseId)"
+          [ "$current" = "$RELEASE_ID" ] || { echo "release $TAG is now #$current, not #$RELEASE_ID which triggered this run; not publishing" >&2; exit 1; }
+
       - name: Attach artefacts to the release
         env:
           GH_TOKEN: ${{ github.token }}
