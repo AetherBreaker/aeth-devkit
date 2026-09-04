@@ -72,16 +72,34 @@ mod tests {
     assert_eq!(
       hunks(CUR, NEW),
       vec![
-        Hunk { current: [1, 2], proposed: [1, 2] },
-        Hunk { current: [9, 10], proposed: [9, 11] },
+        Hunk {
+          current: [1, 2],
+          proposed: [1, 2]
+        },
+        Hunk {
+          current: [9, 10],
+          proposed: [9, 11]
+        },
       ]
     );
   }
 
   #[test]
   fn hunks_for_pure_insert_delete_and_no_change() {
-    assert_eq!(hunks("a\nb\n", "a\nx\nb\n"), vec![Hunk { current: [1, 1], proposed: [1, 2] }]);
-    assert_eq!(hunks("a\nx\nb\n", "a\nb\n"), vec![Hunk { current: [1, 2], proposed: [1, 1] }]);
+    assert_eq!(
+      hunks("a\nb\n", "a\nx\nb\n"),
+      vec![Hunk {
+        current: [1, 1],
+        proposed: [1, 2]
+      }]
+    );
+    assert_eq!(
+      hunks("a\nx\nb\n", "a\nb\n"),
+      vec![Hunk {
+        current: [1, 2],
+        proposed: [1, 1]
+      }]
+    );
     assert!(hunks("a\n", "a\n").is_empty());
   }
 

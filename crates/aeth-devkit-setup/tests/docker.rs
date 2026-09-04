@@ -277,14 +277,26 @@ fn a_missing_service_is_its_own_diff_and_sidecars_are_untouched() {
 fn replace_all_and_replace_docker_add_missing_services() {
   let dir = project(&["demo-app", "worker"], "https://github.com/O/Demo.git");
   let root = dir.path();
-  write(root, "docker/compose.yaml", "services:\n  demo-app:\n    container_name: demo-app\n");
+  write(
+    root,
+    "docker/compose.yaml",
+    "services:\n  demo-app:\n    container_name: demo-app\n",
+  );
   let (_, prompt, _) = run(root, Mode::Ask, &["replace all"], false);
   assert_eq!(prompt.asked.borrow().len(), 1);
   assert!(read(root, "docker/compose.yaml").contains("\n  worker:\n"));
 
-  write(root, "docker/compose.yaml", "services:\n  demo-app:\n    container_name: demo-app\n");
+  write(
+    root,
+    "docker/compose.yaml",
+    "services:\n  demo-app:\n    container_name: demo-app\n",
+  );
   let (changes, _, _) = run(root, Mode::ReplaceAll, &[], false);
-  assert!(read(root, "docker/compose.yaml").contains("\n  worker:\n"), "{}", changes.report(root));
+  assert!(
+    read(root, "docker/compose.yaml").contains("\n  worker:\n"),
+    "{}",
+    changes.report(root)
+  );
 }
 
 #[test]

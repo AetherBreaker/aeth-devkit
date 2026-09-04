@@ -46,7 +46,11 @@ pub enum Decision {
   Keep,
   Replace,
   /// The proposed text with the rejected hunks reverted, assembled by the CLI.
-  Partial { text: String, accepted: usize, total: usize },
+  Partial {
+    text: String,
+    accepted: usize,
+    total: usize,
+  },
 }
 
 impl Decision {
@@ -235,7 +239,13 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
     match tree::child(&lines, &services, name) {
       Some(svc) => {
         let o = compose_rules::service_edits(&lines, &svc, &sc_doc, &sc_svc, name);
-        ask(&mut text, &format!("service {name}"), format!("Apply the {name} edits to {rel}? {keywords}"), &o.edits, o.details)?;
+        ask(
+          &mut text,
+          &format!("service {name}"),
+          format!("Apply the {name} edits to {rel}? {keywords}"),
+          &o.edits,
+          o.details,
+        )?;
       }
       None => {
         let indent = tree::child_indent(&lines, &services);
@@ -248,13 +258,25 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
           at: services.end,
           lines: block,
         };
-        ask(&mut text, &format!("new service {name}"), format!("Add service {name} to {rel}? {keywords}"), &[edit], vec![format!("added service {name}")])?;
+        ask(
+          &mut text,
+          &format!("new service {name}"),
+          format!("Add service {name} to {rel}? {keywords}"),
+          &[edit],
+          vec![format!("added service {name}")],
+        )?;
       }
     }
   }
   let lines = tree::split_lines(&text);
   let o = compose_rules::top_level_edits(&lines, &tree::split_lines(&sc.tail));
-  ask(&mut text, "top level", format!("Apply the top-level edits to {rel}? {keywords}"), &o.edits, o.details)?;
+  ask(
+    &mut text,
+    "top level",
+    format!("Apply the top-level edits to {rel}? {keywords}"),
+    &o.edits,
+    o.details,
+  )?;
   if text == original {
     changes.record_optional(&path, Some(&original), &original, vec![])?;
     return Ok(());
@@ -311,9 +333,17 @@ mod consent_tests {
     let r = ScriptedReviewer::new(vec![Response::Keep, Response::Dismissed, Response::ReplaceAll]);
     let c = Consent::new(&p, Some(&r), Mode::Ask);
     assert_eq!(c.decide(&proposal("a")).unwrap(), Decision::Keep);
-    assert_eq!(c.decide(&proposal("b")).unwrap(), Decision::Replace, "dismissed, terminal said replace");
+    assert_eq!(
+      c.decide(&proposal("b")).unwrap(),
+      Decision::Replace,
+      "dismissed, terminal said replace"
+    );
     assert_eq!(c.decide(&proposal("c")).unwrap(), Decision::Replace);
-    assert_eq!(c.decide(&proposal("d")).unwrap(), Decision::Replace, "replace all from VS Code sticks");
+    assert_eq!(
+      c.decide(&proposal("d")).unwrap(),
+      Decision::Replace,
+      "replace all from VS Code sticks"
+    );
     assert_eq!(p.asked.borrow().len(), 1);
     assert_eq!(*r.reviewed.borrow(), vec!["a", "b", "c"]);
   }
@@ -355,7 +385,9 @@ mod consent_tests {
   #[test]
   fn a_broken_reviewer_is_retired_after_one_note() {
     let p = ScriptedPrompt::new(&["", ""]);
-    let r = ScriptedReviewer::new(vec![Response::Error { message: "protocol 9".into() }]);
+    let r = ScriptedReviewer::new(vec![Response::Error {
+      message: "protocol 9".into(),
+    }]);
     let c = Consent::new(&p, Some(&r), Mode::Ask);
     assert_eq!(c.decide(&proposal("a")).unwrap(), Decision::Keep);
     assert_eq!(c.decide(&proposal("b")).unwrap(), Decision::Keep);
