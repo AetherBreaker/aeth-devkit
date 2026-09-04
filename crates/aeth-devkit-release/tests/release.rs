@@ -490,7 +490,8 @@ fn no_wait_returns_once_the_release_exists() {
     .filter(|(_, c)| starts(c, &["run", "list", "--workflow"]))
     .map(|(i, _)| i)
     .collect();
-  assert!(listings.len() == 1 && listings[0] < created_at, "{gh:?}");
+  // Pre-flight and the re-check before creation, none after.
+  assert!(listings.len() == 2 && listings.iter().all(|&i| i < created_at), "{gh:?}");
 }
 
 #[test]

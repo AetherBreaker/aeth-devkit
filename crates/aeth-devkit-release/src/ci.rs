@@ -298,10 +298,20 @@ pub fn verify_published(deps: &Deps, root: &Path, cfg: &Config, version: &str) -
     (deps.sleep)(POLL_INTERVAL);
     waited += POLL_INTERVAL;
   }
-  if !github::release_exists(deps.runner, root, &format!("v{version}"))? {
-    bail!("v{version} has no GitHub release any more; it was deleted while the workflow ran");
+  // The package is confirmed published by now, which no rollback can undo; only a
+  // confirmed absence of the release is worth one. An inconclusive query (auth, network)
+  // is "state unknown", left in place like an unsettled run.
+  match github::release_exists(deps.runner, root, &format!("v{version}")) {
+    Ok(true) => Ok(()),
+    Ok(false) => bail!("v{version} has no GitHub release any more; it was deleted while the workflow ran"),
+    Err(e) => Err(
+      Unsettled(format!(
+        "{}=={version} is published but the GitHub release could not be checked: {e:#}",
+        cfg.package
+      ))
+      .into(),
+    ),
   }
-  Ok(())
 }
 
 /// The Actions page for the release workflow, when `origin` is on GitHub. Printed by
@@ -798,5 +808,11 @@ mod tests {
     let d = deps(&no_release, &present, &flag, NO_SLEEP);
     let err = verify_published(&d, Path::new("."), &cfg(), "1.0.0").unwrap_err();
     assert!(err.to_string().contains("no GitHub release"), "{err}");
+    // An inconclusive query after the package is confirmed published must not roll back.
+    let blip = RecordingRunner::new(0);
+    blip.script_err("gh", &["release", "view"], 1, "HTTP 502");
+    let d = deps(&blip, &present, &flag, NO_SLEEP);
+    let err = verify_published(&d, Path::new("."), &cfg(), "1.0.0").unwrap_err();
+    assert!(err.downcast_ref::<Unsettled>().is_some(), "{err}");
   }
 }
