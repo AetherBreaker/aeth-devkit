@@ -2,6 +2,7 @@
 //! edited in place — each only with the user's consent, given per file or once for all.
 
 pub mod compose_rules;
+pub mod hunks;
 pub mod scaffold;
 pub mod static_files;
 
