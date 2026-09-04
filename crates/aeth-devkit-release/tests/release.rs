@@ -180,7 +180,7 @@ impl World {
     runner.script("gh", &["release", "create"], 0, "https://github.com/o/demo/releases/tag/v1.0.1\n");
     // The id the rollback deletes the release by.
     runner.script("gh", &["release", "view", "v1.0.1", "--json", "databaseId"], 0, "42\n");
-    // The release workflow: one run exists at once, `gh run watch` succeeds (default exit 0).
+    // The release workflow: one run exists at once, and the watch reads it green.
     runner.script("gh", &["run", "list", "--workflow"], 0, "123456 completed\n");
     runner.script("gh", &["run", "view"], 0, "https://github.com/o/demo/actions/runs/123456\n");
     // Read only after `gh run watch` fails: the run has concluded, nothing to cancel.
@@ -189,6 +189,12 @@ impl World {
       &["run", "view", "123456", "--json", "status,conclusion"],
       0,
       "completed failure\n",
+    );
+    runner.script(
+      "gh",
+      &["run", "view", "123456", "--json", "status,conclusion,jobs"],
+      0,
+      &run_json("completed", "success"),
     );
     // Matching is newest-registration-wins, so the broad `uv version` answer goes first and
     // the more specific `--bump … --dry-run` answer overrides it for that call.
@@ -323,7 +329,7 @@ fn bump_mode_happy_path() {
   let listed_at = gh.iter().position(|c| starts(c, &["run", "list", "--workflow"])).unwrap();
   let created_at = gh.iter().position(|c| starts(c, &["release", "create"])).unwrap();
   assert!(listed_at < created_at, "{gh:?}");
-  assert!(gh.iter().any(|c| c == &["run", "watch", "123456", "--exit-status"]), "{gh:?}");
+  assert!(watched(&gh), "{gh:?}");
   let st = w.state();
   assert_ne!(st.head, before);
   assert_eq!(st.tag.as_deref(), Some(git::short_head(w.root()).unwrap().as_str()));
@@ -369,6 +375,19 @@ fn notes_are_forwarded() {
 }
 
 /// Run a bump release with one scripted failure and assert the repo is fully restored.
+/// A `gh run view --json status,conclusion,jobs` payload: one job, one step, all in the
+/// same state. The watch only needs a parseable run in a known state.
+fn run_json(status: &str, conclusion: &str) -> String {
+  format!(
+    r#"{{"status":"{status}","conclusion":"{conclusion}","jobs":[{{"name":"build","status":"{status}","conclusion":"{conclusion}","steps":[{{"name":"Set up job","status":"{status}","conclusion":"{conclusion}"}}]}}]}}"#
+  )
+}
+
+/// Whether the run was watched: reading its jobs is the watch's only call.
+fn watched(gh: &[Vec<String>]) -> bool {
+  gh.iter().any(|c| c.contains(&"status,conclusion,jobs".to_string()))
+}
+
 fn rollback_case(fail_program: &str, fail_args: &[&str]) -> World {
   let w = World::new(&[]);
   let before = w.state();
@@ -390,7 +409,16 @@ fn push_failure_resets_commit_and_tag() {
 
 #[test]
 fn failed_workflow_run_rolls_back_the_whole_release() {
-  let w = rollback_case("gh", &["run", "watch"]);
+  let w = World::new(&[]);
+  let before = w.state();
+  w.runner.script(
+    "gh",
+    &["run", "view", "123456", "--json", "status,conclusion,jobs"],
+    0,
+    &run_json("completed", "failure"),
+  );
+  assert!(!ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+  assert_eq!(w.state(), before, "repo state must be restored after a failed run");
   let gh = w.runner.calls_for("gh");
   assert!(gh.iter().any(|c| deletes_release(c)), "{gh:?}");
   assert!(gh.iter().all(|c| !starts(c, &["run", "cancel"])), "{gh:?}");
@@ -399,7 +427,8 @@ fn failed_workflow_run_rolls_back_the_whole_release() {
 #[test]
 fn a_run_still_going_when_its_watcher_dies_is_cancelled_before_the_rollback() {
   let w = World::new(&[]);
-  w.runner.script("gh", &["run", "watch"], 130, "");
+  w.runner
+    .script_err("gh", &["run", "view", "123456", "--json", "status,conclusion,jobs"], 1, "HTTP 502");
   // Live for two polls after the cancel, then the scripted "completed failure".
   w.runner.live_polls.set(2);
   let before = w.state();
@@ -420,7 +449,7 @@ fn an_interrupt_during_release_creation_cancels_the_run_then_rolls_back() {
   assert!(!ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
   assert_eq!(w.state(), before);
   let gh = w.runner.calls_for("gh");
-  assert!(gh.iter().all(|c| !starts(c, &["run", "watch"])), "{gh:?}");
+  assert!(!watched(&gh), "{gh:?}");
   let cancel = gh.iter().position(|c| c[..] == ["run", "cancel", "123456"]).unwrap();
   let delete = gh.iter().position(|c| deletes_release(c)).unwrap();
   assert!(cancel < delete, "{gh:?}");
@@ -429,7 +458,8 @@ fn an_interrupt_during_release_creation_cancels_the_run_then_rolls_back() {
 #[test]
 fn a_run_that_never_settles_is_left_in_place_not_rolled_back() {
   let w = World::new(&[]);
-  w.runner.script("gh", &["run", "watch"], 1, "");
+  w.runner
+    .script_err("gh", &["run", "view", "123456", "--json", "status,conclusion,jobs"], 1, "HTTP 502");
   // Never reports completed: the settle window is spent (sleeps are no-ops here). The
   // release, tag and bump commit all stay, because the run may still upload to them.
   w.runner
@@ -573,7 +603,7 @@ fn a_release_created_despite_a_failed_gh_create_is_carried_through() {
   w.runner.release_exists_anyway.set(true);
   assert!(ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
   let gh = w.runner.calls_for("gh");
-  assert!(gh.iter().any(|c| starts(c, &["run", "watch"])), "{gh:?}");
+  assert!(watched(&gh), "{gh:?}");
   assert!(gh.iter().all(|c| !deletes_release(c)), "{gh:?}");
 }
 
@@ -592,7 +622,7 @@ fn an_unverifiable_release_creation_is_left_in_place() {
   assert_ne!(after.head, before.head);
   assert!(after.tag.is_some());
   let gh = w.runner.calls_for("gh");
-  assert!(gh.iter().all(|c| !deletes_release(c) && !starts(c, &["run", "watch"])), "{gh:?}");
+  assert!(gh.iter().all(|c| !deletes_release(c)) && !watched(&gh), "{gh:?}");
 }
 
 #[test]

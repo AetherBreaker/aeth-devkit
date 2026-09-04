@@ -21,10 +21,12 @@ pub mod ci;
 pub mod config;
 pub mod preflight;
 pub mod prompt;
+pub mod repaint;
 pub mod report;
 pub mod snapshot;
 pub mod steps;
 pub mod undo;
+pub mod watch;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
