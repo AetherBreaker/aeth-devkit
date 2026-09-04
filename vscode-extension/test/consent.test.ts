@@ -2,7 +2,20 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { HunkState, cacheDir, cancelPath, isInside, parseRequest, requestPath, writeResponse } from '../src/consent';
+import {
+  Hunk,
+  HunkState,
+  cacheDir,
+  cancelPath,
+  isInside,
+  merge,
+  panels,
+  parseRequest,
+  requestPath,
+  rightPanelLines,
+  splitLines,
+  writeResponse,
+} from '../src/consent';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'aeth-consent-'));
 
@@ -61,19 +74,67 @@ describe('parseRequest', () => {
 });
 
 describe('HunkState', () => {
-  it('collapses all-accepted to replace and none to keep', () => {
+  it('counts undecided as accepted and collapses all-or-nothing answers', () => {
     const s = new HunkState(3);
     expect(s.response()).toEqual({ decision: 'replace' });
-    s.toggle(1);
+    expect(s.undecidedCount).toBe(3);
+    s.decide(1, 'reject');
     expect(s.acceptedCount).toBe(2);
     expect(s.response()).toEqual({ decision: 'partial', accepted: [0, 2] });
-    s.set(0, false);
-    s.set(2, false);
+    s.decide(0, 'reject');
+    s.decide(2, 'reject');
     expect(s.response()).toEqual({ decision: 'keep' });
+    s.decide(1, undefined);
+    expect(s.response()).toEqual({ decision: 'partial', accepted: [1] });
     s.acceptAll();
     expect(s.response()).toEqual({ decision: 'replace' });
-    s.toggle(99);
+    expect(s.undecidedCount).toBe(0);
+    s.decide(99, 'reject');
     expect(s.acceptedCount).toBe(3);
+  });
+});
+
+describe('panels', () => {
+  // The CLI's own test texts: two hunks, the second one line longer in the proposal.
+  const cur = 'a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n';
+  const prop = 'a\nB\nc\nd\ne\nf\ng\nh\ni\nJ\nK\n';
+  const hunks: Hunk[] = [
+    { current: [1, 2], proposed: [1, 2] },
+    { current: [9, 10], proposed: [9, 11] },
+  ];
+
+  it('splits lines losslessly', () => {
+    expect(splitLines('a\nb').join('')).toBe('a\nb');
+    expect(splitLines('a\nb\n')).toEqual(['a\n', 'b\n']);
+    expect(splitLines('')).toEqual([]);
+  });
+
+  it('mirrors the CLI assemble for rejected hunks', () => {
+    const ranges = hunks.map((h) => ({ base: h.proposed, other: h.current }));
+    expect(merge(prop, cur, ranges, () => false)).toBe(prop);
+    expect(merge(prop, cur, ranges, () => true)).toBe(cur);
+    expect(merge(prop, cur, ranges, (i) => i === 0)).toBe('a\nb\nc\nd\ne\nf\ng\nh\ni\nJ\nK\n');
+  });
+
+  it('collapses decided hunks on both sides and shifts later lens lines', () => {
+    const s = new HunkState(2);
+    expect(panels(cur, prop, hunks, s)).toEqual({ left: cur, right: prop });
+    expect(rightPanelLines(hunks, s)).toEqual([1, 9]);
+    s.decide(0, 'accept');
+    expect(panels(cur, prop, hunks, s).left).toBe('a\nB\nc\nd\ne\nf\ng\nh\ni\nj\n');
+    s.decide(1, 'reject');
+    const p = panels(cur, prop, hunks, s);
+    expect(p.right).toBe('a\nB\nc\nd\ne\nf\ng\nh\ni\nj\n');
+    expect(p.left).toBe(p.right);
+    expect(rightPanelLines(hunks, s)).toEqual([1, 9]);
+    // A rejected hunk earlier in the file shifts everything after it.
+    const t = new HunkState(2);
+    const grow: Hunk[] = [
+      { current: [0, 3], proposed: [0, 1] },
+      { current: [5, 6], proposed: [3, 4] },
+    ];
+    t.decide(0, 'reject');
+    expect(rightPanelLines(grow, t)).toEqual([0, 5]);
   });
 });
 
