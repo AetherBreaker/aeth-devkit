@@ -20,6 +20,8 @@
   serde_json = { workspace = true }
   similar    = { workspace = true }
   toml_edit  = { workspace = true }
+  ureq       = { workspace = true }
+  ctrlc      = { workspace = true }
 
 [dev-dependencies]
   aeth-devkit-core = { workspace = true, features = ["test-util"] }
