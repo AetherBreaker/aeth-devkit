@@ -35,6 +35,14 @@ pub struct Args {
   /// stdin is not a terminal).
   #[arg(long)]
   pub replace_docker: bool,
+
+  /// Use the VS Code diff for Docker consent even when TERM_PROGRAM is not "vscode".
+  #[arg(long, conflicts_with = "no_vscode")]
+  pub vscode: bool,
+
+  /// Never open VS Code; always use the terminal prompt.
+  #[arg(long)]
+  pub no_vscode: bool,
 }
 
 /// Exit codes: 0 ok, 1 `--check` found drift, 3 commit failed (the template changes were
@@ -43,6 +51,42 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   let dry_run = args.dry_run || args.check;
   let templates = crate::templates::locate(args.templates_dir.as_deref())?;
   let root = crate::context::strip_verbatim(args.root.canonicalize().unwrap_or(args.root.clone()));
+  // `IsTerminal` is how std asks "is a human here?": prompts only make sense on a tty.
+  let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+  let runner = aeth_devkit_core::process::SystemRunner;
+
+  // VS Code is consulted only where a human could answer in the terminal anyway: never
+  // for --check (hooks and CI), never without a tty, never when --replace-docker has
+  // already answered. It runs before staging so a "reload and rerun" stop touches nothing.
+  let vs = if args.no_vscode || args.check || !tty || args.replace_docker {
+    None
+  } else {
+    let opts = crate::vscode::Options::from_env(args.vscode, !dry_run, &root);
+    match crate::vscode::prepare(&opts, &runner, &crate::vscode::install::HttpFetch) {
+      crate::vscode::Prepared::Inert => None,
+      crate::vscode::Prepared::Unavailable(why) => {
+        println!("note: {why}; using the terminal prompt.");
+        None
+      }
+      crate::vscode::Prepared::ReloadNeeded => {
+        println!("The devkit VS Code extension was updated. Reload the VS Code window, then run setup-project again.");
+        return Ok(ExitCode::SUCCESS);
+      }
+      crate::vscode::Prepared::Ready(vs) => Some(vs),
+    }
+  };
+  if let Some(vs) = &vs {
+    for note in &vs.notes {
+      println!("note: {note}");
+    }
+    if !dry_run {
+      crate::vscode::session::install_ctrlc_handler()?;
+    }
+  }
+  let reviewer = vs
+    .as_ref()
+    .filter(|_| !dry_run)
+    .map(|v| crate::vscode::session::VsCodeReviewer::new(v, &runner));
 
   // When committing, the committable managed files are merged against their `HEAD`
   // content, so the commit carries only this run's changes and the user's uncommitted
@@ -52,18 +96,16 @@ pub fn run(args: &Args) -> Result<ExitCode> {
 
   // Apply the templates (plus tombi), putting the user's files back on any failure.
   let apply = |changes: &mut Option<crate::changes::Changes>| -> Result<()> {
-    // `IsTerminal` is how std asks "is a human here?": prompts only make sense on a tty.
-    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
     let deps = crate::docker::Deps {
-      runner: &aeth_devkit_core::process::SystemRunner,
+      runner: &runner,
       prompt: &aeth_devkit_core::prompt::StdinPrompt,
+      reviewer: reviewer.as_ref().map(|r| r as &dyn crate::vscode::protocol::Reviewer),
       mode: match (dry_run, args.replace_docker, tty) {
         (true, _, _) => crate::docker::Mode::DryRun,
         (false, true, _) => crate::docker::Mode::ReplaceAll,
         (false, false, true) => crate::docker::Mode::Ask,
         (false, false, false) => crate::docker::Mode::KeepAll,
       },
-      interactive: tty && !dry_run,
     };
     let mut c = crate::run_with(&root, &templates, dry_run, &deps)?;
     if !dry_run {
@@ -102,6 +144,12 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   }
   let header = if dry_run { "Would change:" } else { "Changed:" };
   println!("{header}\n{}", changes.report(&root));
+  if dry_run
+    && let Some(vs) = &vs
+    && let Err(e) = crate::vscode::session::open_review(vs, &runner, &root, &changes.previews)
+  {
+    println!("note: could not open the review in VS Code: {e:#}");
+  }
   if args.check {
     return Ok(ExitCode::from(1));
   }

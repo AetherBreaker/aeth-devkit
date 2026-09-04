@@ -11,10 +11,20 @@ pub struct FileChange {
   pub details: Vec<String>,
 }
 
+/// What a dry run would write, kept only then, for the VS Code review.
+#[derive(Debug)]
+pub struct Preview {
+  pub path: PathBuf,
+  pub current: Option<String>,
+  pub proposed: String,
+}
+
 #[derive(Debug)]
 pub struct Changes {
   dry_run: bool,
   pub files: Vec<FileChange>,
+  /// Every proposed text of a dry run, one per path; empty otherwise.
+  pub previews: Vec<Preview>,
   /// Every path devkit manages, whether or not this run changed it.
   ///
   /// `files` only holds what changed, which is the right list to report and to commit. It is
@@ -31,6 +41,7 @@ impl Changes {
     Self {
       dry_run,
       files: Vec::new(),
+      previews: Vec::new(),
       managed: Vec::new(),
       notes: Vec::new(),
     }
@@ -60,6 +71,15 @@ impl Changes {
     } else {
       details
     };
+    if self.dry_run {
+      // Two steps can touch one file (`.gitignore`); the last proposal is the whole one.
+      self.previews.retain(|p| p.path != path);
+      self.previews.push(Preview {
+        path: path.to_path_buf(),
+        current: original.map(str::to_string),
+        proposed: merged.to_string(),
+      });
+    }
     if !self.dry_run {
       if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
@@ -144,6 +164,21 @@ mod tests {
     c.record_optional(&path, Some("same\n"), "same\n", vec![]).unwrap();
     assert!(c.files.is_empty(), "nothing changed: {:?}", c.files);
     assert_eq!(c.managed, vec![path]);
+  }
+
+  #[test]
+  fn dry_run_keeps_the_last_preview_per_path_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("f");
+    let mut c = Changes::new(true);
+    c.record_optional(&p, None, "one\n", vec![]).unwrap();
+    c.record_optional(&p, None, "two\n", vec![]).unwrap();
+    assert_eq!(c.previews.len(), 1);
+    assert_eq!(c.previews[0].proposed, "two\n");
+    assert!(!p.exists());
+    let mut wet = Changes::new(false);
+    wet.record_optional(&p, None, "one\n", vec![]).unwrap();
+    assert!(wet.previews.is_empty());
   }
 
   #[test]

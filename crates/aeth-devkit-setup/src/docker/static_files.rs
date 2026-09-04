@@ -11,6 +11,7 @@ use crate::changes::Changes;
 use crate::context::ProjectContext;
 use crate::docker::Consent;
 use crate::templates;
+use crate::vscode::protocol::Proposal;
 
 /// Target file name for a template file name, or `None` for files this step does not own:
 /// `template.Dockerfile` → `Dockerfile`, `entrypoint.template.sh` → `entrypoint.sh`;
@@ -28,8 +29,11 @@ pub fn target_name(template_file: &str) -> Option<String> {
   Some(format!("{stem}.{ext}"))
 }
 
+/// LF line endings and no byte-order mark: neither is drift (`.gitattributes` owns line
+/// endings, and Windows editors add a BOM the templates never carry), and a BOM would
+/// otherwise show as a phantom hunk on the first line.
 pub fn normalize_newlines(s: &str) -> String {
-  s.replace("\r\n", "\n")
+  s.trim_start_matches('\u{feff}').replace("\r\n", "\n")
 }
 
 /// Three lines of context, both sides labelled so the user can tell which is theirs. Line
@@ -66,11 +70,20 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, consent: &Consent, chan
       continue;
     }
     println!("{}", unified_diff(&rel, &original, &rendered));
-    if consent.replace(&format!("Replace {rel}? [replace / replace all / anything else keeps it]:"))? {
-      changes.record_optional(&path, Some(&original), &rendered, vec!["replaced with the devkit template".into()])?;
-    } else {
-      changes.record_optional(&path, Some(&original), &original, vec![])?;
-      println!("Kept {rel}.");
+    let proposal = Proposal::new(
+      &rel,
+      format!("Replace {rel}? [replace / replace all / anything else keeps it]:"),
+      &original,
+      &rendered,
+    );
+    let decision = consent.decide(&proposal)?;
+    let detail = decision.detail("replaced with the devkit template");
+    match decision.text(&proposal) {
+      Some(text) => changes.record_optional(&path, Some(&original), &text, vec![detail])?,
+      None => {
+        changes.record_optional(&path, Some(&original), &original, vec![])?;
+        println!("Kept {rel}.");
+      }
     }
   }
   // Stray leftovers of the shell-and-Python entrypoint. Reported once, never removed.
@@ -110,6 +123,7 @@ mod tests {
     assert!(d.contains("+++ docker/Dockerfile (devkit template)"), "{d}");
     assert!(d.contains("-b\n+c\n"), "{d}");
     assert_eq!(normalize_newlines("a\r\nb\r\n"), normalize_newlines("a\nb\n"));
+    assert_eq!(normalize_newlines("\u{feff}a\n"), "a\n", "a BOM is not drift either");
     let d = unified_diff("f", "a\r\nb\r\n", "a\nc\n");
     assert!(d.contains("-b\n+c\n") && !d.contains("-a"), "CRLF must not show as drift: {d}");
   }

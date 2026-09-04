@@ -12,6 +12,7 @@ pub mod lines;
 pub mod md_block;
 pub mod templates;
 pub mod toml_merge;
+pub mod vscode;
 
 use std::path::Path;
 
@@ -29,8 +30,8 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
   let deps = docker::Deps {
     runner: &aeth_devkit_core::process::SystemRunner,
     prompt: &aeth_devkit_core::prompt::StdinPrompt,
+    reviewer: None,
     mode: if dry_run { docker::Mode::DryRun } else { docker::Mode::KeepAll },
-    interactive: false,
   };
   run_with(root, templates_dir, dry_run, &deps)
 }
