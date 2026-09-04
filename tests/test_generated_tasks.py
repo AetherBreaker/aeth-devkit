@@ -6,6 +6,7 @@ staleness check lives in `test_build_regenerates.py`, since regenerating means b
 what is checked here is the content of the baked file.
 """
 
+# Standard library imports
 import json
 import subprocess
 import sys
@@ -67,6 +68,7 @@ def test_generated_file_holds_no_absolute_paths():
 
 
 def test_script_paths_resolve_next_to_the_installed_package():
+  # First party imports
   import aeth_devkit
 
   pkg_scripts = (Path(aeth_devkit.__file__).parent / "scripts").as_posix()
@@ -77,8 +79,8 @@ def test_script_paths_resolve_next_to_the_installed_package():
 def test_generated_tasks_match_the_task_collection_source():
   """The bake must reproduce exactly what the live TaskCollection would have returned."""
   sys.path.insert(0, str(REPO / "python"))
-  from aeth_devkit import _tasks_source
-
+  # First party imports
   import aeth_devkit
+  from aeth_devkit import _tasks_source
 
   assert aeth_devkit.tasks()["tasks"] == _tasks_source.tasks()["tasks"]

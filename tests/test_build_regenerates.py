@@ -6,10 +6,12 @@ source. maturin drives cargo, so this covers the packaging paths too without a c
 backend.
 """
 
+# Standard library imports
 import subprocess
 import tomllib
 from pathlib import Path
 
+# Third party imports
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
