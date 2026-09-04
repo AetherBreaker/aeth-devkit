@@ -214,11 +214,16 @@ one diff tab is open at a time.
    with an `error` response, registers both texts under
    `aeth-devkit-proposed:/<id>/…` and opens a diff of the two titled
    `devkit: <title>` via `vscode.diff`.
-2. CodeLens on the proposed document: above each hunk `Accept` / `Reject` (toggling;
-   accepted by default, the lens label shows the state); at line 0
-   `Apply accepted (n of m)` · `Accept all hunks` · `Replace all` (only when offered) ·
-   `Keep file`.
-3. The `editor/content` button (or title icons) offers `Replace file` / `Keep file`.
+2. CodeLens on the proposed document: above each hunk an `Accept` and a `Reject` lens,
+   both always present, the chosen one marked (accepted by default). Rejected hunks are
+   dimmed with an editor decoration and a status bar item shows `n of m hunks accepted`,
+   so the state never depends on a lens repaint.
+3. Whole-file actions are editor buttons, never lenses: `Apply accepted hunks`,
+   `Accept all hunks`, `Replace file`, `Replace all` (only when offered) and `Keep file`
+   in the floating `editor/content` menu, or as title icons when that proposal is not
+   live. The extension decides: VS Code strips proposals it has not enabled from the
+   manifest it loads, so `enabledApiProposals` on the loaded manifest plus the request's
+   `content_menu` together say whether the floating menu can show in this window.
 4. A decision writes the response (temp file + rename, so the poller never reads a
    partial file), marks the request as answered, then closes the diff tab. Closing the
    tab without a decision (`window.tabGroups.onDidChangeTabs`, ignored for an answered
