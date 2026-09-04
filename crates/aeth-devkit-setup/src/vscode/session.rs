@@ -174,7 +174,9 @@ mod tests {
     let responder = std::thread::spawn(move || {
       let request = loop {
         if let Some(p) = std::fs::read_dir(&dir).ok().and_then(|d| {
-          d.flatten().map(|e| e.path()).find(|p| p.to_string_lossy().ends_with(".request.json"))
+          d.flatten()
+            .map(|e| e.path())
+            .find(|p| p.to_string_lossy().ends_with(".request.json"))
         }) {
           break p;
         }
@@ -192,7 +194,10 @@ mod tests {
     assert_eq!(reviewer.review(&p, true).unwrap(), Response::Partial { accepted: vec![0] });
     let req = responder.join().unwrap();
     let calls = runner.calls_for("code");
-    assert_eq!(calls[0], vec!["--open-url", &format!("vscode://aeth.aeth-devkit/consent?id={}", req.id)]);
+    assert_eq!(
+      calls[0],
+      vec!["--open-url", &format!("vscode://aeth.aeth-devkit/consent?id={}", req.id)]
+    );
     assert!(req.id.starts_with(&format!("{}-0", std::process::id())));
     drop(vs);
     assert!(!tmp.path().join("consent").exists(), "dropping VsCode empties the folder");

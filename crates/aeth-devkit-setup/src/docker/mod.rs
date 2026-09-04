@@ -46,7 +46,11 @@ pub enum Decision {
   Keep,
   Replace,
   /// The proposed text with the rejected hunks reverted, assembled by the CLI.
-  Partial { text: String, accepted: usize, total: usize },
+  Partial {
+    text: String,
+    accepted: usize,
+    total: usize,
+  },
 }
 
 impl Decision {
@@ -230,7 +234,13 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
   let mut details: Vec<String> = Vec::new();
   // One diff and one decision; `text` advances only on replace or partial. A closure
   // (not a fn) so it can share `consent`, `tag`, `rel` and `details` without a struct.
-  let mut ask = |text: &mut String, what: &str, question: String, edits: &[Edit], edit_details: Vec<String>, offer_replace_all: bool| -> Result<()> {
+  let mut ask = |text: &mut String,
+                 what: &str,
+                 question: String,
+                 edits: &[Edit],
+                 edit_details: Vec<String>,
+                 offer_replace_all: bool|
+   -> Result<()> {
     if edits.is_empty() {
       return Ok(());
     }
@@ -271,7 +281,14 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
       Some(svc) => {
         let o = compose_rules::service_edits(&lines, &svc, &sc_doc, &sc_svc, name);
         changes.problems.extend(o.problems);
-        ask(&mut text, &format!("service {name}"), format!("Apply the {name} edits to {rel}? {keywords}"), &o.edits, o.details, true)?;
+        ask(
+          &mut text,
+          &format!("service {name}"),
+          format!("Apply the {name} edits to {rel}? {keywords}"),
+          &o.edits,
+          o.details,
+          true,
+        )?;
       }
       None => {
         let indent = tree::child_indent(&lines, &services);
@@ -285,14 +302,28 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
           lines: block,
         };
         // Never pre-answered, so `replace all` is not on offer (see `Consent::decide`).
-        ask(&mut text, &format!("new service {name}"), format!("Add service {name} to {rel}? [replace / anything else keeps it]:"), &[edit], vec![format!("added service {name}")], false)?;
+        ask(
+          &mut text,
+          &format!("new service {name}"),
+          format!("Add service {name} to {rel}? [replace / anything else keeps it]:"),
+          &[edit],
+          vec![format!("added service {name}")],
+          false,
+        )?;
       }
     }
   }
   let lines = tree::split_lines(&text);
   let o = compose_rules::top_level_edits(&lines, &tree::split_lines(&sc.tail));
   changes.problems.extend(o.problems);
-  ask(&mut text, "top level", format!("Apply the top-level edits to {rel}? {keywords}"), &o.edits, o.details, true)?;
+  ask(
+    &mut text,
+    "top level",
+    format!("Apply the top-level edits to {rel}? {keywords}"),
+    &o.edits,
+    o.details,
+    true,
+  )?;
   if text == original {
     changes.record_optional(&path, Some(&original), &original, vec![])?;
   } else {
@@ -336,7 +367,11 @@ mod consent_tests {
     let p = ScriptedPrompt::new(&[]);
     let dry = Consent::new(&p, None, Mode::DryRun);
     assert_eq!(dry.decide(&proposal("a"), true).unwrap(), Decision::Replace);
-    assert_eq!(dry.decide(&proposal("b"), false).unwrap(), Decision::Replace, "an add is intended drift too");
+    assert_eq!(
+      dry.decide(&proposal("b"), false).unwrap(),
+      Decision::Replace,
+      "an add is intended drift too"
+    );
     let keep = Consent::new(&p, None, Mode::KeepAll);
     assert_eq!(keep.decide(&proposal("a"), true).unwrap(), Decision::Keep);
     assert!(keep.kept_silently());
@@ -357,7 +392,11 @@ mod consent_tests {
     assert!(!all.kept_silently(), "a human answered");
     let ask = Consent::new(&p, None, Mode::Ask);
     assert_eq!(ask.decide(&proposal("add b"), false).unwrap(), Decision::Replace);
-    assert_eq!(ask.decide(&proposal("add c"), false).unwrap(), Decision::Keep, "still asked after replace all");
+    assert_eq!(
+      ask.decide(&proposal("add c"), false).unwrap(),
+      Decision::Keep,
+      "still asked after replace all"
+    );
     assert_eq!(p.asked.borrow().len(), 3);
     // With nobody to ask, the add is skipped like any other kept-silently change.
     let keep = Consent::new(&p, None, Mode::KeepAll);
@@ -371,9 +410,17 @@ mod consent_tests {
     let r = ScriptedReviewer::new(vec![Response::Keep, Response::Dismissed, Response::ReplaceAll]);
     let c = Consent::new(&p, Some(&r), Mode::Ask);
     assert_eq!(c.decide(&proposal("a"), true).unwrap(), Decision::Keep);
-    assert_eq!(c.decide(&proposal("b"), true).unwrap(), Decision::Replace, "dismissed, terminal said replace");
+    assert_eq!(
+      c.decide(&proposal("b"), true).unwrap(),
+      Decision::Replace,
+      "dismissed, terminal said replace"
+    );
     assert_eq!(c.decide(&proposal("c"), true).unwrap(), Decision::Replace);
-    assert_eq!(c.decide(&proposal("d"), true).unwrap(), Decision::Replace, "replace all from VS Code sticks");
+    assert_eq!(
+      c.decide(&proposal("d"), true).unwrap(),
+      Decision::Replace,
+      "replace all from VS Code sticks"
+    );
     assert_eq!(p.asked.borrow().len(), 1);
     assert_eq!(*r.reviewed.borrow(), vec!["a", "b", "c"]);
   }
@@ -415,7 +462,9 @@ mod consent_tests {
   #[test]
   fn a_broken_reviewer_is_retired_after_one_note() {
     let p = ScriptedPrompt::new(&["", ""]);
-    let r = ScriptedReviewer::new(vec![Response::Error { message: "protocol 9".into() }]);
+    let r = ScriptedReviewer::new(vec![Response::Error {
+      message: "protocol 9".into(),
+    }]);
     let c = Consent::new(&p, Some(&r), Mode::Ask);
     assert_eq!(c.decide(&proposal("a"), true).unwrap(), Decision::Keep);
     assert_eq!(c.decide(&proposal("b"), true).unwrap(), Decision::Keep);

@@ -90,7 +90,11 @@ pub struct StubFetch {
 
 impl Fetch for StubFetch {
   fn get_text(&self, url: &str) -> Result<String> {
-    self.bodies.get(url).cloned().ok_or_else(|| anyhow::anyhow!("stub: no body for {url}"))
+    self
+      .bodies
+      .get(url)
+      .cloned()
+      .ok_or_else(|| anyhow::anyhow!("stub: no body for {url}"))
   }
 
   fn download(&self, url: &str, dest: &Path) -> Result<()> {
