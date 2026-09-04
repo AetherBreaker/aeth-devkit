@@ -8,7 +8,7 @@ pub mod static_files;
 use std::cell::Cell;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result, bail};
 
 use aeth_devkit_core::process::Runner;
 use aeth_devkit_core::prompt::Prompt;
@@ -95,10 +95,102 @@ impl<'a> Consent<'a> {
   }
 }
 
-/// Everything Docker: static files first, then the compose file (Task 7), then advisories.
+/// Everything Docker: static files first, then the compose file, then advisories.
 pub fn apply(ctx: &ProjectContext, templates_dir: &Path, deps: &Deps, changes: &mut Changes) -> Result<()> {
   let consent = Consent::new(deps.prompt, deps.mode, deps.interactive);
   static_files::apply(ctx, templates_dir, &consent, changes)?;
+  compose(ctx, templates_dir, deps.runner, &consent, changes)?;
+  if consent.kept_silently() {
+    changes
+      .notes
+      .push("Docker files were left alone because no terminal was available to confirm; pass --replace-docker to apply them.".into());
+  }
+  Ok(())
+}
+
+/// The compose file: created whole from the scaffold when absent; otherwise every listed
+/// service is checked against the rule table and all edits are shown as one diff behind
+/// one prompt. A listed service the file lacks is offered as a scaffold block.
+fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, consent: &Consent, changes: &mut Changes) -> Result<()> {
+  use aeth_devkit_core::compose::find_compose_file;
+  use aeth_devkit_core::compose::tree::{self, Edit};
+
+  let sc = scaffold::load(templates_dir, ctx)?;
+  let tag = scaffold::GitTag::new(runner, ctx);
+  let Some(path) = find_compose_file(&ctx.root)? else {
+    let text = tag.fill(&scaffold::render_file(&sc, &ctx.docker_services));
+    changes.record_optional(
+      &ctx.root.join("docker").join("compose.yaml"),
+      None,
+      &text,
+      vec!["created from template".into()],
+    )?;
+    changes.notes.extend(tag.note());
+    return Ok(());
+  };
+  let rel = path
+    .strip_prefix(&ctx.root)
+    .map(|p| p.to_string_lossy().replace('\\', "/"))
+    .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
+  let text = std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
+  let lines = tree::split_lines(&text);
+  let Some(services) = tree::top_level(&lines, "services") else {
+    bail!("{rel} has no top-level `services:` key");
+  };
+  let present = tree::children(&lines, &services);
+  let mut edits: Vec<Edit> = Vec::new();
+  let mut details: Vec<String> = Vec::new();
+  for name in &ctx.docker_services {
+    // The scaffold block for *this* service, parsed as its own little document so the
+    // rule engine can look keys up in it exactly like in the project file.
+    let sc_doc = tree::split_lines(&format!("services:\n{}", scaffold::service_block(&sc, name)));
+    let sc_services = tree::top_level(&sc_doc, "services").expect("scaffold starts with services:");
+    let sc_svc = tree::child(&sc_doc, &sc_services, name).expect("scaffold block names the service");
+    match present.iter().find(|n| &n.key == name) {
+      Some(svc) => {
+        let o = compose_rules::service_edits(&lines, svc, &sc_doc, &sc_svc, name);
+        edits.extend(o.edits);
+        details.extend(o.details);
+      }
+      None => {
+        let found = present.iter().map(|n| n.key.as_str()).collect::<Vec<_>>().join(", ");
+        let q = format!("Service \"{name}\" is not in {rel} (found: {found}). Add it? [add / anything else skips]:");
+        if consent.add(&q)? {
+          let indent = tree::child_indent(&lines, &services);
+          let mut block = tree::re_indent(&sc_doc[sc_svc.line..sc_svc.end], sc_svc.indent, indent);
+          // One blank line between service blocks, matching the sister files.
+          if services.end > 0 && !lines[services.end - 1].trim().is_empty() {
+            block.insert(0, String::new());
+          }
+          edits.push(Edit::Insert {
+            at: services.end,
+            lines: block,
+          });
+          details.push(format!("added service {name}"));
+        } else {
+          println!("Skipped service \"{name}\".");
+        }
+      }
+    }
+  }
+  let o = compose_rules::top_level_edits(&lines, &tree::split_lines(&sc.tail));
+  edits.extend(o.edits);
+  details.extend(o.details);
+  if edits.is_empty() {
+    changes.record_optional(&path, Some(&text), &text, vec![])?;
+    return Ok(());
+  }
+  let new_text = tag.fill(&tree::apply_edits(&text, &edits));
+  println!("{}", static_files::unified_diff(&rel, &text, &new_text));
+  if consent.replace(&format!(
+    "Apply these edits to {rel}? [replace / replace all / anything else keeps it]:"
+  ))? {
+    changes.record_optional(&path, Some(&text), &new_text, details)?;
+    changes.notes.extend(tag.note());
+  } else {
+    changes.record_optional(&path, Some(&text), &text, vec![])?;
+    println!("Kept {rel}.");
+  }
   Ok(())
 }
 

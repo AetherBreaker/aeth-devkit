@@ -1,0 +1,43 @@
+services:
+
+  imap-report-collector:
+    container_name: imap-report-collector
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        GIT_TAG: v3.0.4
+        GIT_REPO: https://github.com/AetherBreaker/IMAPReportCollector.git
+    restart: no
+    # expose:
+    #   - "9999"
+    #   - "9998"
+    #   - "9997"
+    volumes:
+      - type: bind
+        source: /data/imap_report_collector_files
+        target: /app/persisted_data
+
+    environment:
+      # Email to Watch
+      - WATCH_EMAIL=info@sweetfiretobacco.com
+      - WATCH_EMAIL_PWD=${WATCH_EMAIL_PWD:?}
+      - WATCH_POLLING_TIMEOUT_SEC=600
+      # Alerts Emails
+      - ALERTS_EMAIL=info@sweetfiretobacco.com
+      - ALERTS_EMAIL_PWD=${ALERTS_EMAIL_PWD:?}
+      - ALERTS_RECIPIENTS=["jacob.ogden@sweetfiretobacco.com"]
+    networks:
+      - coolify
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - bash -ec '[ -f /app/persisted_data/logs/heartbeat.txt ] && ts=$$(cat /app/persisted_data/logs/heartbeat.txt 2>/dev/null) && [ -n "$$ts" ] && hb=$$(date -d "$$ts" +%s 2>/dev/null) && now=$$(date +%s) && [ $$((now - hb)) -lt 180 ]'
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  coolify:
+    external: true
