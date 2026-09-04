@@ -5,3 +5,4 @@ esbuild.mjs
 tsconfig.json
 vitest.config.ts
 *.vsix
+scripts/**
