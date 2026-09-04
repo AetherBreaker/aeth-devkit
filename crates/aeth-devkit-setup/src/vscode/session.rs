@@ -67,6 +67,33 @@ pub fn wait_for(response: &Path, cancel: &Path, poll: Duration) -> Result<Respon
   result
 }
 
+/// `--dry-run`: one request listing every file, opened as a multi-diff. Nothing awaited.
+pub fn open_review(vs: &VsCode, runner: &dyn Runner, root: &Path, previews: &[crate::changes::Preview]) -> Result<()> {
+  let id = format!("review-{}", std::process::id());
+  let dir = &vs.consent_dir;
+  std::fs::create_dir_all(dir)?;
+  let mut files = Vec::new();
+  for (i, p) in previews.iter().enumerate() {
+    let proposed = dir.join(format!("{id}-{i}.proposed"));
+    std::fs::write(&proposed, &p.proposed)?;
+    let current = match &p.current {
+      Some(text) => {
+        let path = dir.join(format!("{id}-{i}.current"));
+        std::fs::write(&path, text)?;
+        Some(path)
+      }
+      None => None,
+    };
+    let label = p.path.strip_prefix(root).unwrap_or(&p.path).to_string_lossy().replace('\\', "/");
+    files.push(serde_json::json!({
+      "path": p.path, "label": label, "current_path": current, "proposed_path": proposed,
+    }));
+  }
+  let request = serde_json::json!({ "protocol": PROTOCOL, "id": id, "files": files });
+  write_atomic(&dir.join(format!("{id}.request.json")), &serde_json::to_string_pretty(&request)?)?;
+  open_url(runner, &vs.launcher, &format!("vscode://{EXTENSION_ID}/review?id={id}"))
+}
+
 pub struct VsCodeReviewer<'a> {
   vs: &'a VsCode,
   runner: &'a dyn Runner,
@@ -184,6 +211,39 @@ mod tests {
     assert_eq!(wait_for(&response, &cancel, Duration::from_millis(5)).unwrap(), Response::Dismissed);
     assert!(cancel.is_file());
     assert!(!WAITING.load(SeqCst));
+  }
+
+  #[test]
+  fn open_review_writes_one_request_listing_every_file() {
+    let _g = SERIAL.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let vs = vscode(tmp.path());
+    let runner = RecordingRunner::new(0);
+    let root = tmp.path().join("proj");
+    let previews = vec![
+      crate::changes::Preview {
+        path: root.join("docker").join("Dockerfile"),
+        current: Some("a\n".into()),
+        proposed: "b\n".into(),
+      },
+      crate::changes::Preview {
+        path: root.join("new.txt"),
+        current: None,
+        proposed: "n\n".into(),
+      },
+    ];
+    open_review(&vs, &runner, &root, &previews).unwrap();
+    let id = format!("review-{}", std::process::id());
+    let req: serde_json::Value =
+      serde_json::from_str(&std::fs::read_to_string(vs.consent_dir.join(format!("{id}.request.json"))).unwrap()).unwrap();
+    assert_eq!(req["protocol"], PROTOCOL);
+    assert_eq!(req["files"][0]["label"], "docker/Dockerfile");
+    assert_eq!(req["files"][1]["current_path"], serde_json::Value::Null);
+    assert_eq!(
+      std::fs::read_to_string(req["files"][1]["proposed_path"].as_str().unwrap()).unwrap(),
+      "n\n"
+    );
+    assert_eq!(runner.calls_for("code")[0][1], format!("vscode://aeth.aeth-devkit/review?id={id}"));
   }
 
   #[test]
