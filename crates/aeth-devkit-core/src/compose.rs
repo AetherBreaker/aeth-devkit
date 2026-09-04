@@ -12,6 +12,8 @@ use anyhow::{Context as _, Result, bail};
 use crate::github::normalize_repo;
 use crate::pyproject::normalize_dist_name;
 
+pub mod tree;
+
 /// Docker Compose's own file-name precedence.
 pub const COMPOSE_NAMES: [&str; 4] = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
 
