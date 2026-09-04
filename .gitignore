@@ -406,3 +406,6 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# VS Code extension packaging output (node_modules/ and dist/ are covered above)
+*.vsix
