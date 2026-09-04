@@ -1,8 +1,9 @@
 # Installed and kept current by `devkit setup-project`; edits are replaced on the next run.
 # Triggered by `devkit release`, which creates the GitHub release with no assets and then
 # waits for this workflow to build, attach and publish them. Wheels are built per platform
-# with maturin; every artefact is attached and published from one job, so a partial
-# publish can only follow a complete build.
+# with maturin and the `devkit-container` entrypoint binary alongside them (static musl on
+# Linux); every artefact is attached and published from one job, so a partial publish can
+# only follow a complete build.
 name: Release
 
 on:
@@ -25,7 +26,7 @@ env:
 
 jobs:
   build:
-    name: Wheel (${{ matrix.target }})
+    name: Wheel + container (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
@@ -33,9 +34,14 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            container_target: x86_64-pc-windows-msvc
+            exe: .exe
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: "2_17"
+            # The container binary is fully static so the image needs no runtime libs.
+            container_target: x86_64-unknown-linux-musl
+            exe: ""
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,7 +50,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }},${{ matrix.container_target }}
 
       - uses: astral-sh/setup-uv@v5
 
@@ -61,10 +67,25 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
           args: --release --strip --out dist
 
+      # The container entrypoint, named by target so the Dockerfile's ADD URL is stable.
+      - name: Build the container entrypoint binary
+        shell: bash
+        run: |
+          cargo build --release -p aeth-devkit-container --target "${{ matrix.container_target }}"
+          mkdir -p dist
+          cp "target/${{ matrix.container_target }}/release/devkit-container${{ matrix.exe }}" \
+             "dist/devkit-container-${{ matrix.container_target }}${{ matrix.exe }}"
+
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.target }}
           path: dist/*.whl
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: container-${{ matrix.target }}
+          path: dist/devkit-container-*
           if-no-files-found: error
 
   sdist:
@@ -137,9 +158,9 @@ jobs:
         env:
           UV_PUBLISH_USERNAME: ${{ secrets.UV_INDEX_{publish_index_key}_USERNAME }}
           UV_PUBLISH_PASSWORD: ${{ secrets.UV_INDEX_{publish_index_key}_PASSWORD }}
-        run: uv publish --index {publish_index} dist/*
+        run: uv publish --index {publish_index} dist/*.whl dist/*.tar.gz
       # setup-project: end
       # setup-project: if-no-publish-index
       - name: Publish to PyPI
-        run: uv publish --trusted-publishing always dist/*
+        run: uv publish --trusted-publishing always dist/*.whl dist/*.tar.gz
       # setup-project: end
