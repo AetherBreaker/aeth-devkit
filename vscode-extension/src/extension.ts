@@ -50,6 +50,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('aeth-devkit.acceptHunk', (id: string, i: number) => setHunk(id, i, 'accept')),
     vscode.commands.registerCommand('aeth-devkit.rejectHunk', (id: string, i: number) => setHunk(id, i, 'reject')),
     vscode.commands.registerCommand('aeth-devkit.undoHunk', (id: string, i: number) => setHunk(id, i, undefined)),
+    // The diff editor's own navigation, duplicated so the floating menu has it too.
+    vscode.commands.registerCommand('aeth-devkit.previousChange', () =>
+      vscode.commands.executeCommand('workbench.action.compareEditor.previousChange'),
+    ),
+    vscode.commands.registerCommand('aeth-devkit.nextChange', () =>
+      vscode.commands.executeCommand('workbench.action.compareEditor.nextChange'),
+    ),
     vscode.commands.registerCommand('aeth-devkit.acceptAllHunks', (arg?: unknown) =>
       withSession(arg, async (s) => {
         s.state.acceptAll();

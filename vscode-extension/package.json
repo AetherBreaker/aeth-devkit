@@ -14,6 +14,8 @@
   "aethDevkit": { "protocol": 1 },
   "contributes": {
     "commands": [
+      { "command": "aeth-devkit.previousChange", "title": "Previous change", "category": "devkit", "icon": "$(arrow-up)" },
+      { "command": "aeth-devkit.nextChange", "title": "Next change", "category": "devkit", "icon": "$(arrow-down)" },
       { "command": "aeth-devkit.replaceFile", "title": "Replace file", "category": "devkit", "icon": "$(replace-all)" },
       { "command": "aeth-devkit.keepFile", "title": "Keep file", "category": "devkit", "icon": "$(discard)" },
       { "command": "aeth-devkit.replaceAll", "title": "Replace all (rest of this run)", "category": "devkit", "icon": "$(run-all)" },
@@ -29,6 +31,8 @@
         { "command": "aeth-devkit.acceptHunk", "when": "false" },
         { "command": "aeth-devkit.rejectHunk", "when": "false" },
         { "command": "aeth-devkit.undoHunk", "when": "false" },
+        { "command": "aeth-devkit.previousChange", "when": "false" },
+        { "command": "aeth-devkit.nextChange", "when": "false" },
         { "command": "aeth-devkit.applyAccepted", "when": "resourceScheme == aeth-devkit-proposed" },
         { "command": "aeth-devkit.acceptAllHunks", "when": "resourceScheme == aeth-devkit-proposed" },
         { "command": "aeth-devkit.replaceFile", "when": "resourceScheme == aeth-devkit-proposed" },
@@ -39,11 +43,13 @@
         { "command": "aeth-devkit.addToRuntimeBaseClasses", "when": "editorLangId == python", "group": "1_modification@100" }
       ],
       "editor/content": [
-        { "command": "aeth-devkit.applyAccepted", "group": "navigation@1", "when": "resourceScheme == aeth-devkit-proposed" },
-        { "command": "aeth-devkit.acceptAllHunks", "group": "navigation@2", "when": "resourceScheme == aeth-devkit-proposed" },
-        { "command": "aeth-devkit.replaceFile", "group": "navigation@3", "when": "resourceScheme == aeth-devkit-proposed" },
-        { "command": "aeth-devkit.replaceAll", "group": "navigation@4", "when": "resourceScheme == aeth-devkit-proposed && aeth-devkit.offerReplaceAll" },
-        { "command": "aeth-devkit.keepFile", "group": "navigation@5", "when": "resourceScheme == aeth-devkit-proposed" }
+        { "command": "aeth-devkit.previousChange", "group": "navigation@1", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.nextChange", "group": "navigation@2", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.applyAccepted", "group": "navigation@3", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.acceptAllHunks", "group": "navigation@4", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.replaceFile", "group": "navigation@5", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.replaceAll", "group": "navigation@6", "when": "resourceScheme == aeth-devkit-proposed && aeth-devkit.offerReplaceAll" },
+        { "command": "aeth-devkit.keepFile", "group": "navigation@7", "when": "resourceScheme == aeth-devkit-proposed" }
       ],
       "editor/title": [
         { "command": "aeth-devkit.applyAccepted", "group": "navigation@1", "when": "resourceScheme == aeth-devkit-proposed && !aeth-devkit.contentMenu" },
