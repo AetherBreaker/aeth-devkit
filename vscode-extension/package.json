@@ -1,0 +1,63 @@
+{
+  "name": "aeth-devkit",
+  "displayName": "aeth-devkit",
+  "description": "In-editor consent for devkit setup-project, plus the runtime-evaluated-base-classes command.",
+  "version": "0.0.0",
+  "publisher": "aeth",
+  "private": true,
+  "repository": { "type": "git", "url": "https://github.com/AetherBreaker/aeth-devkit" },
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Other"],
+  "main": "./dist/extension.js",
+  "activationEvents": ["onUri"],
+  "enabledApiProposals": ["contribEditorContentMenu"],
+  "aethDevkit": { "protocol": 1 },
+  "contributes": {
+    "commands": [
+      { "command": "aeth-devkit.replaceFile", "title": "Replace file with the devkit proposal", "category": "devkit", "icon": "$(replace-all)" },
+      { "command": "aeth-devkit.keepFile", "title": "Keep file as it is", "category": "devkit", "icon": "$(discard)" },
+      { "command": "aeth-devkit.replaceAll", "title": "Replace all remaining Docker files this run", "category": "devkit" },
+      { "command": "aeth-devkit.applyAccepted", "title": "Apply accepted hunks", "category": "devkit" },
+      { "command": "aeth-devkit.acceptAllHunks", "title": "Accept all hunks", "category": "devkit" },
+      { "command": "aeth-devkit.acceptHunk", "title": "Accept hunk", "category": "devkit" },
+      { "command": "aeth-devkit.rejectHunk", "title": "Reject hunk", "category": "devkit" },
+      { "command": "aeth-devkit.addToRuntimeBaseClasses", "title": "Add to runtime-evaluated-base-classes", "category": "devkit" }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "aeth-devkit.acceptHunk", "when": "false" },
+        { "command": "aeth-devkit.rejectHunk", "when": "false" },
+        { "command": "aeth-devkit.applyAccepted", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.acceptAllHunks", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.replaceFile", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.replaceAll", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.keepFile", "when": "resourceScheme == aeth-devkit-proposed" }
+      ],
+      "editor/context": [
+        { "command": "aeth-devkit.addToRuntimeBaseClasses", "when": "editorLangId == python", "group": "1_modification@100" }
+      ],
+      "editor/content": [
+        { "command": "aeth-devkit.replaceFile", "group": "navigation@1", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.keepFile", "group": "navigation@2", "when": "resourceScheme == aeth-devkit-proposed" }
+      ],
+      "editor/title": [
+        { "command": "aeth-devkit.replaceFile", "group": "navigation@1", "when": "resourceScheme == aeth-devkit-proposed && !aeth-devkit.contentMenu" },
+        { "command": "aeth-devkit.keepFile", "group": "navigation@2", "when": "resourceScheme == aeth-devkit-proposed && !aeth-devkit.contentMenu" }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
