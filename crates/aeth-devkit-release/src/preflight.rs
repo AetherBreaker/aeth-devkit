@@ -74,13 +74,30 @@ pub fn check_tools(runner: &dyn Runner, root: &Path) -> Result<()> {
 /// release pushes nothing but the tag while `main` may be ahead of `origin/main`, so for it
 /// the copy on `origin/main` (fresh from `check_branch`'s fetch) must already equal
 /// `HEAD`'s — otherwise the run would use a stale definition, or never start.
-pub fn check_workflow_committed(root: &Path, tag_only: bool) -> Result<()> {
+///
+/// The committed copy must also publish where `cfg` says: setup-project renders the publish
+/// step from `pyproject.toml`, and a workflow left over from before the project switched
+/// index (or to/from PyPI) would publish to the old place — irreversibly, if that is PyPI —
+/// while the post-CI check looked at the new one. The publish command line is the marker.
+pub fn check_workflow_committed(root: &Path, tag_only: bool, cfg: &Config) -> Result<()> {
   let Some(head) = git::head_blob(root, crate::ci::WORKFLOW_FILE)? else {
     bail!(
       "{} is not committed; run `devkit setup-project` and commit the workflow first",
       crate::ci::WORKFLOW_FILE
     );
   };
+  let marker = match &cfg.target {
+    PublishTarget::Index { name, .. } => format!("uv publish --index {name} "),
+    PublishTarget::Pypi => "uv publish --trusted-publishing".to_string(),
+  };
+  if !String::from_utf8_lossy(&head).contains(&marker) {
+    bail!(
+      "the committed {} does not publish to {} (no `{}` step); run `devkit setup-project`, then commit and push the workflow",
+      crate::ci::WORKFLOW_FILE,
+      cfg.target.label(),
+      marker.trim_end()
+    );
+  }
   if tag_only && git::blob_at(root, "origin/main", crate::ci::WORKFLOW_FILE)?.as_ref() != Some(&head) {
     bail!(
       "{} on origin/main differs from HEAD's copy; push main first — GitHub runs release workflows from the default branch, and a tag-only release pushes only the tag",
@@ -466,14 +483,41 @@ mod tests {
     git::init_test_repo(root);
     std::fs::write(root.join("a"), "1").unwrap();
     git::commit_paths(root, &["a".into()], "init").unwrap();
-    let err = check_workflow_committed(root, false).unwrap_err().to_string();
+    let pypi = Config {
+      package: "demo".into(),
+      target: PublishTarget::Pypi,
+    };
+    let private = Config {
+      package: "demo".into(),
+      target: PublishTarget::Index {
+        name: "Private".into(),
+        url: "https://x/+simple".into(),
+        publish_url: "https://x/user/internal/".into(),
+        username: "u".into(),
+        password: "p".into(),
+      },
+    };
+    let err = check_workflow_committed(root, false, &pypi).unwrap_err().to_string();
     assert!(err.contains("release.yml is not committed"), "{err}");
     std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
-    std::fs::write(root.join(".github/workflows/release.yml"), "name: Release\n").unwrap();
+    let wf = root.join(".github/workflows/release.yml");
+    std::fs::write(&wf, "name: Release\n  run: uv publish --trusted-publishing always dist/*\n").unwrap();
     // On disk only: still refused.
-    assert!(check_workflow_committed(root, false).is_err());
+    assert!(check_workflow_committed(root, false, &pypi).is_err());
     git::commit_paths(root, &[".github/workflows/release.yml".into()], "wf").unwrap();
-    assert!(check_workflow_committed(root, false).is_ok());
+    assert!(check_workflow_committed(root, false, &pypi).is_ok());
+    // A workflow rendered for PyPI must not release a project that now publishes to a
+    // private index (nor the reverse).
+    let err = check_workflow_committed(root, false, &private).unwrap_err().to_string();
+    assert!(
+      err.contains("does not publish to Private") && err.contains("--index Private"),
+      "{err}"
+    );
+    std::fs::write(&wf, "name: Release\n  run: uv publish --index Private dist/*\n").unwrap();
+    git::commit_paths(root, &[".github/workflows/release.yml".into()], "wf2").unwrap();
+    assert!(check_workflow_committed(root, false, &private).is_ok());
+    let err = check_workflow_committed(root, false, &pypi).unwrap_err().to_string();
+    assert!(err.contains("does not publish to PyPI"), "{err}");
     // Committed locally but not on origin/main: fine when bumping (main is pushed with the
     // tag), refused for a tag-only release (only the tag is pushed).
     let set_origin_main = |rev: &str| {
@@ -486,10 +530,10 @@ mod tests {
       assert!(ok);
     };
     set_origin_main("HEAD~1");
-    let err = check_workflow_committed(root, true).unwrap_err().to_string();
+    let err = check_workflow_committed(root, true, &private).unwrap_err().to_string();
     assert!(err.contains("origin/main") && err.contains("push main first"), "{err}");
     set_origin_main("HEAD");
-    assert!(check_workflow_committed(root, true).is_ok());
+    assert!(check_workflow_committed(root, true, &private).is_ok());
   }
 
   #[test]

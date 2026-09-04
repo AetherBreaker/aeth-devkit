@@ -128,8 +128,10 @@ on the line.
   reproducible half (build every artefact on CI, attach it to the release, publish to the
   index). Nothing is built or published on the developer's machine.
 - **Pre-flight** - Read-only checks: git/uv/gh present and `gh` able to list workflow
-  runs; `.github/workflows/release.yml` committed at `HEAD` (and, for a tag-only release,
-  already identical on `origin/main`, where GitHub reads release workflows from); on `main` with upstream,
+  runs; `.github/workflows/release.yml` committed at `HEAD`, publishing to the configured
+  target (a workflow rendered for another index, or for PyPI, is refused) and, for a
+  tag-only release, already identical on `origin/main`, where GitHub reads release
+  workflows from; on `main` with upstream,
   fetched, not behind; release config committed and matching HEAD; `Cargo.toml` version in
   sync; no merge conflicts in managed files; target version computed via `uv version
   --dry-run`; no run of an earlier release of that tag still queued or in progress (it
@@ -155,7 +157,8 @@ on the line.
   release workflow run (`gh run list` until a run that did not exist before the release
   appears, up to 120 s, then `gh run watch --exit-status`; a watcher that dies — Ctrl-C, API blip — while the
   run is still going cancels the run and waits for it to stop, so nothing is published
-  after the rollback) and verify the version is on
+  after the rollback; a run that will not stop is left in place with the manual undo
+  commands printed, never rolled back under) and verify the version is on
   the publish target (polling up to 120 s for index propagation) and the release still
   exists. `--no-wait` skips the last step and prints the workflow's Actions URL.
 - **Rollback** - On any failure or Ctrl-C — a failed or missing workflow run included —

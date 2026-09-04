@@ -100,6 +100,29 @@ pub fn check_no_active_run(runner: &dyn Runner, root: &Path, tag: &str) -> Resul
   Ok(())
 }
 
+/// The error [`wait_for_run`] fails with when run `id` was cancelled but never reported
+/// itself completed: its state is unknown, so it may still be about to publish, and the
+/// caller must *not* unwind the journal (that would delete the release and tag under a
+/// run that is still going, and cannot un-publish what it uploads). Everything is left in
+/// place for the user to settle by hand.
+#[derive(Debug)]
+pub struct Unsettled {
+  pub id: String,
+}
+
+impl std::fmt::Display for Unsettled {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(
+      f,
+      "release workflow run {} was cancelled but has not stopped within {}s",
+      self.id,
+      SETTLE_TIMEOUT.as_secs()
+    )
+  }
+}
+
+impl std::error::Error for Unsettled {}
+
 /// `(status, conclusion)` of a run; the conclusion is empty until it completes.
 fn run_state(runner: &dyn Runner, root: &Path, id: &str) -> Result<(String, String)> {
   let args = s(&[
@@ -124,10 +147,11 @@ fn run_state(runner: &dyn Runner, root: &Path, id: &str) -> Result<(String, Stri
 /// API/network failures end the watch while the run carries on — into `gh release upload`
 /// and `uv publish`, which the rollback that follows cannot undo. So: read the run's state;
 /// a run still going is cancelled and polled until GitHub reports it completed, bounded by
-/// [`SETTLE_TIMEOUT`]. `Ok` only when the run turns out to have succeeded on its own (the
-/// watcher, not the workflow, failed); every other outcome is the error the release fails
-/// with. The interrupt flag is deliberately not consulted: after Ctrl-C it is already set,
-/// and stopping the run comes before honouring it.
+/// [`SETTLE_TIMEOUT`]. `Ok` when the run turns out to have succeeded — on its own, or
+/// finishing before the cancel landed: either way it published, so the release stands.
+/// A run that never settles is [`Unsettled`], which the caller must not unwind. The
+/// interrupt flag is deliberately not consulted: after Ctrl-C it is already set, and
+/// stopping the run comes before honouring it.
 fn settle(deps: &Deps, root: &Path, id: &str, why: &str) -> Result<()> {
   let mut waited = Duration::ZERO;
   let mut cancelled = false;
@@ -135,7 +159,7 @@ fn settle(deps: &Deps, root: &Path, id: &str, why: &str) -> Result<()> {
     if let Ok((status, conclusion)) = run_state(deps.runner, root, id)
       && status == "completed"
     {
-      if conclusion == "success" && !cancelled {
+      if conclusion == "success" {
         println!("  run {id} succeeded although its watcher did not ({why}); continuing");
         return Ok(());
       }
@@ -148,10 +172,7 @@ fn settle(deps: &Deps, root: &Path, id: &str, why: &str) -> Result<()> {
       cancelled = true;
     }
     if waited >= SETTLE_TIMEOUT {
-      bail!(
-        "release workflow run {id} failed: cancelled after {why}, but it has not stopped within {}s; check it in Actions before releasing this version again",
-        SETTLE_TIMEOUT.as_secs()
-      );
+      return Err(Unsettled { id: id.into() }.into());
     }
     (deps.sleep)(POLL_INTERVAL);
     waited += POLL_INTERVAL;
@@ -533,8 +554,21 @@ mod tests {
     let sleep = |d| total.set(total.get() + d);
     let d = deps(&stuck, &index, &flag, &sleep);
     let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap_err();
-    assert!(err.to_string().contains("has not stopped"), "{err}");
+    assert!(err.downcast_ref::<Unsettled>().is_some_and(|u| u.id == "123456"), "{err}");
     assert!(total.get() >= SETTLE_TIMEOUT);
+
+    // The cancel lost the race with a normal completion: the run published, so it is a
+    // success, not a rollback.
+    let won = Settling {
+      inner: scripted(),
+      live: 1,
+      conclusion: "success",
+      queries: Cell::new(0),
+    };
+    won.inner.script("gh", &["run", "watch"], 1, "");
+    let d = deps(&won, &index, &flag, NO_SLEEP);
+    wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap();
+    assert!(won.inner.calls_for("gh").iter().any(|c| c[..] == ["run", "cancel", "123456"]));
   }
 
   #[test]
