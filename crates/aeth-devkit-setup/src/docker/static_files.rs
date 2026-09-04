@@ -29,8 +29,11 @@ pub fn target_name(template_file: &str) -> Option<String> {
   Some(format!("{stem}.{ext}"))
 }
 
+/// LF line endings and no byte-order mark: neither is drift (`.gitattributes` owns line
+/// endings, and Windows editors add a BOM the templates never carry), and a BOM would
+/// otherwise show as a phantom hunk on the first line.
 pub fn normalize_newlines(s: &str) -> String {
-  s.replace("\r\n", "\n")
+  s.trim_start_matches('\u{feff}').replace("\r\n", "\n")
 }
 
 /// Three lines of context, both sides labelled so the user can tell which is theirs. Line
@@ -120,6 +123,7 @@ mod tests {
     assert!(d.contains("+++ docker/Dockerfile (devkit template)"), "{d}");
     assert!(d.contains("-b\n+c\n"), "{d}");
     assert_eq!(normalize_newlines("a\r\nb\r\n"), normalize_newlines("a\nb\n"));
+    assert_eq!(normalize_newlines("\u{feff}a\n"), "a\n", "a BOM is not drift either");
     let d = unified_diff("f", "a\r\nb\r\n", "a\nc\n");
     assert!(d.contains("-b\n+c\n") && !d.contains("-a"), "CRLF must not show as drift: {d}");
   }

@@ -334,6 +334,35 @@ fn a_partial_answer_from_the_reviewer_writes_the_assembled_text() {
 }
 
 #[test]
+fn a_byte_order_mark_is_not_drift_and_does_not_hide_services() {
+  let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
+  let root = dir.path();
+  run(root, Mode::Ask, &[], false);
+  let good = read(root, "docker/Dockerfile");
+  write(root, "docker/Dockerfile", &format!("\u{feff}{good}"));
+  let compose = read(root, "docker/compose.yaml");
+  write(
+    root,
+    "docker/compose.yaml",
+    &format!("\u{feff}{}", compose.replace("interval: 30s", "interval: 99s")),
+  );
+  let (changes, prompt, _) = run(root, Mode::Ask, &["replace"], false);
+  assert_eq!(
+    prompt.asked.borrow().len(),
+    1,
+    "only the compose edit asks: {:?}",
+    prompt.asked.borrow()
+  );
+  assert!(
+    !changes.files.iter().any(|f| f.path.ends_with("Dockerfile")),
+    "{}",
+    changes.report(root)
+  );
+  let out = read(root, "docker/compose.yaml");
+  assert!(out.starts_with("services:") && out.contains("interval: 30s"), "{out}");
+}
+
+#[test]
 fn stray_entrypoint_files_are_reported_not_deleted() {
   let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
   let root = dir.path();

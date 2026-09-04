@@ -77,6 +77,17 @@ export function parseRequest(text: string, cache: string): Request {
   return req;
 }
 
+/**
+ * Path of a served document, `/<id>/<side>/…`, ending in the real file name so VS Code
+ * picks the language from it: a compose title is `docker/compose.yaml: new service
+ * worker`, and with the suffix last the file would highlight as plain text.
+ */
+export function docPath(id: string, side: 'current' | 'proposed', title: string): string {
+  const sep = title.indexOf(': ');
+  if (sep === -1) return `/${id}/${side}/${title}`;
+  return `/${id}/${side}/${title.slice(sep + 2)}/${title.slice(0, sep)}`;
+}
+
 export function cancelPath(req: Request): string {
   return req.response_path.replace(/\.response\.json$/, '.cancel');
 }

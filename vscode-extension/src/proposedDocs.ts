@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SCHEME } from './consent';
+import { SCHEME, docPath } from './consent';
 
 /**
  * Read-only texts served as `aeth-devkit-proposed:/<id>/<side>/<title>`. Both sides of
@@ -13,7 +13,7 @@ export class ProposedDocs implements vscode.TextDocumentContentProvider {
   readonly onDidChange = this.emitter.event;
 
   register(id: string, side: 'current' | 'proposed', title: string, text: string): vscode.Uri {
-    const uri = vscode.Uri.from({ scheme: SCHEME, path: `/${id}/${side}/${title}` });
+    const uri = vscode.Uri.from({ scheme: SCHEME, path: docPath(id, side, title) });
     this.texts.set(uri.path, text);
     return uri;
   }

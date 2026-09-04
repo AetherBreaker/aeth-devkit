@@ -199,7 +199,11 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
     .strip_prefix(&ctx.root)
     .map(|p| p.to_string_lossy().replace('\\', "/"))
     .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
-  let original = std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
+  // A BOM would hide `services:` from the line parser; drop it (the rewrite omits it).
+  let original = std::fs::read_to_string(&path)
+    .with_context(|| format!("reading {rel}"))?
+    .trim_start_matches('\u{feff}')
+    .to_string();
   let mut text = original.clone();
   let mut details: Vec<String> = Vec::new();
   // One diff and one decision; `text` advances only on replace or partial. A closure
