@@ -44,7 +44,7 @@ def test_poethepoet_tasks_is_a_build_dependency_only():
 
 
 def test_generated_file_holds_no_absolute_paths():
-  """Script paths must be a placeholder in the file, resolved from __file__ at import.
+  r"""Script paths must be a placeholder in the file, resolved from __file__ at import.
 
   Baking the generating machine's absolute paths would ship dead paths to every consumer,
   since the package installs into each project's own site-packages.
