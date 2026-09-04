@@ -11,7 +11,7 @@ use std::ops::Deref;
 use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use aeth_devkit_core::devpi::{DeleteOutcome, DevpiClient, StubDevpiClient};
 use aeth_devkit_core::git;
@@ -35,7 +35,7 @@ struct World {
   devpi: SeqDevpi,
   index: StubIndexClient,
   prompt: ScriptedPrompt,
-  flag: AtomicBool,
+  flag: Rc<AtomicBool>,
 }
 
 /// A `RecordingRunner` whose `gh run list --workflow …` answers empty until `gh release
@@ -47,6 +47,10 @@ struct SeqRunner {
   released: Rc<Cell<bool>>,
   /// How many run-state queries still answer `in_progress` before the scripted answer.
   live_polls: Cell<usize>,
+  /// Raised when `gh release create` runs, if `interrupt_on_create`: a Ctrl-C that lands
+  /// while the release is being created.
+  interrupted: Rc<AtomicBool>,
+  interrupt_on_create: Cell<bool>,
   /// Cleared by a test that scripts runs which exist *before* the release (an earlier
   /// release of the tag), which the pre-flight must see.
   gate_runs: Cell<bool>,
@@ -93,6 +97,9 @@ impl Runner for SeqRunner {
   fn run_capture(&self, program: &str, args: &[String], cwd: &Path) -> anyhow::Result<CapturedOutput> {
     if program == "gh" && starts(args, &["release", "create"]) {
       self.released.set(true);
+      if self.interrupt_on_create.get() {
+        self.interrupted.store(true, Ordering::SeqCst);
+      }
     }
     if program == "gh" && starts(args, &["run", "view", "123456", "--json", "status,conclusion"]) && self.live_polls.get() > 0 {
       self.live_polls.set(self.live_polls.get() - 1);
@@ -155,6 +162,8 @@ impl World {
     runner.script_err("gh", &["release", "view", "v1.0.1", "--json"], 1, "release not found");
     runner.script_err("gh", &["release", "view", "v1.0.0", "--json"], 1, "release not found");
     runner.script("gh", &["release", "create"], 0, "https://github.com/o/demo/releases/tag/v1.0.1\n");
+    // The id the rollback deletes the release by.
+    runner.script("gh", &["release", "view", "v1.0.1", "--json", "databaseId"], 0, "42\n");
     // The release workflow: one run exists at once, `gh run watch` succeeds (default exit 0).
     runner.script("gh", &["run", "list", "--workflow"], 0, "123456 completed\n");
     runner.script("gh", &["run", "view"], 0, "https://github.com/o/demo/actions/runs/123456\n");
@@ -170,12 +179,15 @@ impl World {
     runner.script("uv", &["version"], 0, "demo 1.0.0\n");
     runner.script("uv", &["version", "--bump", "patch", "--dry-run"], 0, "demo 1.0.0 => 1.0.1\n");
     let released = Rc::new(Cell::new(false));
+    let flag = Rc::new(AtomicBool::new(false));
     Self {
       dir,
       runner: SeqRunner {
         inner: runner,
         released: Rc::clone(&released),
         live_polls: Cell::new(0),
+        interrupted: Rc::clone(&flag),
+        interrupt_on_create: Cell::new(false),
         gate_runs: Cell::new(true),
       },
       devpi: SeqDevpi {
@@ -186,7 +198,7 @@ impl World {
       // Only a PyPI target reads the simple index; the fixture publishes to `Private`.
       index: StubIndexClient { versions: vec![] },
       prompt: ScriptedPrompt::new(answers),
-      flag: AtomicBool::new(false),
+      flag,
     }
   }
 
@@ -250,6 +262,12 @@ struct State {
 
 fn ok(c: ExitCode) -> bool {
   c == ExitCode::SUCCESS
+}
+
+/// Whether a recorded `gh` call deletes the v1.0.1 release: by the id read after creation
+/// (the fixture answers 42), or by tag when that lookup was scripted to fail.
+fn deletes_release(c: &[String]) -> bool {
+  c[..] == ["api", "-X", "DELETE", "repos/{owner}/{repo}/releases/42"] || starts(c, &["release", "delete", "v1.0.1"])
 }
 
 /// Does a recorded argument list start with `prefix`? Safe on short lists, unlike slicing.
@@ -350,14 +368,14 @@ fn rollback_case(fail_program: &str, fail_args: &[&str]) -> World {
 #[test]
 fn push_failure_resets_commit_and_tag() {
   let w = rollback_case("git", &["push", "--atomic", "origin", "main"]);
-  assert!(w.runner.calls_for("gh").iter().all(|c| !starts(c, &["release", "delete"])));
+  assert!(w.runner.calls_for("gh").iter().all(|c| !deletes_release(c)));
 }
 
 #[test]
 fn failed_workflow_run_rolls_back_the_whole_release() {
   let w = rollback_case("gh", &["run", "watch"]);
   let gh = w.runner.calls_for("gh");
-  assert!(gh.iter().any(|c| starts(c, &["release", "delete", "v1.0.1"])), "{gh:?}");
+  assert!(gh.iter().any(|c| deletes_release(c)), "{gh:?}");
   assert!(gh.iter().all(|c| !starts(c, &["run", "cancel"])), "{gh:?}");
 }
 
@@ -372,7 +390,22 @@ fn a_run_still_going_when_its_watcher_dies_is_cancelled_before_the_rollback() {
   assert_eq!(w.state(), before);
   let gh = w.runner.calls_for("gh");
   let cancel = gh.iter().position(|c| c[..] == ["run", "cancel", "123456"]).unwrap();
-  let delete = gh.iter().position(|c| starts(c, &["release", "delete", "v1.0.1"])).unwrap();
+  let delete = gh.iter().position(|c| deletes_release(c)).unwrap();
+  assert!(cancel < delete, "{gh:?}");
+}
+
+#[test]
+fn an_interrupt_during_release_creation_cancels_the_run_then_rolls_back() {
+  let w = World::new(&[]);
+  w.runner.interrupt_on_create.set(true);
+  w.runner.live_polls.set(1); // in progress when found, then the scripted "completed failure"
+  let before = w.state();
+  assert!(!ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+  assert_eq!(w.state(), before);
+  let gh = w.runner.calls_for("gh");
+  assert!(gh.iter().all(|c| !starts(c, &["run", "watch"])), "{gh:?}");
+  let cancel = gh.iter().position(|c| c[..] == ["run", "cancel", "123456"]).unwrap();
+  let delete = gh.iter().position(|c| deletes_release(c)).unwrap();
   assert!(cancel < delete, "{gh:?}");
 }
 
@@ -391,7 +424,7 @@ fn a_run_that_never_settles_is_left_in_place_not_rolled_back() {
   assert!(after.tag.is_some());
   let gh = w.runner.calls_for("gh");
   assert!(gh.iter().any(|c| c[..] == ["run", "cancel", "123456"]), "{gh:?}");
-  assert!(gh.iter().all(|c| !starts(c, &["release", "delete"])), "{gh:?}");
+  assert!(gh.iter().all(|c| !deletes_release(c)), "{gh:?}");
   assert!(
     w.runner
       .calls_for("git")
@@ -436,7 +469,7 @@ fn published_version_missing_after_a_green_run_rolls_back() {
   let before = w.state();
   assert!(!ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
   assert_eq!(w.state(), before);
-  assert!(w.runner.calls_for("gh").iter().any(|c| starts(c, &["release", "delete", "v1.0.1"])));
+  assert!(w.runner.calls_for("gh").iter().any(|c| deletes_release(c)));
 }
 
 #[test]
@@ -510,7 +543,7 @@ fn github_failure_unwinds_everything_with_lease() {
     && c[1].starts_with("--force-with-lease=refs/tags/v1.0.1:")
     && c[3] == ":refs/tags/v1.0.1"));
   // The GitHub release was never created, so nothing tries to delete it.
-  assert!(w.runner.calls_for("gh").iter().all(|c| !starts(c, &["release", "delete"])));
+  assert!(w.runner.calls_for("gh").iter().all(|c| !deletes_release(c)));
 }
 
 #[test]
@@ -528,7 +561,7 @@ fn partial_github_release_is_deleted_on_rollback() {
   let gh = w.runner.calls_for("gh");
   let create_at = gh.iter().position(|c| starts(c, &["release", "create"])).unwrap();
   assert!(
-    gh[create_at..].iter().any(|c| starts(c, &["release", "delete", "v1.0.1"])),
+    gh[create_at..].iter().any(|c| deletes_release(c)),
     "the half-created release must be deleted during rollback: {gh:?}"
   );
 }

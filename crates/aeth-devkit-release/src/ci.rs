@@ -43,13 +43,14 @@ pub struct Run {
   pub status: String,
 }
 
-/// Every release workflow run for `tag`, newest first. For a `release` event `gh` reports
-/// the tag as the run's head branch, which is what selects them. Runs of an earlier,
-/// since-deleted release of the same tag are included — deleting a release does not delete
-/// its runs — which is why callers snapshot this list before creating the release and wait
-/// for an id that was not in it.
+/// Every release workflow run for `tag`, newest first. For a `release` event GitHub
+/// records the tag as the run's head branch, so `--branch` selects them server-side
+/// (a client-side filter would only see `gh`'s default page of 20 runs, and a busy
+/// repository can have more than that for other tags). Runs of an earlier, since-deleted
+/// release of the same tag are included — deleting a release does not delete its runs —
+/// which is why callers snapshot this list before creating the release and wait for an id
+/// that was not in it.
 pub fn list_runs(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Vec<Run>> {
-  let jq = format!(".[] | select(.headBranch == \"{tag}\") | \"\\(.databaseId) \\(.status)\"");
   let args = s(&[
     "run",
     "list",
@@ -57,10 +58,14 @@ pub fn list_runs(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Vec<Run>
     "release.yml",
     "--event",
     "release",
+    "--branch",
+    tag,
+    "--limit",
+    "100",
     "--json",
-    "databaseId,headBranch,status",
+    "databaseId,status",
     "--jq",
-    &jq,
+    r#".[] | "\(.databaseId) \(.status)""#,
   ]);
   let out = runner.run_capture("gh", &args, root)?;
   if !out.success() {
@@ -81,43 +86,51 @@ pub fn list_runs(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Vec<Run>
     .collect()
 }
 
-/// Pre-flight: a run of an earlier release of the same tag that is still queued or in
-/// progress would attach to and publish against the release about to be created, before
-/// the new run even starts; deleting that earlier release does not stop its run. Refuse
-/// until every such run has finished.
-pub fn check_no_active_run(runner: &dyn Runner, root: &Path, tag: &str) -> Result<()> {
-  let active: Vec<String> = list_runs(runner, root, tag)?
-    .into_iter()
-    .filter(|r| r.status != "completed")
-    .map(|r| r.id)
-    .collect();
+/// A run of an earlier release of the same tag that is still queued or in progress would
+/// attach to and publish against the release about to be created, before the new run even
+/// starts; deleting that earlier release does not stop its run. Refuse until every such
+/// run has finished. Returns the ids of the (all completed) runs, so the caller creating
+/// the release can tell the new run from them. Called in the pre-flight and again right
+/// before `gh release create`: prompts and the local steps sit between the two.
+pub fn check_no_active_run(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Vec<String>> {
+  let runs = list_runs(runner, root, tag)?;
+  let active: Vec<&str> = runs.iter().filter(|r| r.status != "completed").map(|r| r.id.as_str()).collect();
   if !active.is_empty() {
     bail!(
       "release workflow run(s) {} for {tag} are still active (from an earlier release of this tag); wait for them or `gh run cancel <id>` first",
       active.join(", ")
     );
   }
-  Ok(())
+  Ok(runs.into_iter().map(|r| r.id).collect())
 }
 
-/// The error [`wait_for_run`] fails with when run `id` was cancelled but never reported
-/// itself completed: its state is unknown, so it may still be about to publish, and the
-/// caller must *not* unwind the journal (that would delete the release and tag under a
-/// run that is still going, and cannot un-publish what it uploads). Everything is left in
-/// place for the user to settle by hand.
-#[derive(Debug)]
-pub struct Unsettled {
-  pub id: String,
+/// The database id of the release for `tag`, so the rollback can delete exactly that
+/// release rather than whichever one owns the tag by then. `None` when the lookup fails:
+/// the caller then falls back to deleting by tag.
+pub fn release_id(runner: &dyn Runner, root: &Path, tag: &str) -> Option<String> {
+  let out = runner
+    .run_capture(
+      "gh",
+      &s(&["release", "view", tag, "--json", "databaseId", "--jq", ".databaseId"]),
+      root,
+    )
+    .ok()?;
+  let id = out.stdout.trim();
+  (out.success() && !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then(|| id.to_string())
 }
+
+/// The error [`wait_for_run`] fails with when the workflow's state is unknown — its run
+/// was cancelled but never reported itself completed, or the runs could not be listed at
+/// all after the release event fired. A run may still be about to publish, so the caller
+/// must *not* unwind the journal (that would delete the release and tag under a run that
+/// is still going, and cannot un-publish what it uploads). Everything is left in place for
+/// the user to settle by hand.
+#[derive(Debug)]
+pub struct Unsettled(pub String);
 
 impl std::fmt::Display for Unsettled {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(
-      f,
-      "release workflow run {} was cancelled but has not stopped within {}s",
-      self.id,
-      SETTLE_TIMEOUT.as_secs()
-    )
+    f.write_str(&self.0)
   }
 }
 
@@ -172,37 +185,71 @@ fn settle(deps: &Deps, root: &Path, id: &str, why: &str) -> Result<()> {
       cancelled = true;
     }
     if waited >= SETTLE_TIMEOUT {
-      return Err(Unsettled { id: id.into() }.into());
+      return Err(
+        Unsettled(format!(
+          "release workflow run {id} was cancelled but has not stopped within {}s",
+          SETTLE_TIMEOUT.as_secs()
+        ))
+        .into(),
+      );
     }
     (deps.sleep)(POLL_INTERVAL);
     waited += POLL_INTERVAL;
   }
 }
 
-/// Poll until a run not in `known` (the ids [`list_runs`] returned before the release was
-/// created) exists, bounded by [`RUN_START_TIMEOUT`], then `gh run watch` it to completion
-/// with inherited stdio so the user sees the job progress. Returns the run URL.
-pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, known: &[String]) -> Result<String> {
+/// The run for `tag` that is not in `known` (the ids listed before the release was
+/// created), polled for up to [`RUN_START_TIMEOUT`]. A failed listing is retried, not
+/// fatal: the release event has fired, so a run may exist unseen, and an unwind on an API
+/// blip would delete the release under it. When the window closes on a failed listing the
+/// state is unknown ([`Unsettled`]); when listings worked and no run appeared there is
+/// nothing to cancel and the rollback is safe. The interrupt flag is not consulted: after
+/// the release exists, Ctrl-C is honoured by finding the run and cancelling it.
+fn find_run(deps: &Deps, root: &Path, tag: &str, known: &[String]) -> Result<String> {
   let mut waited = Duration::ZERO;
-  let id = loop {
-    deps.check_interrupt()?;
-    if let Some(run) = list_runs(deps.runner, root, tag)?.into_iter().find(|r| !known.contains(&r.id)) {
-      break run.id;
-    }
+  loop {
+    let last_error = match list_runs(deps.runner, root, tag) {
+      Ok(runs) => {
+        if let Some(run) = runs.into_iter().find(|r| !known.contains(&r.id)) {
+          return Ok(run.id);
+        }
+        None
+      }
+      Err(e) => Some(e),
+    };
     if waited >= RUN_START_TIMEOUT {
-      bail!(
-        "no release workflow run for {tag} started within {}s; is {WORKFLOW_FILE} on the default branch and Actions enabled?",
-        RUN_START_TIMEOUT.as_secs()
-      );
+      let secs = RUN_START_TIMEOUT.as_secs();
+      return Err(match last_error {
+        Some(e) => Unsettled(format!(
+          "the release workflow runs for {tag} could not be listed for {secs}s (last error: {e:#})"
+        ))
+        .into(),
+        None => anyhow!(
+          "no release workflow run for {tag} started within {secs}s; is {WORKFLOW_FILE} on the default branch and Actions enabled?"
+        ),
+      });
     }
     (deps.sleep)(POLL_INTERVAL);
     waited += POLL_INTERVAL;
-  };
-  println!("  run {id} started; watching...");
-  match deps.runner.run_inherit("gh", &s(&["run", "watch", &id, "--exit-status"]), root)? {
-    Some(0) => {}
-    Some(code) => settle(deps, root, &id, &format!("gh run watch exited with {code}"))?,
-    None => settle(deps, root, &id, "gh run watch was terminated by a signal")?,
+  }
+}
+
+/// Find the release's run (see [`find_run`]), then `gh run watch` it to completion with
+/// inherited stdio so the user sees the job progress. A Ctrl-C that arrived since the
+/// release was created — during `gh release create` itself, or while the run was being
+/// found — cancels the run and waits for it to stop instead of watching it; `settle`
+/// still lets a run that had already succeeded count as a success. Returns the run URL.
+pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, known: &[String]) -> Result<String> {
+  let id = find_run(deps, root, tag, known)?;
+  if deps.check_interrupt().is_err() {
+    settle(deps, root, &id, "interrupted")?;
+  } else {
+    println!("  run {id} started; watching...");
+    match deps.runner.run_inherit("gh", &s(&["run", "watch", &id, "--exit-status"]), root)? {
+      Some(0) => {}
+      Some(code) => settle(deps, root, &id, &format!("gh run watch exited with {code}"))?,
+      None => settle(deps, root, &id, "gh run watch was terminated by a signal")?,
+    }
   }
   // The URL is informational: the run already succeeded, so a failed lookup (auth or API
   // blip) must not turn a good release into a rollback. Fall back to naming the run.
@@ -225,10 +272,12 @@ pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, known: &[String]) -> Re
 /// target-specific check as the pre-flight probe: a request error or an absent version
 /// right after the upload is propagation, not failure, and the rollback this gates is
 /// destructive (for PyPI it cannot even undo the upload).
+///
+/// The interrupt flag is not consulted: the run has succeeded, so the artefacts are
+/// published and the release stands; a Ctrl-C here would roll back a real release.
 pub fn verify_published(deps: &Deps, root: &Path, cfg: &Config, version: &str) -> Result<()> {
   let mut waited = Duration::ZERO;
   loop {
-    deps.check_interrupt()?;
     let last_error = match target_has_version(deps, cfg, version) {
       Ok(true) => break,
       Ok(false) => None,
@@ -276,9 +325,11 @@ mod tests {
   use crate::config::PublishTarget;
   use crate::prompt::ScriptedPrompt;
 
-  /// Answers `gh run list` empty for the first `empty_polls` calls, then like `inner`.
+  /// Answers `gh run list` with a failure for the first `failing` calls, then empty for
+  /// the next `empty_polls`, then like `inner`.
   struct LateRun {
     inner: RecordingRunner,
+    failing: usize,
     empty_polls: usize,
     polls: Cell<usize>,
   }
@@ -291,10 +342,11 @@ mod tests {
       if program == "gh" && args.starts_with(&["run".to_string(), "list".to_string()]) {
         let n = self.polls.get();
         self.polls.set(n + 1);
-        if n < self.empty_polls {
-          self.inner.run_capture(program, args, cwd)?; // recorded, but answered empty
+        if n < self.failing.saturating_add(self.empty_polls) {
+          self.inner.run_capture(program, args, cwd)?; // recorded, but answered here
           return Ok(CapturedOutput {
-            code: Some(0),
+            code: Some(if n < self.failing { 1 } else { 0 }),
+            stderr: if n < self.failing { "HTTP 502".into() } else { String::new() },
             ..Default::default()
           });
         }
@@ -421,8 +473,10 @@ mod tests {
       }]
     );
     let call = &r.calls_for("gh")[0];
+    // Selected server-side by branch (the tag), with an explicit limit: `gh`'s default
+    // page of 20 could miss this tag's runs behind other tags' runs.
     assert_eq!(
-      call[..8].to_vec(),
+      call[..12].to_vec(),
       vec![
         "run",
         "list",
@@ -430,11 +484,14 @@ mod tests {
         "release.yml",
         "--event",
         "release",
+        "--branch",
+        "v1.2.3",
+        "--limit",
+        "100",
         "--json",
-        "databaseId,headBranch,status"
+        "databaseId,status"
       ]
     );
-    assert!(call.iter().any(|a| a.contains(r#"select(.headBranch == "v1.2.3")"#)), "{call:?}");
     let empty = RecordingRunner::new(0);
     assert!(list_runs(&empty, Path::new("."), "v1.2.3").unwrap().is_empty());
     let broken = RecordingRunner::new(1);
@@ -468,6 +525,7 @@ mod tests {
   fn waits_for_the_run_to_appear_then_watches_it() {
     let late = LateRun {
       inner: scripted(),
+      failing: 0,
       empty_polls: 2,
       polls: Cell::new(0),
     };
@@ -491,6 +549,62 @@ mod tests {
     let flag = AtomicBool::new(false);
     let d = deps(&r, &index, &flag, NO_SLEEP);
     assert_eq!(wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap(), "run 123456");
+  }
+
+  #[test]
+  fn a_failed_listing_is_retried_and_leaves_the_state_unknown_if_it_never_works() {
+    // Two API failures, then the run: found, not rolled back.
+    let flaky = LateRun {
+      inner: scripted(),
+      failing: 2,
+      empty_polls: 0,
+      polls: Cell::new(0),
+    };
+    let index = StubIndexClient { versions: vec![] };
+    let flag = AtomicBool::new(false);
+    let slept = RefCell::new(Vec::new());
+    let sleep = |d| slept.borrow_mut().push(d);
+    let d = deps(&flaky, &index, &flag, &sleep);
+    assert!(wait_for_run(&d, Path::new("."), "v1.2.3", &[]).is_ok());
+    assert_eq!(slept.borrow().len(), 2);
+    // Listing never works: the release event has fired and a run may exist unseen, so
+    // this is "state unknown", which the caller must not unwind.
+    let dead = RecordingRunner::new(1);
+    let total = Cell::new(Duration::ZERO);
+    let sleep = |d| total.set(total.get() + d);
+    let d = deps(&dead, &index, &flag, &sleep);
+    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap_err();
+    assert!(err.downcast_ref::<Unsettled>().is_some(), "{err}");
+    assert!(total.get() >= RUN_START_TIMEOUT);
+  }
+
+  #[test]
+  fn an_interrupt_after_the_release_exists_cancels_the_run() {
+    let r = Settling {
+      inner: scripted(),
+      live: 1,
+      conclusion: "cancelled",
+      queries: Cell::new(0),
+    };
+    let index = StubIndexClient { versions: vec![] };
+    let flag = AtomicBool::new(true); // Ctrl-C landed during `gh release create`
+    let d = deps(&r, &index, &flag, NO_SLEEP);
+    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap_err();
+    assert!(err.to_string().contains("cancelled (interrupted)"), "{err}");
+    let gh = r.inner.calls_for("gh");
+    assert!(gh.iter().any(|c| c[..] == ["run", "cancel", "123456"]), "{gh:?}");
+    assert!(gh.iter().all(|c| c[1] != "watch"), "{gh:?}");
+  }
+
+  #[test]
+  fn release_id_is_read_after_creation() {
+    let r = RecordingRunner::new(0);
+    r.script("gh", &["release", "view"], 0, "42\n");
+    assert_eq!(release_id(&r, Path::new("."), "v1.2.3").as_deref(), Some("42"));
+    let call = &r.calls_for("gh")[0];
+    assert_eq!(call[..5].to_vec(), vec!["release", "view", "v1.2.3", "--json", "databaseId"]);
+    let broken = RecordingRunner::new(1);
+    assert_eq!(release_id(&broken, Path::new("."), "v1.2.3"), None);
   }
 
   #[test]
@@ -554,7 +668,7 @@ mod tests {
     let sleep = |d| total.set(total.get() + d);
     let d = deps(&stuck, &index, &flag, &sleep);
     let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap_err();
-    assert!(err.downcast_ref::<Unsettled>().is_some_and(|u| u.id == "123456"), "{err}");
+    assert!(err.downcast_ref::<Unsettled>().is_some_and(|u| u.0.contains("123456")), "{err}");
     assert!(total.get() >= SETTLE_TIMEOUT);
 
     // The cancel lost the race with a normal completion: the run published, so it is a
@@ -601,16 +715,6 @@ mod tests {
     check_no_active_run(&done, Path::new("."), "v1.2.3").unwrap();
     let none = RecordingRunner::new(0);
     check_no_active_run(&none, Path::new("."), "v1.2.3").unwrap();
-  }
-
-  #[test]
-  fn an_interrupt_between_polls_stops_waiting() {
-    let r = RecordingRunner::new(0);
-    let index = StubIndexClient { versions: vec![] };
-    let flag = AtomicBool::new(true);
-    let d = deps(&r, &index, &flag, NO_SLEEP);
-    assert!(wait_for_run(&d, Path::new("."), "v1", &[]).is_err());
-    assert!(r.calls_for("gh").is_empty());
   }
 
   #[test]

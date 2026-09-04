@@ -266,7 +266,9 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   let known = if plan.no_wait {
     Vec::new()
   } else {
-    crate::ci::list_runs(deps.runner, root, &tag)?.into_iter().map(|r| r.id).collect()
+    // Re-checked here, not just in the pre-flight: prompts and the local steps sat in
+    // between, and a run that went active meanwhile would be dismissed as "known".
+    crate::ci::check_no_active_run(deps.runner, root, &tag)?
   };
   println!("[7/8] Creating GitHub release {tag}...");
   // No files: the release workflow attaches the artefacts it builds.
@@ -288,14 +290,20 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
       _ => true,
     };
     if created {
-      journal.push(Undo::DeleteGithubRelease(tag));
+      let id = crate::ci::release_id(deps.runner, root, &tag);
+      journal.push(Undo::DeleteGithubRelease { tag, id });
     }
     bail!("gh release create failed: {}{}", out.stdout.trim(), out.stderr.trim());
   }
-  journal.push(Undo::DeleteGithubRelease(tag.clone()));
+  // By id, so the rollback deletes this release and not whichever one owns the tag by the
+  // time the minutes-long wait is over.
+  let id = crate::ci::release_id(deps.runner, root, &tag);
+  journal.push(Undo::DeleteGithubRelease { tag: tag.clone(), id });
   let release_url = out.stdout.trim().to_string();
 
-  check_interrupt(deps)?;
+  // No interrupt check here: the release exists, so its workflow may already be running,
+  // and a Ctrl-C is honoured by step 8 finding and cancelling that run. `--no-wait` asked
+  // for exactly this point, so it returns regardless.
   if plan.no_wait {
     println!(
       "[8/8] Not waiting for the release workflow (--no-wait): {}",

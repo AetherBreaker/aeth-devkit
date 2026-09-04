@@ -157,14 +157,15 @@ on the line.
   release workflow run (`gh run list` until a run that did not exist before the release
   appears, up to 120 s, then `gh run watch --exit-status`; a watcher that dies — Ctrl-C, API blip — while the
   run is still going cancels the run and waits for it to stop, so nothing is published
-  after the rollback; a run that will not stop is left in place with the manual undo
-  commands printed, never rolled back under) and verify the version is on
+  after the rollback, and a Ctrl-C that lands once the release exists does the same; a
+  run that will not stop, or runs that cannot be listed at all, leave the release in
+  place with the manual undo commands printed, never rolled back under) and verify the version is on
   the publish target (polling up to 120 s for index propagation) and the release still
   exists. `--no-wait` skips the last step and prints the workflow's Actions URL.
 - **Rollback** - On any failure or Ctrl-C — a failed or missing workflow run included —
   the journal is walked backwards (restore files, soft-reset the commit, delete tag /
-  remote tag / GitHub release), with force-with-lease guards so a concurrent release is
-  never clobbered; anything that can't be undone prints an exact manual cleanup command.
+  remote tag / the GitHub release, by the id it was created with), with force-with-lease
+  guards so a concurrent release is never clobbered; anything that can't be undone prints an exact manual cleanup command.
   Artefacts the workflow already published are not removed: on a private index the next
   `devkit release` of the same version detects and offers to remove them; on PyPI, where
   files are immutable, it aborts and the version must be bumped past.

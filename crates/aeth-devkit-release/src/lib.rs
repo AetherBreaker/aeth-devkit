@@ -245,8 +245,13 @@ pub fn run_outcome(args: &Args, deps: &Deps) -> Result<Outcome> {
          either run `devkit release` again for this version — it detects what exists and offers to remove it — \
          or undo by hand, in this order:"
       );
-      for undo in journal.iter().rev() {
+      for undo in journal.into_iter().rev() {
         eprintln!("  {}", undo.manual_command());
+        // The restore command names the snapshot directory, which the `TempDir` would
+        // delete on drop — before the user has waited for the run to stop.
+        if let undo::Undo::RestoreFiles(snap) = undo {
+          eprintln!("    (pre-run snapshot kept at {})", snap.keep().display());
+        }
       }
       Ok(Outcome::Aborted)
     }
