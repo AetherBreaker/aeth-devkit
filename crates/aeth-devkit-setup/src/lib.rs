@@ -270,10 +270,22 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
   }
 
   // 14. Obsolete artifacts: reported, never removed.
-  if !ctx.has_docker && read_optional(&ctx.root.join("pyproject.toml"))?.is_some_and(|t| t.contains("[tool.docker]")) {
+  if !ctx.has_docker && ctx.docker_files_present() {
     changes
       .notes
-      .push("pyproject.toml has a [tool.docker] table but the project has no Docker setup; safe to delete.".into());
+      .push("Docker files found but `[tool.docker].services` is empty; list the app service(s) to manage them.".into());
+  }
+  if !ctx.docker_legacy_keys.is_empty() {
+    let tail = if !ctx.has_docker && !ctx.docker_files_present() {
+      " — or delete the whole table if the project has no Docker setup."
+    } else {
+      ""
+    };
+    changes.notes.push(format!(
+      "pyproject.toml [tool.docker] still has {}: fold `chown_paths` into `required_persisted_dirs`, move any `mkdirs` \
+       scratch directories to temp dirs, and delete both keys; the entrypoint no longer reads them{tail}",
+      ctx.docker_legacy_keys.join(" and ")
+    ));
   }
   if ctx.root.join(".github").join("copilot-instructions.md").is_file() {
     changes
