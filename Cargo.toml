@@ -12,6 +12,7 @@
   base64     = "0.22.1"
   clap       = { version = "4", features = ["derive"] }
   ctrlc      = "3.5.1"
+  nix        = { version = "0.31.3", features = ["user"] }
   pep440_rs  = "0.7.3"
   regex      = "1.13.1"
   serde      = "1.0.229"
@@ -28,6 +29,7 @@
   aeth-devkit-release = { path = "crates/aeth-devkit-release" }
   aeth-devkit-pin   = { path = "crates/aeth-devkit-pin" }
   aeth-devkit-complete = { path = "crates/aeth-devkit-complete" }
+  aeth-devkit-container = { path = "crates/aeth-devkit-container" }
   aeth-devkit-hooks = { path = "crates/aeth-devkit-hooks" }
 
 [profile.release]

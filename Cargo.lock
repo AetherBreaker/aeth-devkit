@@ -39,6 +39,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aeth-devkit-container"
+version = "8.2.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "nix",
+ "tempfile",
+ "toml_edit",
+]
+
+[[package]]
 name = "aeth-devkit-core"
 version = "9.0.0"
 dependencies = [
