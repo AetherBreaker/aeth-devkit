@@ -7,6 +7,7 @@ import {
   HunkState,
   cacheDir,
   cancelPath,
+  docPath,
   isInside,
   merge,
   panels,
@@ -55,6 +56,16 @@ describe('requestPath and isInside', () => {
     expect(isInside(c, c)).toBe(false);
     expect(isInside(c, path.join(c, '..', 'x'))).toBe(false);
     expect(isInside(c, path.join(os.tmpdir(), 'elsewhere'))).toBe(false);
+  });
+});
+
+describe('docPath', () => {
+  it('ends in the real file name so the language is detected', () => {
+    expect(docPath('12-0', 'proposed', 'docker/Dockerfile')).toBe('/12-0/proposed/docker/Dockerfile');
+    expect(docPath('12-0', 'current', 'docker/compose.yaml: new service worker')).toBe(
+      '/12-0/current/new service worker/docker/compose.yaml',
+    );
+    expect(docPath('review-1', 'proposed', '0/docker/compose.yaml')).toBe('/review-1/proposed/0/docker/compose.yaml');
   });
 });
 
