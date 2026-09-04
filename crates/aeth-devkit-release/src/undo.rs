@@ -41,7 +41,13 @@ pub enum Undo {
     bump_sha: String,
     pre_sha: String,
   },
-  DeleteGithubRelease(String),
+  /// Delete the release this run created — by `id` when the lookup after `gh release
+  /// create` worked, so a release someone else made for the same tag during the CI wait
+  /// is not the one deleted; by tag otherwise.
+  DeleteGithubRelease {
+    tag: String,
+    id: Option<String>,
+  },
 }
 
 /// A compensating step that did not work, with the command the user can run by hand.
@@ -62,7 +68,7 @@ impl Undo {
       Undo::DeleteLocalTag(t) => format!("Deleting local tag {t}"),
       Undo::DeleteRemoteTag { tag, .. } => format!("Deleting remote tag {tag}"),
       Undo::ForcePushBranch { branch, .. } => format!("Force-pushing the pre-release {branch} to origin"),
-      Undo::DeleteGithubRelease(t) => format!("Deleting GitHub release {t}"),
+      Undo::DeleteGithubRelease { tag, .. } => format!("Deleting GitHub release {tag}"),
     }
   }
 
@@ -93,7 +99,8 @@ impl Undo {
       Undo::ForcePushBranch { branch, bump_sha, pre_sha } => {
         format!("git push --force-with-lease={branch}:{bump_sha} origin {pre_sha}:refs/heads/{branch}")
       }
-      Undo::DeleteGithubRelease(t) => format!("gh release delete {t} --yes"),
+      Undo::DeleteGithubRelease { id: Some(id), .. } => format!("gh api -X DELETE repos/{{owner}}/{{repo}}/releases/{id}"),
+      Undo::DeleteGithubRelease { tag, id: None } => format!("gh release delete {tag} --yes"),
     }
   }
 
@@ -121,13 +128,21 @@ impl Undo {
       // No `--cleanup-tag`: that would delete the remote tag with no lease, ahead of the
       // `DeleteRemoteTag` entry whose lease is what keeps a tag another publisher pushed
       // during the (now minutes-long) CI wait out of reach.
-      Undo::DeleteGithubRelease(t) => {
-        let args: Vec<String> = ["release", "delete", t, "--yes"].iter().map(|s| s.to_string()).collect();
+      Undo::DeleteGithubRelease { tag, id } => {
+        let args: Vec<String> = match id {
+          Some(id) => vec![
+            "api".into(),
+            "-X".into(),
+            "DELETE".into(),
+            format!("repos/{{owner}}/{{repo}}/releases/{id}"),
+          ],
+          None => ["release", "delete", tag, "--yes"].iter().map(|s| s.to_string()).collect(),
+        };
         let out = deps.runner.run_capture("gh", &args, root)?;
         if out.success() {
           Ok(())
         } else {
-          bail!("gh release delete failed: {}", out.stderr.trim())
+          bail!("deleting the GitHub release failed: {}", out.stderr.trim())
         }
       }
     }
@@ -201,7 +216,7 @@ mod tests {
 
     let runner = RecordingRunner::new(0);
     // The GitHub delete is scripted to fail: it must be reported but not stop the rest.
-    runner.script("gh", &["release", "delete"], 1, "");
+    runner.script("gh", &["api", "-X", "DELETE"], 1, "");
     let devpi = StubDevpiClient::new(true);
     let prompt = ScriptedPrompt::new(&[]);
     let index = StubIndexClient { versions: vec![] };
@@ -233,12 +248,21 @@ mod tests {
         bump_sha: bump.clone(),
         pre_sha: pre.clone(),
       },
-      Undo::DeleteGithubRelease("v2".into()),
+      Undo::DeleteGithubRelease {
+        tag: "v2".into(),
+        id: Some("7".into()),
+      },
     ];
     let failures = unwind(journal, &deps, root);
     assert_eq!(failures.len(), 1);
     assert!(failures[0].what.contains("GitHub release"));
-    assert_eq!(failures[0].manual, "gh release delete v2 --yes");
+    assert_eq!(failures[0].manual, "gh api -X DELETE repos/{owner}/{repo}/releases/7");
+    // Without an id (the lookup after creation failed) the tag is all there is.
+    let by_tag = Undo::DeleteGithubRelease {
+      tag: "v2".into(),
+      id: None,
+    };
+    assert_eq!(by_tag.manual_command(), "gh release delete v2 --yes");
     let git_calls = runner.calls_for("git");
     assert_eq!(
       git_calls[0],
