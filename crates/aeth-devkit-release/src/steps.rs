@@ -262,14 +262,11 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   check_interrupt(deps)?;
   // Runs of an earlier release of this tag (removed in pre-flight) still exist, and
   // `gh run list` would hand back the newest of them before the new one starts; step 8
-  // waits for a run that is not in this list.
-  let known = if plan.no_wait {
-    Vec::new()
-  } else {
-    // Re-checked here, not just in the pre-flight: prompts and the local steps sat in
-    // between, and a run that went active meanwhile would be dismissed as "known".
-    crate::ci::check_no_active_run(deps.runner, root, &tag)?
-  };
+  // waits for a run that is not in this list. The active-run check is repeated here even
+  // for `--no-wait` (which skips only the watching): prompts and the local steps sat
+  // between the pre-flight and this point, and a run rerun meanwhile would attach to
+  // and publish against the release about to be created.
+  let known = crate::ci::check_no_active_run(deps.runner, root, &tag)?;
   println!("[7/8] Creating GitHub release {tag}...");
   // No files: the release workflow attaches the artefacts it builds.
   let mut args: Vec<String> = vec!["release".into(), "create".into(), tag.clone(), "--title".into(), tag.clone()];
