@@ -125,6 +125,12 @@
   src       = ["./python", "../*/src", "../*/python"]  # setup-project added: "../*/src", "../*/python"
   cache-dir = ".cache/ruff"
 
+  # Applies `exclude`/`extend-exclude` even to paths named explicitly on the command line
+  # (the stop hook always does). Without it, the hook's `ruff check --fix <changed files>`
+  # ignores this list entirely -- it only governs directory-traversal discovery by default --
+  # and reformats a generated file nothing here is meant to touch.
+  force-exclude = true
+
   exclude = [
     ".bzr",
     ".direnv",
@@ -146,9 +152,8 @@
     "dist",
     "node_modules",
     "venv",
-    # Written by crates/aeth-devkit/build.rs, whose output is pprint's wrapping rather than
-    # ruff's. Excluded so a build needs no formatter (a PEP 517 build environment has none)
-    # and so the file stays byte-stable for the staleness test.
+    # Written by crates/aeth-devkit/build.rs in pprint's shape, not ruff's; the test that
+    # compares it byte-for-byte against a fresh build depends on nothing ever reformatting it.
     "python/aeth_devkit/_tasks_generated.py",
   ]
 
