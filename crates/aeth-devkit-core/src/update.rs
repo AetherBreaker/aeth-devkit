@@ -108,13 +108,10 @@ pub fn check(root: &Path, index: &dyn IndexClient, cache: &Path, now: u64, curre
 /// Set to a file path to relocate the cache (tests, or a user who wants it elsewhere).
 pub const CACHE_ENV: &str = "DEVKIT_UPDATE_CACHE";
 
-/// Where the cache lives for this user: [`CACHE_ENV`] if set, else
-/// `%LOCALAPPDATA%\aeth-devkit\update-check.json` on Windows or
-/// `$XDG_CACHE_HOME/aeth-devkit/update-check.json` (default `~/.cache`) elsewhere.
-pub fn cache_path() -> Option<PathBuf> {
-  if let Some(p) = std::env::var_os(CACHE_ENV) {
-    return Some(PathBuf::from(p));
-  }
+/// This user's devkit cache directory: `%LOCALAPPDATA%\aeth-devkit` on Windows, else
+/// `$XDG_CACHE_HOME/aeth-devkit` (default `~/.cache/aeth-devkit`). The VS Code extension
+/// computes the same path, so the two find each other's files without configuration.
+pub fn cache_dir() -> Option<PathBuf> {
   let base = if cfg!(windows) {
     std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?
   } else {
@@ -123,7 +120,16 @@ pub fn cache_path() -> Option<PathBuf> {
       None => PathBuf::from(std::env::var_os("HOME")?).join(".cache"),
     }
   };
-  Some(base.join("aeth-devkit").join("update-check.json"))
+  Some(base.join("aeth-devkit"))
+}
+
+/// Where the update-check cache lives: [`CACHE_ENV`] if set, else
+/// `update-check.json` under [`cache_dir`].
+pub fn cache_path() -> Option<PathBuf> {
+  if let Some(p) = std::env::var_os(CACHE_ENV) {
+    return Some(PathBuf::from(p));
+  }
+  Some(cache_dir()?.join("update-check.json"))
 }
 
 /// Production entry: run [`check`] against the current directory with the real index client
