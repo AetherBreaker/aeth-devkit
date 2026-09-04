@@ -43,6 +43,9 @@ struct World {
 struct SeqRunner {
   inner: RecordingRunner,
   released: Rc<Cell<bool>>,
+  /// Cleared by a test that scripts runs which exist *before* the release (an earlier
+  /// release of the tag), which the pre-flight must see.
+  gate_runs: Cell<bool>,
 }
 
 /// The private index as the release sees it: `exists` is the stub's own answer until the
@@ -87,7 +90,7 @@ impl Runner for SeqRunner {
     if program == "gh" && starts(args, &["release", "create"]) {
       self.released.set(true);
     }
-    if program == "gh" && starts(args, &["run", "list", "--workflow"]) && !self.released.get() {
+    if program == "gh" && starts(args, &["run", "list", "--workflow"]) && self.gate_runs.get() && !self.released.get() {
       self.inner.run_capture(program, args, cwd)?; // recorded, answered empty
       return Ok(CapturedOutput {
         code: Some(0),
@@ -140,8 +143,15 @@ impl World {
     runner.script_err("gh", &["release", "view", "v1.0.0", "--json"], 1, "release not found");
     runner.script("gh", &["release", "create"], 0, "https://github.com/o/demo/releases/tag/v1.0.1\n");
     // The release workflow: one run exists at once, `gh run watch` succeeds (default exit 0).
-    runner.script("gh", &["run", "list", "--workflow"], 0, "123456\n");
+    runner.script("gh", &["run", "list", "--workflow"], 0, "123456 completed\n");
     runner.script("gh", &["run", "view"], 0, "https://github.com/o/demo/actions/runs/123456\n");
+    // Read only after `gh run watch` fails: the run has concluded, nothing to cancel.
+    runner.script(
+      "gh",
+      &["run", "view", "123456", "--json", "status,conclusion"],
+      0,
+      "completed failure\n",
+    );
     // Matching is newest-registration-wins, so the broad `uv version` answer goes first and
     // the more specific `--bump … --dry-run` answer overrides it for that call.
     runner.script("uv", &["version"], 0, "demo 1.0.0\n");
@@ -152,6 +162,7 @@ impl World {
       runner: SeqRunner {
         inner: runner,
         released: Rc::clone(&released),
+        gate_runs: Cell::new(true),
       },
       devpi: SeqDevpi {
         inner: StubDevpiClient::new(false),
@@ -333,6 +344,37 @@ fn failed_workflow_run_rolls_back_the_whole_release() {
   let w = rollback_case("gh", &["run", "watch"]);
   let gh = w.runner.calls_for("gh");
   assert!(gh.iter().any(|c| starts(c, &["release", "delete", "v1.0.1"])), "{gh:?}");
+  assert!(gh.iter().all(|c| !starts(c, &["run", "cancel"])), "{gh:?}");
+}
+
+#[test]
+fn a_run_still_going_when_its_watcher_dies_is_cancelled_before_the_rollback() {
+  let w = World::new(&[]);
+  w.runner.script("gh", &["run", "watch"], 130, "");
+  // Never reports completed: the settle window is spent (sleeps are no-ops here) and the
+  // rollback still happens, with the cancel having been requested first.
+  w.runner
+    .script("gh", &["run", "view", "123456", "--json", "status,conclusion"], 0, "in_progress \n");
+  let before = w.state();
+  assert!(!ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+  assert_eq!(w.state(), before);
+  let gh = w.runner.calls_for("gh");
+  let cancel = gh.iter().position(|c| c[..] == ["run", "cancel", "123456"]).unwrap();
+  let delete = gh.iter().position(|c| starts(c, &["release", "delete", "v1.0.1"])).unwrap();
+  assert!(cancel < delete, "{gh:?}");
+}
+
+#[test]
+fn an_active_run_of_an_earlier_release_is_refused_before_anything() {
+  let w = World::new(&[]);
+  w.runner.gate_runs.set(false);
+  w.runner.script("gh", &["run", "list", "--workflow"], 0, "777 queued\n");
+  let before = w.state();
+  let err = run(&w.args(&["patch"]), &w.deps()).unwrap_err();
+  assert!(err.to_string().contains("777"), "{err}");
+  assert_eq!(w.state(), before);
+  let gh = w.runner.calls_for("gh");
+  assert!(gh.iter().all(|c| !starts(c, &["release", "create"])), "{gh:?}");
 }
 
 #[test]
@@ -354,7 +396,16 @@ fn no_wait_returns_once_the_release_exists() {
   assert_eq!(run_outcome(&a, &w.deps()).unwrap(), Outcome::Released { version: "1.0.1".into() });
   let gh = w.runner.calls_for("gh");
   assert!(gh.iter().all(|c| !starts(c, &["run", "watch"])), "{gh:?}");
-  assert!(gh.iter().all(|c| !starts(c, &["run", "list", "--workflow"])), "{gh:?}");
+  // The runs are listed once, by the pre-flight active-run check; never after the release
+  // exists, since nothing waits for its run.
+  let created_at = gh.iter().position(|c| starts(c, &["release", "create"])).unwrap();
+  let listings: Vec<usize> = gh
+    .iter()
+    .enumerate()
+    .filter(|(_, c)| starts(c, &["run", "list", "--workflow"]))
+    .map(|(i, _)| i)
+    .collect();
+  assert!(listings.len() == 1 && listings[0] < created_at, "{gh:?}");
 }
 
 #[test]
@@ -830,7 +881,7 @@ fn dry_run_changes_nothing() {
     w.runner
       .calls_for("gh")
       .iter()
-      .all(|c| c[0] == "--version" || starts(c, &["release", "view"]) || starts(c, &["run", "list", "--limit"]))
+      .all(|c| c[0] == "--version" || starts(c, &["release", "view"]) || starts(c, &["run", "list"]))
   );
 }
 

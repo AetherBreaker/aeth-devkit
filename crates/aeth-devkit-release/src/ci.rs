@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 
 use aeth_devkit_core::process::Runner;
 use aeth_devkit_core::{git, github};
@@ -23,7 +23,11 @@ pub const RUN_START_TIMEOUT: Duration = Duration::from_secs(120);
 /// declared failed. PyPI's CDN and devpi both lag a little behind an upload, and a single
 /// request can hit a transient 5xx; neither is a reason to roll a published release back.
 pub const VERIFY_TIMEOUT: Duration = Duration::from_secs(120);
-/// Spacing between polls, for the run start and for the index.
+/// How long a cancelled run may take to report itself completed after its watcher died.
+/// GitHub honours a cancel within seconds; past this the run's state is unknown and the
+/// error says so.
+pub const SETTLE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Spacing between polls, for the run start, the index and a settling run.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// `&["a", "b"]` → `vec!["a".to_string(), "b".to_string()]`, for the `Runner` API.
@@ -31,13 +35,21 @@ fn s(args: &[&str]) -> Vec<String> {
   args.iter().map(|a| a.to_string()).collect()
 }
 
-/// Ids of every release workflow run for `tag`, newest first. For a `release` event `gh`
-/// reports the tag as the run's head branch, which is what selects them. Runs of an
-/// earlier, since-deleted release of the same tag are included — deleting a release does
-/// not delete its runs — which is why callers snapshot this list before creating the
-/// release and wait for an id that was not in it.
-pub fn list_runs(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Vec<String>> {
-  let jq = format!(".[] | select(.headBranch == \"{tag}\") | .databaseId");
+/// One release workflow run, as `gh run list` reports it. `status` is GitHub's
+/// (`queued`, `in_progress`, `completed`, …); only `completed` is terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Run {
+  pub id: String,
+  pub status: String,
+}
+
+/// Every release workflow run for `tag`, newest first. For a `release` event `gh` reports
+/// the tag as the run's head branch, which is what selects them. Runs of an earlier,
+/// since-deleted release of the same tag are included — deleting a release does not delete
+/// its runs — which is why callers snapshot this list before creating the release and wait
+/// for an id that was not in it.
+pub fn list_runs(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Vec<Run>> {
+  let jq = format!(".[] | select(.headBranch == \"{tag}\") | \"\\(.databaseId) \\(.status)\"");
   let args = s(&[
     "run",
     "list",
@@ -46,7 +58,7 @@ pub fn list_runs(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Vec<Stri
     "--event",
     "release",
     "--json",
-    "databaseId,headBranch",
+    "databaseId,headBranch,status",
     "--jq",
     &jq,
   ]);
@@ -54,15 +66,96 @@ pub fn list_runs(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Vec<Stri
   if !out.success() {
     bail!("gh run list failed: {}", out.stderr.trim());
   }
-  Ok(
-    out
-      .stdout
-      .lines()
-      .map(str::trim)
-      .filter(|l| !l.is_empty())
-      .map(str::to_string)
-      .collect(),
-  )
+  out
+    .stdout
+    .lines()
+    .map(str::trim)
+    .filter(|l| !l.is_empty())
+    .map(|l| {
+      let (id, status) = l.split_once(' ').ok_or_else(|| anyhow!("unexpected `gh run list` line: {l:?}"))?;
+      Ok(Run {
+        id: id.into(),
+        status: status.into(),
+      })
+    })
+    .collect()
+}
+
+/// Pre-flight: a run of an earlier release of the same tag that is still queued or in
+/// progress would attach to and publish against the release about to be created, before
+/// the new run even starts; deleting that earlier release does not stop its run. Refuse
+/// until every such run has finished.
+pub fn check_no_active_run(runner: &dyn Runner, root: &Path, tag: &str) -> Result<()> {
+  let active: Vec<String> = list_runs(runner, root, tag)?
+    .into_iter()
+    .filter(|r| r.status != "completed")
+    .map(|r| r.id)
+    .collect();
+  if !active.is_empty() {
+    bail!(
+      "release workflow run(s) {} for {tag} are still active (from an earlier release of this tag); wait for them or `gh run cancel <id>` first",
+      active.join(", ")
+    );
+  }
+  Ok(())
+}
+
+/// `(status, conclusion)` of a run; the conclusion is empty until it completes.
+fn run_state(runner: &dyn Runner, root: &Path, id: &str) -> Result<(String, String)> {
+  let args = s(&[
+    "run",
+    "view",
+    id,
+    "--json",
+    "status,conclusion",
+    "--jq",
+    r#".status + " " + (.conclusion // "")"#,
+  ]);
+  let out = runner.run_capture("gh", &args, root)?;
+  if !out.success() {
+    bail!("gh run view {id} failed: {}", out.stderr.trim());
+  }
+  let line = out.stdout.trim();
+  let (status, conclusion) = line.split_once(' ').unwrap_or((line, ""));
+  Ok((status.into(), conclusion.into()))
+}
+
+/// The watcher of run `id` died (`why`). That is not proof the run stopped: Ctrl-C and
+/// API/network failures end the watch while the run carries on — into `gh release upload`
+/// and `uv publish`, which the rollback that follows cannot undo. So: read the run's state;
+/// a run still going is cancelled and polled until GitHub reports it completed, bounded by
+/// [`SETTLE_TIMEOUT`]. `Ok` only when the run turns out to have succeeded on its own (the
+/// watcher, not the workflow, failed); every other outcome is the error the release fails
+/// with. The interrupt flag is deliberately not consulted: after Ctrl-C it is already set,
+/// and stopping the run comes before honouring it.
+fn settle(deps: &Deps, root: &Path, id: &str, why: &str) -> Result<()> {
+  let mut waited = Duration::ZERO;
+  let mut cancelled = false;
+  loop {
+    if let Ok((status, conclusion)) = run_state(deps.runner, root, id)
+      && status == "completed"
+    {
+      if conclusion == "success" && !cancelled {
+        println!("  run {id} succeeded although its watcher did not ({why}); continuing");
+        return Ok(());
+      }
+      bail!("release workflow run {id} failed: {conclusion} ({why})");
+    }
+    if !cancelled {
+      // Failure is fine: the run may have completed since, which the next poll sees.
+      println!("  {why}; cancelling run {id} so nothing is published after the rollback...");
+      let _ = deps.runner.run_capture("gh", &s(&["run", "cancel", id]), root);
+      cancelled = true;
+    }
+    if waited >= SETTLE_TIMEOUT {
+      bail!(
+        "release workflow run {id} failed: cancelled after {why}, but it has not stopped within {}s; check it in Actions before releasing this version again",
+        SETTLE_TIMEOUT.as_secs()
+      );
+    }
+    (deps.sleep)(POLL_INTERVAL);
+    waited += POLL_INTERVAL;
+  }
 }
 
 /// Poll until a run not in `known` (the ids [`list_runs`] returned before the release was
@@ -72,8 +165,8 @@ pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, known: &[String]) -> Re
   let mut waited = Duration::ZERO;
   let id = loop {
     deps.check_interrupt()?;
-    if let Some(id) = list_runs(deps.runner, root, tag)?.into_iter().find(|id| !known.contains(id)) {
-      break id;
+    if let Some(run) = list_runs(deps.runner, root, tag)?.into_iter().find(|r| !known.contains(&r.id)) {
+      break run.id;
     }
     if waited >= RUN_START_TIMEOUT {
       bail!(
@@ -87,8 +180,8 @@ pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, known: &[String]) -> Re
   println!("  run {id} started; watching...");
   match deps.runner.run_inherit("gh", &s(&["run", "watch", &id, "--exit-status"]), root)? {
     Some(0) => {}
-    Some(code) => bail!("release workflow run {id} failed (gh run watch exited with {code})"),
-    None => bail!("gh run watch was terminated by a signal"),
+    Some(code) => settle(deps, root, &id, &format!("gh run watch exited with {code}"))?,
+    None => settle(deps, root, &id, "gh run watch was terminated by a signal")?,
   }
   // The URL is informational: the run already succeeded, so a failed lookup (auth or API
   // blip) must not turn a good release into a rollback. Fall back to naming the run.
@@ -214,10 +307,49 @@ mod tests {
 
   fn scripted() -> RecordingRunner {
     let r = RecordingRunner::new(0);
-    r.script("gh", &["run", "list"], 0, "123456\n");
+    r.script("gh", &["run", "list"], 0, "123456 completed\n");
     r.script("gh", &["run", "view"], 0, "https://github.com/o/r/actions/runs/123456\n");
+    r.script(
+      "gh",
+      &["run", "view", "123456", "--json", "status,conclusion"],
+      0,
+      "completed failure\n",
+    );
     r.script("gh", &["release", "view"], 0, "url\n");
     r
+  }
+
+  /// Reports the run in progress for the first `live` state queries, then completed with
+  /// `conclusion`; everything else like `inner`.
+  struct Settling {
+    inner: RecordingRunner,
+    live: usize,
+    conclusion: &'static str,
+    queries: Cell<usize>,
+  }
+
+  impl Runner for Settling {
+    fn run_inherit_env(&self, program: &str, args: &[String], cwd: &Path, env: &[(&str, &str)]) -> Result<Option<i32>> {
+      self.inner.run_inherit_env(program, args, cwd, env)
+    }
+    fn run_capture(&self, program: &str, args: &[String], cwd: &Path) -> Result<CapturedOutput> {
+      if program == "gh" && args.starts_with(&s(&["run", "view", "123456", "--json", "status,conclusion"])) {
+        let n = self.queries.get();
+        self.queries.set(n + 1);
+        self.inner.run_capture(program, args, cwd)?; // recorded
+        let stdout = if n < self.live {
+          "in_progress \n".to_string()
+        } else {
+          format!("completed {}\n", self.conclusion)
+        };
+        return Ok(CapturedOutput {
+          code: Some(0),
+          stdout,
+          ..Default::default()
+        });
+      }
+      self.inner.run_capture(program, args, cwd)
+    }
   }
 
   fn deps<'a>(runner: &'a dyn Runner, index: &'a dyn IndexClient, flag: &'a AtomicBool, sleep: &'a dyn Fn(Duration)) -> Deps<'a> {
@@ -260,11 +392,26 @@ mod tests {
   #[test]
   fn list_runs_selects_the_runs_for_the_tag() {
     let r = scripted();
-    assert_eq!(list_runs(&r, Path::new("."), "v1.2.3").unwrap(), vec!["123456"]);
+    assert_eq!(
+      list_runs(&r, Path::new("."), "v1.2.3").unwrap(),
+      vec![Run {
+        id: "123456".into(),
+        status: "completed".into()
+      }]
+    );
     let call = &r.calls_for("gh")[0];
     assert_eq!(
-      call[..6].to_vec(),
-      vec!["run", "list", "--workflow", "release.yml", "--event", "release"]
+      call[..8].to_vec(),
+      vec![
+        "run",
+        "list",
+        "--workflow",
+        "release.yml",
+        "--event",
+        "release",
+        "--json",
+        "databaseId,headBranch,status"
+      ]
     );
     assert!(call.iter().any(|a| a.contains(r#"select(.headBranch == "v1.2.3")"#)), "{call:?}");
     let empty = RecordingRunner::new(0);
@@ -278,7 +425,7 @@ mod tests {
     // Newest first, as `gh run list` prints: the re-release's run 777 sits above the
     // earlier release's 123456, which is still there because deleting a release keeps its runs.
     let r = RecordingRunner::new(0);
-    r.script("gh", &["run", "list"], 0, "777\n123456\n");
+    r.script("gh", &["run", "list"], 0, "777 completed\n123456 completed\n");
     r.script("gh", &["run", "view"], 0, "https://github.com/o/r/actions/runs/777\n");
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
@@ -289,7 +436,7 @@ mod tests {
     assert!(r.calls_for("gh").iter().any(|c| c == &["run", "watch", "777", "--exit-status"]));
     // Only the old run exists: keep waiting rather than watch it.
     let stale = RecordingRunner::new(0);
-    stale.script("gh", &["run", "list"], 0, "123456\n");
+    stale.script("gh", &["run", "list"], 0, "123456 completed\n");
     let d = deps(&stale, &index, &flag, NO_SLEEP);
     let err = wait_for_run(&d, Path::new("."), "v1.2.3", &known).unwrap_err();
     assert!(err.to_string().contains("no release workflow run"), "{err}");
@@ -348,6 +495,78 @@ mod tests {
     let d = deps(&r, &index, &flag, NO_SLEEP);
     let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap_err();
     assert!(err.to_string().contains("run 123456 failed"), "{err}");
+    // The run had already concluded: nothing to cancel.
+    assert!(r.calls_for("gh").iter().all(|c| c[1] != "cancel"));
+  }
+
+  #[test]
+  fn a_dead_watcher_cancels_a_live_run_and_waits_for_it_to_stop() {
+    let r = Settling {
+      inner: scripted(),
+      live: 3,
+      conclusion: "cancelled",
+      queries: Cell::new(0),
+    };
+    r.inner.script("gh", &["run", "watch"], 130, ""); // as after Ctrl-C
+    let index = StubIndexClient { versions: vec![] };
+    let flag = AtomicBool::new(false);
+    let slept = RefCell::new(Vec::new());
+    let sleep = |d| slept.borrow_mut().push(d);
+    let d = deps(&r, &index, &flag, &sleep);
+    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap_err();
+    assert!(err.to_string().contains("run 123456 failed: cancelled"), "{err}");
+    let gh = r.inner.calls_for("gh");
+    assert_eq!(gh.iter().filter(|c| c[..] == ["run", "cancel", "123456"]).count(), 1, "{gh:?}");
+    // Three live polls, each followed by a wait; the fourth reads "completed".
+    assert_eq!(slept.borrow().len(), 3);
+    assert_eq!(r.queries.get(), 4);
+
+    // A run that never settles is still an error, with the window spent.
+    let stuck = Settling {
+      inner: scripted(),
+      live: usize::MAX,
+      conclusion: "cancelled",
+      queries: Cell::new(0),
+    };
+    stuck.inner.script("gh", &["run", "watch"], 1, "");
+    let total = Cell::new(Duration::ZERO);
+    let sleep = |d| total.set(total.get() + d);
+    let d = deps(&stuck, &index, &flag, &sleep);
+    let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap_err();
+    assert!(err.to_string().contains("has not stopped"), "{err}");
+    assert!(total.get() >= SETTLE_TIMEOUT);
+  }
+
+  #[test]
+  fn a_run_that_succeeded_despite_its_watcher_is_a_success() {
+    let r = scripted();
+    r.script("gh", &["run", "watch"], 1, ""); // API blip after the run finished
+    r.script(
+      "gh",
+      &["run", "view", "123456", "--json", "status,conclusion"],
+      0,
+      "completed success\n",
+    );
+    let index = StubIndexClient { versions: vec![] };
+    let flag = AtomicBool::new(false);
+    let d = deps(&r, &index, &flag, NO_SLEEP);
+    assert_eq!(
+      wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap(),
+      "https://github.com/o/r/actions/runs/123456"
+    );
+    assert!(r.calls_for("gh").iter().all(|c| c[1] != "cancel"));
+  }
+
+  #[test]
+  fn an_active_run_of_an_earlier_release_is_refused() {
+    let r = RecordingRunner::new(0);
+    r.script("gh", &["run", "list"], 0, "777 in_progress\n123456 completed\n");
+    let err = check_no_active_run(&r, Path::new("."), "v1.2.3").unwrap_err();
+    assert!(err.to_string().contains("777") && !err.to_string().contains("123456"), "{err}");
+    let done = scripted();
+    check_no_active_run(&done, Path::new("."), "v1.2.3").unwrap();
+    let none = RecordingRunner::new(0);
+    check_no_active_run(&none, Path::new("."), "v1.2.3").unwrap();
   }
 
   #[test]

@@ -266,7 +266,7 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   let known = if plan.no_wait {
     Vec::new()
   } else {
-    crate::ci::list_runs(deps.runner, root, &tag)?
+    crate::ci::list_runs(deps.runner, root, &tag)?.into_iter().map(|r| r.id).collect()
   };
   println!("[7/8] Creating GitHub release {tag}...");
   // No files: the release workflow attaches the artefacts it builds.

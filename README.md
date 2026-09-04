@@ -132,7 +132,8 @@ on the line.
   already identical on `origin/main`, where GitHub reads release workflows from); on `main` with upstream,
   fetched, not behind; release config committed and matching HEAD; `Cargo.toml` version in
   sync; no merge conflicts in managed files; target version computed via `uv version
-  --dry-run`.
+  --dry-run`; no run of an earlier release of that tag still queued or in progress (it
+  would attach to and publish against the new release).
 - **Publish target** - The sole `[[tool.uv.index]]` with a `publish-url` (credentials
   `UV_INDEX_<KEY>_USERNAME/_PASSWORD` must be set locally for the pre-flight probe and the
   post-CI check; CI reads the same names from repository secrets), or PyPI when no index
@@ -152,7 +153,9 @@ on the line.
   an edit nor rewritten to LF) → annotated tag → one atomic `git push` of branch + tag →
   `gh release create` with the notes (or `--generate-notes`) and no files → wait for the
   release workflow run (`gh run list` until a run that did not exist before the release
-  appears, up to 120 s, then `gh run watch --exit-status`) and verify the version is on
+  appears, up to 120 s, then `gh run watch --exit-status`; a watcher that dies — Ctrl-C, API blip — while the
+  run is still going cancels the run and waits for it to stop, so nothing is published
+  after the rollback) and verify the version is on
   the publish target (polling up to 120 s for index propagation) and the release still
   exists. `--no-wait` skips the last step and prints the workflow's Actions URL.
 - **Rollback** - On any failure or Ctrl-C — a failed or missing workflow run included —
