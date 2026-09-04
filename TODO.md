@@ -5,27 +5,18 @@ design exists. Check items off in place; delete them once released.
 
 ## setup-project
 
-- [ ] **Docker scaffolding flags** — add opt-in flags to `devkit setup-project` (exposed through
-      `poe setup-project`) that copy the now-generic Docker files from `aeth_ext` into a
-      project as templates:
-  - `--docker` → `docker/Dockerfile`, `docker/compose.yaml`, `docker/entrypoint.sh`,
-    `docker/scripts/*`, `.dockerignore` (line-union like today).
-  - Placeholders to introduce: `{git_repo}` (from `git remote get-url origin`), `{package}`,
-    `{project_name}` (compose service/container name), `{git_tag}` default.
-  - `[tool.docker]` in `pyproject.template.toml` (`chown_paths`, `mkdirs`) should only be
-    merged when `--docker` is given or a Docker setup already exists (`ctx.has_docker`) —
-    today it is unconditional.
-  - Merge semantics: create-if-missing only; never overwrite an existing Dockerfile /
-    compose file (report "exists, skipped"). A `--docker-force` flag can overwrite.
-  - Still aeth_ext-specific as of 2026-08-26 (must become placeholders or be dropped):
-    `compose.yaml` service/`container_name` = `central-log-server`, `GIT_REPO` URL,
-    `GIT_TAG: v8.0.4` pin, the heartbeat health-check command, the `coolify` service.
-    `Dockerfile`, `entrypoint.sh` and `docker/scripts/get_{chown_paths,mkdirs,launch_script,readme}.py`
-    / `detect_app_extra.py` already read everything from `pyproject.toml` (`[tool.docker]`,
-    `[project.scripts]`) and look fully generic.
-  - `devkit docker-pin` already knows how to set `GIT_TAG`; the scaffold should leave
-    `GIT_TAG` unset/placeholder and let `poe docker-pin` fill it.
-  - Tests: e2e case for a fresh project with `--docker`; idempotency on re-run.
+- [ ] Sister-project Docker migration (after the first devkit release that ships
+      `devkit-container`): in each of aeth_ext, IMAPReportCollector, ScheduledInvoiceProcessor,
+      ScheduledReportAggregator — add `[tool.docker].services = ["<service>"]`, run
+      `poe setup-project` (answer `replace` for the Dockerfile, review the compose diff),
+      fold `chown_paths` into `required_persisted_dirs`, delete `chown_paths`/`mkdirs`,
+      delete `docker/entrypoint.sh` and `docker/scripts/`, then `poe docker-pin`.
+      ScheduledInvoiceProcessor and ScheduledReportAggregator first move `file_holding` /
+      `timeclock_playground` to temp dirs (on their own TODO lists, high priority).
+- [ ] IMAPReportCollector: `[tool.docker].mkdirs = [""]` is a data bug (would have chowned
+      `/app`); goes away with the migration above.
+- [ ] `release.rust.template.yml` builds `aeth-devkit-container` unconditionally; a future
+      Rust sister project without a container crate needs a `{container_crate}`-style gate.
 - [x] `if-docker` conditional marker for template tables (mirrors `if-dep`; drives the
       `[tool.docker]` item above). Done on `feat/agent-config`.
 - [ ] Vendored gitignore refresh: a `poe` task or script that re-fetches
@@ -36,9 +27,7 @@ design exists. Check items off in place; delete them once released.
 ## Release / packaging
 
 - [ ] Release 7.0.0 (`aeth-devkit`), then migrate downstream projects per README.
-- [ ] Docker standardization (`docs/superpowers/specs/2026-09-03-docker-standardization-design.md`)
-      extends the Rust release workflow's matrix with the container binary; the VS Code
-      extension design adds a `vsix` job.
+- [ ] The VS Code extension design adds a `vsix` job to the Rust release workflow's matrix.
 - [ ] **TUI for the release watch** (shelved 2026-09-04; work committed, unpushed, on
       `feat/release-watch-repaint`). That branch dropped `gh run watch` for our own column view
       (`watch.rs`) repainted in the terminal's normal buffer (`repaint.rs`), which sidesteps the
