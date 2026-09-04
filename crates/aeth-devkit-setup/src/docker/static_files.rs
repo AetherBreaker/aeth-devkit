@@ -32,9 +32,11 @@ pub fn normalize_newlines(s: &str) -> String {
   s.replace("\r\n", "\n")
 }
 
-/// Three lines of context, both sides labelled so the user can tell which is theirs.
+/// Three lines of context, both sides labelled so the user can tell which is theirs. Line
+/// endings are normalised first: a CRLF checkout against an LF template must show the real
+/// changes, not every line.
 pub fn unified_diff(rel: &str, old: &str, new: &str) -> String {
-  TextDiff::from_lines(old, new)
+  TextDiff::from_lines(&normalize_newlines(old), &normalize_newlines(new))
     .unified_diff()
     .context_radius(3)
     .header(&format!("{rel} (project)"), &format!("{rel} (devkit template)"))
@@ -108,5 +110,7 @@ mod tests {
     assert!(d.contains("+++ docker/Dockerfile (devkit template)"), "{d}");
     assert!(d.contains("-b\n+c\n"), "{d}");
     assert_eq!(normalize_newlines("a\r\nb\r\n"), normalize_newlines("a\nb\n"));
+    let d = unified_diff("f", "a\r\nb\r\n", "a\nc\n");
+    assert!(d.contains("-b\n+c\n") && !d.contains("-a"), "CRLF must not show as drift: {d}");
   }
 }
