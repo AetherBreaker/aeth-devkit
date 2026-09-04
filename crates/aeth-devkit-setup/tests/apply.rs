@@ -220,7 +220,10 @@ fn mixed_rust_python_project_uses_python_dir_and_rust_overlays() {
   assert!(wf.contains("cargo build --release -p aeth-devkit-container --target"), "{wf}");
   assert!(wf.contains("container_target: x86_64-unknown-linux-musl"), "{wf}");
   assert!(wf.contains("container_target: x86_64-pc-windows-msvc"), "{wf}");
-  assert!(wf.contains("dist/*.whl dist/*.tar.gz"), "publish must not feed binaries to uv: {wf}");
+  assert!(
+    wf.contains("dist/*.whl dist/*.tar.gz"),
+    "publish must not feed binaries to uv: {wf}"
+  );
   assert!(aeth_devkit_setup::run(root, &templates(), false).unwrap().is_empty());
 }
 
