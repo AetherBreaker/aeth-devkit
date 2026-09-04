@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as vscode from 'vscode';
 import {
   EXTENSION_ID,
+  HunkDecision,
   HunkState,
   PROTOCOL,
   Request,
@@ -11,6 +12,7 @@ import {
   Session,
   cacheDir,
   cancelPath,
+  panels,
   parseRequest,
   requestPath,
   writeResponse,
@@ -21,7 +23,10 @@ import { openReview } from './review';
 import { addToRuntimeBaseClasses } from './runtimeBaseClasses';
 
 interface OpenSession extends Session {
+  current: vscode.Uri;
   proposed: vscode.Uri;
+  currentText: string;
+  proposedText: string;
   /** Polls for the CLI's `<id>.cancel` marker (Ctrl-C in the terminal). */
   cancelPoll: NodeJS.Timeout;
 }
@@ -30,12 +35,6 @@ const sessions = new Map<string, OpenSession>();
 const docs = new ProposedDocs();
 const lenses = new ConsentLenses((id) => sessions.get(id));
 const log = vscode.window.createOutputChannel('devkit');
-/** Rejected hunks are dimmed in the proposed document, independent of lens repaint. */
-const rejected = vscode.window.createTextEditorDecorationType({
-  isWholeLine: true,
-  opacity: '0.45',
-  textDecoration: 'line-through',
-});
 let status: vscode.StatusBarItem;
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -43,15 +42,14 @@ export function activate(context: vscode.ExtensionContext): void {
   status.command = 'aeth-devkit.applyAccepted';
   context.subscriptions.push(
     log,
-    rejected,
     status,
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, docs),
     vscode.languages.registerCodeLensProvider({ scheme: SCHEME }, lenses),
     vscode.window.registerUriHandler({ handleUri }),
     vscode.window.tabGroups.onDidChangeTabs(onTabsChanged),
-    vscode.window.onDidChangeVisibleTextEditors(() => sessions.forEach(render)),
-    vscode.commands.registerCommand('aeth-devkit.acceptHunk', (id: string, i: number) => setHunk(id, i, true)),
-    vscode.commands.registerCommand('aeth-devkit.rejectHunk', (id: string, i: number) => setHunk(id, i, false)),
+    vscode.commands.registerCommand('aeth-devkit.acceptHunk', (id: string, i: number) => setHunk(id, i, 'accept')),
+    vscode.commands.registerCommand('aeth-devkit.rejectHunk', (id: string, i: number) => setHunk(id, i, 'reject')),
+    vscode.commands.registerCommand('aeth-devkit.undoHunk', (id: string, i: number) => setHunk(id, i, undefined)),
     vscode.commands.registerCommand('aeth-devkit.acceptAllHunks', (arg?: unknown) =>
       withSession(arg, async (s) => {
         s.state.acceptAll();
@@ -127,13 +125,18 @@ async function handleUri(uri: vscode.Uri): Promise<void> {
   await ensureDiffCodeLens();
   await vscode.commands.executeCommand('setContext', 'aeth-devkit.contentMenu', contentMenuLive(req));
   await vscode.commands.executeCommand('setContext', 'aeth-devkit.offerReplaceAll', req.offer_replace_all);
-  const current = docs.register(req.id, 'current', req.title, fs.readFileSync(req.current_path, 'utf8'));
-  const proposed = docs.register(req.id, 'proposed', req.title, fs.readFileSync(req.proposed_path, 'utf8'));
+  const currentText = fs.readFileSync(req.current_path, 'utf8');
+  const proposedText = fs.readFileSync(req.proposed_path, 'utf8');
+  const current = docs.register(req.id, 'current', req.title, currentText);
+  const proposed = docs.register(req.id, 'proposed', req.title, proposedText);
   const s: OpenSession = {
     req,
     state: new HunkState(req.hunks.length),
     answered: false,
+    current,
     proposed,
+    currentText,
+    proposedText,
     cancelPoll: setInterval(() => {
       if (fs.existsSync(cancelPath(req))) {
         log.appendLine(`${req.id}: cancelled by the CLI`);
@@ -162,27 +165,28 @@ async function ensureDiffCodeLens(): Promise<void> {
   }
 }
 
-function setHunk(id: string, i: number, on: boolean): void {
-  log.appendLine(`${id}: hunk ${i} ${on ? 'accepted' : 'rejected'}`);
+function setHunk(id: string, i: number, d: HunkDecision): void {
+  log.appendLine(`${id}: hunk ${i} ${d ?? 'undecided'}`);
   const s = sessions.get(id);
   if (!s) return;
-  s.state.set(i, on);
+  s.state.decide(i, d);
   render(s);
 }
 
-/** Lenses, the dimming of rejected hunks, and the status bar count, from one state. */
+/**
+ * Show the decisions: a decided hunk gets the same lines in both panels, so its diff
+ * collapses like an accepted change in the merge editor; only undecided hunks still
+ * differ. Then the lenses and the status bar count.
+ */
 function render(s: OpenSession): void {
+  const { left, right } = panels(s.currentText, s.proposedText, s.req.hunks, s.state);
+  docs.update(s.current, left);
+  docs.update(s.proposed, right);
   lenses.refresh();
-  const ranges = s.req.hunks
-    .filter((_, i) => !s.state.accepted[i])
-    .filter((h) => h.proposed[1] > h.proposed[0])
-    .map((h) => new vscode.Range(h.proposed[0], 0, h.proposed[1] - 1, Number.MAX_SAFE_INTEGER));
-  for (const editor of vscode.window.visibleTextEditors) {
-    if (editor.document.uri.toString() === s.proposed.toString()) editor.setDecorations(rejected, ranges);
-  }
   const m = s.req.hunks.length;
-  status.text = `$(diff) devkit: ${s.state.acceptedCount} of ${m} hunks accepted`;
-  status.tooltip = `${s.req.title} — click to apply the accepted hunks`;
+  const undecided = s.state.undecidedCount ? ` (${s.state.undecidedCount} undecided)` : '';
+  status.text = `$(diff) devkit: ${s.state.acceptedCount} of ${m} hunks accepted${undecided}`;
+  status.tooltip = `${s.req.title} — click to apply; undecided hunks count as accepted`;
   status.show();
 }
 
