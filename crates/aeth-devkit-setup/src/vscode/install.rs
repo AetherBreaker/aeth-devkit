@@ -222,7 +222,7 @@ mod tests {
     assert_eq!(f.downloads.borrow()[0], (vsix_url(3), vsix.clone()));
     assert!(vsix.is_file());
     let calls = r.calls_for("code");
-    assert_eq!(calls[1], vec!["--install-extension", &vsix.to_string_lossy().into_owned(), "--force"]);
+    assert_eq!(calls[1], vec!["--install-extension", &vsix.to_string_lossy(), "--force"]);
   }
 
   #[test]
