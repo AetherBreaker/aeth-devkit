@@ -89,26 +89,28 @@ second run is a byte-for-byte no-op.
   `docker/Dockerfile` is created when missing; when present and different — ignoring CRLF/LF — a unified diff is printed and
   the file is replaced only on `replace` (`replace all` answers every remaining Docker
   question; anything else keeps it). The compose file (docker-pin's discovery; created as
-  `docker/compose.yaml` when absent) is edited in place, format-preserving, per listed
-  service: exact keys (`build.context`, `build.dockerfile`, `container_name`,
+  `docker/compose.yaml` when absent) is edited in place, format-preserving, one diff per
+  listed service: exact keys (`build.context`, `build.dockerfile`, `container_name`,
   `healthcheck.*`), pattern (`GIT_REPO` vs origin), presence (`GIT_TAG`, `restart`,
   `networks`) and at-least (`volumes` mounting `/app/persisted_data`; the ALERTS_*
-  environment when the project uses aeth_ext), plus top-level `networks.coolify.external`.
-  All compose edits are one diff and one prompt; a listed service missing from the file is
-  offered as a scaffold block (`add`). Keys the standard does not name are never touched,
-  and a shape the engine does not model (a flow-style `volumes: [...]` / `environment: {...}`,
-  a list-form `build.args`) is judged on its text and reported as a `problem:` rather than
-  edited, so the file is never left unparseable; so is an inline `services:` or an inline
-  service block, which the step leaves whole. `--check` exits 1 on any `problem:`, since a
-  listed service declares the file managed. A compose file with no top-level `services:`
-  key is a `warning:` on stderr instead and does not fail `--check`: an `include:`-only
-  aggregator is a supported Compose layout whose services live in the included files, and
-  writing one here would conflict with them rather than override. A Dockerfile whose `container-v<N>` pin cannot be filled because devkit's
-  releases could not be read (no `gh`, offline) is a `problem:` too and is left unwritten.
+  environment when the project uses aeth_ext), plus one diff for the top-level
+  `networks.coolify.external`. A listed service missing from the file is its own one-hunk
+  diff; accepting it adds the scaffold block. Keys the standard does not name are never
+  touched, and a shape the engine does not model (a flow-style `volumes: [...]` /
+  `environment: {...}`, a list-form `build.args`) is judged on its text and reported as a
+  `problem:` rather than edited, so the file is never left unparseable; so is an inline
+  `services:` or an inline service block, which the step leaves whole. `--check` exits 1 on
+  any `problem:`, since a listed service declares the file managed. A compose file with no
+  top-level `services:` key is a `warning:` on stderr instead and does not fail `--check`:
+  an `include:`-only aggregator is a supported Compose layout whose services live in the
+  included files, and writing one here would conflict with them rather than override. A
+  Dockerfile whose `container-v<N>` pin cannot be filled because devkit's releases could
+  not be read (no `gh`, offline) is a `problem:` too and is left unwritten.
   `--replace-docker` answers `replace all` up front; adding a listed-but-absent service is
   always asked, never pre-answered. `--dry-run`/`--check` print everything and count Docker
-  drift. `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to delete, never
-  removed.
+  drift. Inside a VS Code terminal the diff opens in the editor instead (see **VS Code
+  extension**). `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to
+  delete, never removed.
 - **Placeholders** - `{project_root}`, `{package}`, `{python_dir}`, `{devkit_bin}`,
   `{publish_index}`, `{publish_index_key}`, `{git_repo}` with per-format escaping;
   `{devkit_bin}` prefers the venv binary over `uv run devkit`; `{git_tag}` (latest stable
@@ -268,6 +270,31 @@ is a future command's job, see TODO.md). No Python runs in the image outside the
   that are empty, `.`, `..`, absolute or escape `/app` are errors; a table still carrying
   `chown_paths`/`mkdirs` (with or without `required_persisted_dirs`) is refused with the
   migration hint. Flags `--pyproject`, `--app-root`, `--mountinfo` exist for tests.
+
+### VS Code extension
+
+`aeth.aeth-devkit`, in `vscode-extension/`. Never published to the marketplace: each build
+is a GitHub release on its own tag stream (`vscode-extension-vN`, asset
+`aeth-devkit-vscode-N.vsix`), cut automatically by `.github/workflows/vscode-extension.yml`
+when a devkit release ships with changes under `vscode-extension/`.
+
+When `devkit setup-project` runs in a VS Code terminal (`TERM_PROGRAM=vscode`; force with
+`--vscode`, disable with `--no-vscode`) with stdin a terminal and neither `--check` nor
+`--replace-docker`, it installs the newest compatible extension if none is present (a
+one-off `code --install-extension`; an upgrade over a running one asks you to reload the
+window and run again), adds itself to `enable-proposed-api` in `~/.vscode/argv.json`
+(restart VS Code once; this enables the floating Replace/Keep button), and then opens
+each Docker change as a native diff instead of the typed prompt. Per hunk: Accept/Reject
+CodeLens (`diffEditor.codeLens` is switched on once if unset). Whole file: `Apply
+accepted (n of m)`, `Accept all hunks`, `Replace all` (rest of the run), `Keep file`.
+Closing the diff without deciding falls back to the terminal prompt for that file; Ctrl-C
+in the terminal does the same, and a second Ctrl-C aborts. Partial answers are
+reassembled by the CLI from the accepted hunk indices; the extension never writes project
+files. `--dry-run` opens every proposed change in one multi-diff review instead.
+
+The extension also carries `Add to runtime-evaluated-base-classes` (Python editor context
+menu), ported from the Drekker extension; setup-project reports the old junction and
+`.vscode/extension/` folder when it finds them.
 
 ### `devkit release-and-pin`
 
