@@ -130,7 +130,7 @@ impl<'a> GitTag<'a> {
     };
     // docker-pin's rule with a single source: highest stable version, written with the
     // remote's own spelling (`v1.5.0`, not the normalised `1.5.0`).
-    let Some(latest) = latest_stable_common(&[tags.clone()]) else {
+    let Some(latest) = latest_stable_common(std::slice::from_ref(&tags)) else {
       return fall_back("no stable tag on the remote".into());
     };
     tags
