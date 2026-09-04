@@ -201,15 +201,16 @@ buffer for the same file can never shift the hunk numbering.
 }
 ```
 
-The CLI then runs `code --open-url "vscode://aeth.aeth-devkit/consent?request=<path>"`
+The CLI then runs `code --open-url "vscode://aeth.aeth-devkit/consent?id=<id>"`
 and polls `response_path` every 250 ms. The terminal still prints the unified diff and a
 one-line `waiting for VS Code (Ctrl-C to answer here instead)…`. Requests are sequential:
 one diff tab is open at a time.
 
 ### Extension behaviour
 
-1. The URI handler refuses a `request` path outside the devkit cache dir (any web page
-   can fire a `vscode://` link), reads the request, refuses a protocol it does not speak
+1. The URI handler accepts only a well-formed id (`<pid>-<n>` or `review-<pid>`) and
+   reads `<cache>/consent/<id>.request.json`, so a link from any web page can name
+   nothing outside the cache; it refuses a protocol it does not speak
    with an `error` response, registers both texts under
    `aeth-devkit-proposed:/<id>/…` and opens a diff of the two titled
    `devkit: <title>` via `vscode.diff`.
@@ -258,10 +259,11 @@ leaves nothing behind for longer than the next run.
 ## Review mode
 
 Under `--dry-run` with a compatible extension installed, the CLI writes one request
-listing every file it would change (path, current snapshot path, proposed text path), and
-the extension opens the multi-diff editor with `vscode.changes("devkit setup-project",
-[[label, current, proposed], …])`. Read-only; no response is awaited. The printed report
-is unchanged.
+(`review-<pid>.request.json`) listing every file it would change — each entry carries
+`path`, `label`, `current_path` (null for a created file) and `proposed_path` — opened via
+`vscode://aeth.aeth-devkit/review?id=review-<pid>`, and the extension shows the multi-diff
+editor with `vscode.changes("devkit setup-project (dry run)", [[path, current, proposed],
+…])`. Read-only; no response is awaited. The printed report is unchanged.
 
 ## Ported command
 

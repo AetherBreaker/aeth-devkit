@@ -27,7 +27,6 @@ design exists. Check items off in place; delete them once released.
 ## Release / packaging
 
 - [ ] Release 7.0.0 (`aeth-devkit`), then migrate downstream projects per README.
-- [ ] The VS Code extension design adds a `vsix` job to the Rust release workflow's matrix.
 - [ ] **TUI for the release watch** (shelved 2026-09-04; work committed, unpushed, on
       `feat/release-watch-repaint`). That branch dropped `gh run watch` for our own column view
       (`watch.rs`) repainted in the terminal's normal buffer (`repaint.rs`), which sidesteps the
@@ -51,6 +50,12 @@ design exists. Check items off in place; delete them once released.
   - Open decisions: whether the mode setting lives in a core `term` module or release-local; a
     key map where `q` (detach) is visibly distinct from Ctrl-C (cancel and roll back); whether a
     finished run stays in the alt screen or drops back with a summary in the normal buffer.
+- [ ] VS Code extension: support `code-insiders` and `cursor` launchers (each has its own
+      URI scheme, `argv.json` location and extensions dir); only `code` works today.
+- [ ] After the first `vscode-extension-v1` release: delete `.vscode/extension/` and
+      `install.ps1` from aeth_ext and aeth_ext-2, and the
+      `~/.vscode/extensions/local.drekker-add-to-runtime-base-*` junction (setup-project
+      prints a note while they exist).
 - [ ] Fix system-level `init.defaultBranch = master` in
       `C:\Program Files\Git\etc\gitconfig` (needs an elevated shell; user config already
       overrides it to `main`).
