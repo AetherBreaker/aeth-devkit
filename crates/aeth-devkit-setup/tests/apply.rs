@@ -381,6 +381,8 @@ fn an_uncommitted_services_change_cancels_a_committing_run() {
       check: false,
       no_commit: false,
       replace_docker: false,
+      vscode: false,
+      no_vscode: true,
     })
     .unwrap_err()
     .to_string();
@@ -527,6 +529,8 @@ fn check_fails_on_a_compose_file_the_engine_cannot_edit() {
     check,
     no_commit: true,
     replace_docker: false,
+    vscode: false,
+    no_vscode: true,
   };
   run(root, false).unwrap();
   assert_eq!(aeth_devkit_setup::cli::run(&args(true)).unwrap(), std::process::ExitCode::SUCCESS);
