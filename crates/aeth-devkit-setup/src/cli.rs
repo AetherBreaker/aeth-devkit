@@ -57,13 +57,13 @@ pub fn run(args: &Args) -> Result<ExitCode> {
     let deps = crate::docker::Deps {
       runner: &aeth_devkit_core::process::SystemRunner,
       prompt: &aeth_devkit_core::prompt::StdinPrompt,
+      reviewer: None,
       mode: match (dry_run, args.replace_docker, tty) {
         (true, _, _) => crate::docker::Mode::DryRun,
         (false, true, _) => crate::docker::Mode::ReplaceAll,
         (false, false, true) => crate::docker::Mode::Ask,
         (false, false, false) => crate::docker::Mode::KeepAll,
       },
-      interactive: tty && !dry_run,
     };
     let mut c = crate::run_with(&root, &templates, dry_run, &deps)?;
     if !dry_run {

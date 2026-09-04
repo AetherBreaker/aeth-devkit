@@ -11,6 +11,7 @@ use crate::changes::Changes;
 use crate::context::ProjectContext;
 use crate::docker::Consent;
 use crate::templates;
+use crate::vscode::protocol::Proposal;
 
 /// Target file name for a template file name, or `None` for files this step does not own:
 /// `template.Dockerfile` → `Dockerfile`, `entrypoint.template.sh` → `entrypoint.sh`;
@@ -66,11 +67,20 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, consent: &Consent, chan
       continue;
     }
     println!("{}", unified_diff(&rel, &original, &rendered));
-    if consent.replace(&format!("Replace {rel}? [replace / replace all / anything else keeps it]:"))? {
-      changes.record_optional(&path, Some(&original), &rendered, vec!["replaced with the devkit template".into()])?;
-    } else {
-      changes.record_optional(&path, Some(&original), &original, vec![])?;
-      println!("Kept {rel}.");
+    let proposal = Proposal::new(
+      &rel,
+      format!("Replace {rel}? [replace / replace all / anything else keeps it]:"),
+      &original,
+      &rendered,
+    );
+    let decision = consent.decide(&proposal)?;
+    let detail = decision.detail("replaced with the devkit template");
+    match decision.text(&proposal) {
+      Some(text) => changes.record_optional(&path, Some(&original), &text, vec![detail])?,
+      None => {
+        changes.record_optional(&path, Some(&original), &original, vec![])?;
+        println!("Kept {rel}.");
+      }
     }
   }
   // Stray leftovers of the shell-and-Python entrypoint. Reported once, never removed.
