@@ -23,9 +23,21 @@ use crate::context::ProjectContext;
 /// First line of every rendered release workflow; a file without it is the project's own.
 const DEVKIT_WORKFLOW_HEADER: &str = "# Installed and kept current by `devkit setup-project`";
 
-/// Apply every template to the project at `root`. Returns the collected change log;
-/// nothing is written when `dry_run` is set.
+/// Apply every template to the project at `root` with real collaborators and no
+/// terminal: Docker drift is shown but kept (or merely recorded on a dry run).
 pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> {
+  let deps = docker::Deps {
+    runner: &aeth_devkit_core::process::SystemRunner,
+    prompt: &aeth_devkit_core::prompt::StdinPrompt,
+    mode: if dry_run { docker::Mode::DryRun } else { docker::Mode::KeepAll },
+    interactive: false,
+  };
+  run_with(root, templates_dir, dry_run, &deps)
+}
+
+/// [`run`] with injectable Docker collaborators (prompt, `gh` runner, consent mode).
+/// Returns the collected change log; nothing is written when `dry_run` is set.
+pub fn run_with(root: &Path, templates_dir: &Path, dry_run: bool, deps: &docker::Deps) -> Result<Changes> {
   let ctx = ProjectContext::discover(root)?;
   let mut changes = Changes::new(dry_run);
 
@@ -121,6 +133,12 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
     let mut log = Vec::new();
     let merged = lines::line_union(original.as_deref(), &template, &mut log);
     changes.record_optional(&path, original.as_deref(), &merged, log)?;
+  }
+
+  // 8b. Docker: templated docker/ files replaced whole and the compose file edited in
+  //     place, each behind consent (see `docker`).
+  if ctx.has_docker {
+    docker::apply(&ctx, templates_dir, deps, &mut changes)?;
   }
 
   // 9. AGENTS.md — devkit-managed block; text outside the markers belongs to the project.

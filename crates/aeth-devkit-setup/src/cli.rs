@@ -30,6 +30,11 @@ pub struct Args {
   /// files (never env files) are committed with a standard message.
   #[arg(long)]
   pub no_commit: bool,
+
+  /// Answer `replace all` to every Docker prompt up front (also applies Docker files when
+  /// stdin is not a terminal).
+  #[arg(long)]
+  pub replace_docker: bool,
 }
 
 /// Exit codes: 0 ok, 1 `--check` found drift, 3 commit failed (the template changes were
@@ -47,7 +52,20 @@ pub fn run(args: &Args) -> Result<ExitCode> {
 
   // Apply the templates (plus tombi), putting the user's files back on any failure.
   let apply = |changes: &mut Option<crate::changes::Changes>| -> Result<()> {
-    let mut c = crate::run(&root, &templates, dry_run)?;
+    // `IsTerminal` is how std asks "is a human here?": prompts only make sense on a tty.
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let deps = crate::docker::Deps {
+      runner: &aeth_devkit_core::process::SystemRunner,
+      prompt: &aeth_devkit_core::prompt::StdinPrompt,
+      mode: match (dry_run, args.replace_docker, tty) {
+        (true, _, _) => crate::docker::Mode::DryRun,
+        (false, true, _) => crate::docker::Mode::ReplaceAll,
+        (false, false, true) => crate::docker::Mode::Ask,
+        (false, false, false) => crate::docker::Mode::KeepAll,
+      },
+      interactive: tty && !dry_run,
+    };
+    let mut c = crate::run_with(&root, &templates, dry_run, &deps)?;
     if !dry_run {
       match crate::format::format_pyproject(&root, &crate::format::SystemRunner, &mut c)? {
         crate::format::Outcome::Formatted(_) => {}

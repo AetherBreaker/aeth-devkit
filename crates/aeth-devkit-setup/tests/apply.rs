@@ -266,6 +266,8 @@ fn commits_only_changed_trackable_files_in_a_git_repo() {
   assert!(committed.contains(".vscode/settings.json"), "{committed}");
   // Installed by this run; `devkit release` refuses an uncommitted workflow.
   assert!(committed.contains(".github/workflows/release.yml"), "{committed}");
+  assert!(committed.contains("docker/Dockerfile"), "{committed}");
+  assert!(committed.contains("docker/compose.yaml"), "{committed}");
   assert!(
     !committed.contains(".env"),
     ".env is gitignored and must not be committed: {committed}"

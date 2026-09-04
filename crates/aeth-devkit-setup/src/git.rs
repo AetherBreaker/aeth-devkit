@@ -18,32 +18,46 @@ use crate::changes::Changes;
 
 pub const COMMIT_SUBJECT: &str = "Standardize project configuration with devkit";
 
-/// Every committable file `setup-project` can write. The dynamic managed paths — env files,
-/// `.claude/settings.local.json` — are exactly the intentionally-local ones that are never
-/// committed, so this list is static. `.dockerignore` and the Rust overlays only apply to
-/// some projects, but staging a path the project does not have is a no-op.
-const COMMITTABLE: [&str; 14] = [
-  "pyproject.toml",
-  ".vscode/settings.json",
-  ".vscode/extensions.json",
-  ".vscode/launch.json",
-  ".vscode/tasks.json",
-  ".gitignore",
-  ".gitattributes",
-  ".dockerignore",
-  "AGENTS.md",
-  ".claude/CLAUDE.md",
-  ".claude/settings.json",
-  ".github/workflows/claude.yml",
-  ".github/workflows/release.yml",
-  ".mcp.json",
-];
+/// Every committable file `setup-project` can write. Static except the Docker pair: the
+/// compose file is wherever docker-pin's discovery finds it (or `docker/compose.yaml` when
+/// it will be created). Env files and `settings.local.json` are intentionally local and
+/// never committed, so they are not listed. Staging a path the project lacks is a no-op.
+pub fn committable(root: &Path) -> Vec<String> {
+  let mut out: Vec<String> = [
+    "pyproject.toml",
+    ".vscode/settings.json",
+    ".vscode/extensions.json",
+    ".vscode/launch.json",
+    ".vscode/tasks.json",
+    ".gitignore",
+    ".gitattributes",
+    ".dockerignore",
+    "AGENTS.md",
+    ".claude/CLAUDE.md",
+    ".claude/settings.json",
+    ".github/workflows/claude.yml",
+    ".github/workflows/release.yml",
+    ".mcp.json",
+    "docker/Dockerfile",
+  ]
+  .iter()
+  .map(|s| s.to_string())
+  .collect();
+  let compose = aeth_devkit_core::compose::find_compose_file(root)
+    .ok()
+    .flatten()
+    .and_then(|p| p.strip_prefix(root).ok().map(|r| r.to_string_lossy().replace('\\', "/")))
+    .unwrap_or_else(|| "docker/compose.yaml".into());
+  out.push(compose);
+  out
+}
 
 /// Reset the committable managed files to `HEAD` (capturing the user's uncommitted state)
 /// so the template merges run on clean input. Gitignored files are excluded: they are never
 /// committed, so they are merged in place like the env files.
 pub fn stage_bases(root: &Path) -> Result<Vec<TrackedBase>> {
-  let paths: Vec<&str> = COMMITTABLE.iter().copied().filter(|rel| !is_ignored(root, rel)).collect();
+  let all = committable(root);
+  let paths: Vec<&str> = all.iter().map(String::as_str).filter(|rel| !is_ignored(root, rel)).collect();
   commit::stage_clean_base(root, &paths)
 }
 
@@ -128,7 +142,8 @@ pub fn commit_changes(root: &Path, changes: &Changes, bases: &mut Vec<TrackedBas
   let message = format!("{COMMIT_SUBJECT}\n\n{body}");
   // A committable file the run created from scratch gets an "existed nowhere" base so it
   // is committed as-is; a gitignored one stays out, like it stayed out of the staging.
-  let created: Vec<&str> = COMMITTABLE.iter().copied().filter(|rel| !is_ignored(root, rel)).collect();
+  let all = committable(root);
+  let created: Vec<&str> = all.iter().map(String::as_str).filter(|rel| !is_ignored(root, rel)).collect();
   commit::absorb_created(root, &created, bases);
   commit::commit_or_rollback(root, bases, &message, "the template changes")
 }
