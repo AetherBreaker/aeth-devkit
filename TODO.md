@@ -39,6 +39,29 @@ design exists. Check items off in place; delete them once released.
 - [ ] Docker standardization (`docs/superpowers/specs/2026-09-03-docker-standardization-design.md`)
       extends the Rust release workflow's matrix with the container binary; the VS Code
       extension design adds a `vsix` job.
+- [ ] **TUI for the release watch** (shelved 2026-09-04; work committed, unpushed, on
+      `feat/release-watch-repaint`). That branch dropped `gh run watch` for our own column view
+      (`watch.rs`) repainted in the terminal's normal buffer (`repaint.rs`), which sidesteps the
+      alternate screen having no scrollback but keeps two compromises of our own: a frame must
+      stay shorter than the terminal, and one that does not fit is appended rather than
+      repainted. Full-screen ratatui removes both outright, and is worth more than this one
+      view — a real UI layer is a toolbox for tools a line-oriented CLI cannot do.
+  - Shape: keep `watch::{view, frame, failures}` and their tests as they are. `frame` already
+    produces the lines, so ratatui only adds a scrollable `Paragraph` + `Scrollbar` over them and
+    the non-TTY path keeps printing exactly what it prints today. `repaint.rs` is deleted.
+  - Cost, measured against the branch: about +30 production lines and +10 test (-101/-55 for
+    `repaint.rs`; +40 lifecycle and restore guard, +70 event loop, +20 scroll state).
+  - **Do not use `ratatui::init*` or `crossterm::enable_raw_mode`.** Both clear
+    `ENABLE_PROCESSED_INPUT` (Windows) / `ISIG` (Unix), so Ctrl-C stops reaching the handler in
+    `aeth-devkit-release/src/lib.rs` that sets `INTERRUPTED` — the rollback's trigger. Clear only
+    `ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT` / `ICANON | ECHO` (~20 lines, two `cfg` branches) and
+    signals survive. This matters most while the loop is blocked in `gh run view`: a key event
+    would not be read until that returns, a signal fires regardless.
+  - New failure class to guard: a shell left in alt-screen/raw modes. `Drop` guard plus a panic
+    hook; a `SIGCONT` re-assert for ^Z on Unix (does not arise on Windows).
+  - Open decisions: whether the mode setting lives in a core `term` module or release-local; a
+    key map where `q` (detach) is visibly distinct from Ctrl-C (cancel and roll back); whether a
+    finished run stays in the alt screen or drops back with a summary in the normal buffer.
 - [ ] Fix system-level `init.defaultBranch = master` in
       `C:\Program Files\Git\etc\gitconfig` (needs an elevated shell; user config already
       overrides it to `main`).
