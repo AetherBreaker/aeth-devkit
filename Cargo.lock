@@ -119,12 +119,14 @@ dependencies = [
  "aeth-devkit-core",
  "anyhow",
  "clap",
+ "ctrlc",
  "regex",
  "serde",
  "serde_json",
  "similar",
  "tempfile",
  "toml_edit",
+ "ureq",
 ]
 
 [[package]]
