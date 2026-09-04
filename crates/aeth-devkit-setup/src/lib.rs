@@ -4,6 +4,7 @@
 pub mod changes;
 pub mod cli;
 pub mod context;
+pub mod docker;
 pub mod format;
 pub mod git;
 pub mod json_merge;
@@ -318,7 +319,7 @@ fn load_with_rust_overlay(templates_dir: &Path, name: &str, ctx: &ProjectContext
   Ok(template)
 }
 
-fn read_optional(path: &Path) -> Result<Option<String>> {
+pub(crate) fn read_optional(path: &Path) -> Result<Option<String>> {
   match std::fs::read_to_string(path) {
     Ok(s) => Ok(Some(s)),
     Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
