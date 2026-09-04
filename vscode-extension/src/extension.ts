@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as vscode from 'vscode';
 import {
+  EXTENSION_ID,
   HunkState,
   PROTOCOL,
   Request,
@@ -28,23 +29,38 @@ interface OpenSession extends Session {
 const sessions = new Map<string, OpenSession>();
 const docs = new ProposedDocs();
 const lenses = new ConsentLenses((id) => sessions.get(id));
+const log = vscode.window.createOutputChannel('devkit');
+/** Rejected hunks are dimmed in the proposed document, independent of lens repaint. */
+const rejected = vscode.window.createTextEditorDecorationType({
+  isWholeLine: true,
+  opacity: '0.45',
+  textDecoration: 'line-through',
+});
+let status: vscode.StatusBarItem;
 
 export function activate(context: vscode.ExtensionContext): void {
+  status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  status.command = 'aeth-devkit.applyAccepted';
   context.subscriptions.push(
+    log,
+    rejected,
+    status,
     vscode.workspace.registerTextDocumentContentProvider(SCHEME, docs),
     vscode.languages.registerCodeLensProvider({ scheme: SCHEME }, lenses),
     vscode.window.registerUriHandler({ handleUri }),
     vscode.window.tabGroups.onDidChangeTabs(onTabsChanged),
+    vscode.window.onDidChangeVisibleTextEditors(() => sessions.forEach(render)),
     vscode.commands.registerCommand('aeth-devkit.acceptHunk', (id: string, i: number) => setHunk(id, i, true)),
     vscode.commands.registerCommand('aeth-devkit.rejectHunk', (id: string, i: number) => setHunk(id, i, false)),
-    vscode.commands.registerCommand('aeth-devkit.acceptAllHunks', (id: string) => {
-      sessions.get(id)?.state.acceptAll();
-      lenses.refresh();
-    }),
-    vscode.commands.registerCommand('aeth-devkit.applyAccepted', (id: string) => {
-      const s = sessions.get(id);
-      if (s) void decide(s, s.state.response());
-    }),
+    vscode.commands.registerCommand('aeth-devkit.acceptAllHunks', (arg?: unknown) =>
+      withSession(arg, async (s) => {
+        s.state.acceptAll();
+        render(s);
+      }),
+    ),
+    vscode.commands.registerCommand('aeth-devkit.applyAccepted', (arg?: unknown) =>
+      withSession(arg, (s) => decide(s, s.state.response())),
+    ),
     vscode.commands.registerCommand('aeth-devkit.replaceFile', (arg?: unknown) =>
       withSession(arg, (s) => decide(s, { decision: 'replace' })),
     ),
@@ -63,10 +79,25 @@ export function deactivate(): void {
 }
 
 function fail(message: string): void {
+  log.appendLine(`error: ${message}`);
   void vscode.window.showErrorMessage(`aeth-devkit: ${message}`);
 }
 
+/**
+ * Whether the floating `editor/content` buttons can show. VS Code strips proposals it
+ * has not enabled from the manifest it loads, so the loaded manifest is the truth about
+ * *this* window; the CLI's `content_menu` only says the argv.json entry exists. Both must
+ * hold, so a grant that still needs a restart falls back to the title icons.
+ */
+function contentMenuLive(req: Request): boolean {
+  const proposals = vscode.extensions.getExtension(EXTENSION_ID)?.packageJSON?.enabledApiProposals as string[] | undefined;
+  const live = req.content_menu && (proposals ?? []).includes('contribEditorContentMenu');
+  log.appendLine(`content menu: cli=${req.content_menu} manifest=${JSON.stringify(proposals)} -> ${live}`);
+  return live;
+}
+
 async function handleUri(uri: vscode.Uri): Promise<void> {
+  log.appendLine(`uri: ${uri.toString()}`);
   // The URL carries only an id; the file lives where this extension expects devkit's
   // cache, so a link from anywhere else can name nothing outside that folder.
   const id = new URLSearchParams(uri.query).get('id') ?? '';
@@ -94,7 +125,8 @@ async function handleUri(uri: vscode.Uri): Promise<void> {
     return;
   }
   await ensureDiffCodeLens();
-  await vscode.commands.executeCommand('setContext', 'aeth-devkit.contentMenu', req.content_menu);
+  await vscode.commands.executeCommand('setContext', 'aeth-devkit.contentMenu', contentMenuLive(req));
+  await vscode.commands.executeCommand('setContext', 'aeth-devkit.offerReplaceAll', req.offer_replace_all);
   const current = docs.register(req.id, 'current', req.title, fs.readFileSync(req.current_path, 'utf8'));
   const proposed = docs.register(req.id, 'proposed', req.title, fs.readFileSync(req.proposed_path, 'utf8'));
   const s: OpenSession = {
@@ -104,6 +136,7 @@ async function handleUri(uri: vscode.Uri): Promise<void> {
     proposed,
     cancelPoll: setInterval(() => {
       if (fs.existsSync(cancelPath(req))) {
+        log.appendLine(`${req.id}: cancelled by the CLI`);
         s.answered = true;
         void closeTab(s);
       }
@@ -111,6 +144,7 @@ async function handleUri(uri: vscode.Uri): Promise<void> {
   };
   sessions.set(req.id, s);
   await vscode.commands.executeCommand('vscode.diff', current, proposed, `devkit: ${req.title}`, { preview: false });
+  render(s);
 }
 
 /** `diffEditor.codeLens` is off by default; without it the per-hunk lenses never show. */
@@ -129,8 +163,27 @@ async function ensureDiffCodeLens(): Promise<void> {
 }
 
 function setHunk(id: string, i: number, on: boolean): void {
-  sessions.get(id)?.state.set(i, on);
+  log.appendLine(`${id}: hunk ${i} ${on ? 'accepted' : 'rejected'}`);
+  const s = sessions.get(id);
+  if (!s) return;
+  s.state.set(i, on);
+  render(s);
+}
+
+/** Lenses, the dimming of rejected hunks, and the status bar count, from one state. */
+function render(s: OpenSession): void {
   lenses.refresh();
+  const ranges = s.req.hunks
+    .filter((_, i) => !s.state.accepted[i])
+    .filter((h) => h.proposed[1] > h.proposed[0])
+    .map((h) => new vscode.Range(h.proposed[0], 0, h.proposed[1] - 1, Number.MAX_SAFE_INTEGER));
+  for (const editor of vscode.window.visibleTextEditors) {
+    if (editor.document.uri.toString() === s.proposed.toString()) editor.setDecorations(rejected, ranges);
+  }
+  const m = s.req.hunks.length;
+  status.text = `$(diff) devkit: ${s.state.acceptedCount} of ${m} hunks accepted`;
+  status.tooltip = `${s.req.title} — click to apply the accepted hunks`;
+  status.show();
 }
 
 /** Title/content buttons receive the resource URI; the palette gives nothing. */
@@ -143,6 +196,7 @@ function withSession(arg: unknown, f: (s: OpenSession) => Promise<void>): void {
 }
 
 async function decide(s: OpenSession, r: Response): Promise<void> {
+  log.appendLine(`${s.req.id}: ${JSON.stringify(r)}`);
   s.answered = true;
   writeResponse(s.req.response_path, r);
   await closeTab(s);
@@ -153,6 +207,7 @@ async function closeTab(s: OpenSession): Promise<void> {
   sessions.delete(s.req.id);
   docs.forget(s.req.id);
   lenses.refresh();
+  if (sessions.size === 0) status.hide();
   for (const group of vscode.window.tabGroups.all) {
     for (const tab of group.tabs) {
       if (tab.input instanceof vscode.TabInputTextDiff && tab.input.modified.toString() === s.proposed.toString()) {
@@ -169,6 +224,7 @@ function onTabsChanged(e: vscode.TabChangeEvent): void {
     const at = parseUri(tab.input.modified);
     const s = at ? sessions.get(at.id) : undefined;
     if (s && !s.answered) {
+      log.appendLine(`${s.req.id}: dismissed`);
       s.answered = true;
       writeResponse(s.req.response_path, { decision: 'dismissed' });
       void closeTab(s);

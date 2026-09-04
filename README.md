@@ -262,9 +262,11 @@ When `devkit setup-project` runs in a VS Code terminal (`TERM_PROGRAM=vscode`; f
 one-off `code --install-extension`; an upgrade over a running one asks you to reload the
 window and run again), adds itself to `enable-proposed-api` in `~/.vscode/argv.json`
 (restart VS Code once; this enables the floating Replace/Keep button), and then opens
-each Docker change as a native diff instead of the typed prompt. Per hunk: Accept/Reject
-CodeLens (`diffEditor.codeLens` is switched on once if unset). Whole file: `Apply
-accepted (n of m)`, `Accept all hunks`, `Replace all` (rest of the run), `Keep file`.
+each Docker change as a native diff instead of the typed prompt. Per hunk: `Accept` and
+`Reject` CodeLens (`diffEditor.codeLens` is switched on once if unset); rejected hunks
+are dimmed and the status bar counts `n of m hunks accepted`. Whole file, as the floating
+editor buttons or the tab-bar icons until the proposal is live: `Apply accepted hunks`,
+`Accept all hunks`, `Replace file`, `Replace all` (rest of the run), `Keep file`.
 Closing the diff without deciding falls back to the terminal prompt for that file; Ctrl-C
 in the terminal does the same, and a second Ctrl-C aborts. Partial answers are
 reassembled by the CLI from the accepted hunk indices; the extension never writes project

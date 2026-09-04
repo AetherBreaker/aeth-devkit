@@ -14,11 +14,11 @@
   "aethDevkit": { "protocol": 1 },
   "contributes": {
     "commands": [
-      { "command": "aeth-devkit.replaceFile", "title": "Replace file with the devkit proposal", "category": "devkit", "icon": "$(replace-all)" },
-      { "command": "aeth-devkit.keepFile", "title": "Keep file as it is", "category": "devkit", "icon": "$(discard)" },
-      { "command": "aeth-devkit.replaceAll", "title": "Replace all remaining Docker files this run", "category": "devkit" },
-      { "command": "aeth-devkit.applyAccepted", "title": "Apply accepted hunks", "category": "devkit" },
-      { "command": "aeth-devkit.acceptAllHunks", "title": "Accept all hunks", "category": "devkit" },
+      { "command": "aeth-devkit.replaceFile", "title": "Replace file", "category": "devkit", "icon": "$(replace-all)" },
+      { "command": "aeth-devkit.keepFile", "title": "Keep file", "category": "devkit", "icon": "$(discard)" },
+      { "command": "aeth-devkit.replaceAll", "title": "Replace all (rest of this run)", "category": "devkit", "icon": "$(run-all)" },
+      { "command": "aeth-devkit.applyAccepted", "title": "Apply accepted hunks", "category": "devkit", "icon": "$(check-all)" },
+      { "command": "aeth-devkit.acceptAllHunks", "title": "Accept all hunks", "category": "devkit", "icon": "$(checklist)" },
       { "command": "aeth-devkit.acceptHunk", "title": "Accept hunk", "category": "devkit" },
       { "command": "aeth-devkit.rejectHunk", "title": "Reject hunk", "category": "devkit" },
       { "command": "aeth-devkit.addToRuntimeBaseClasses", "title": "Add to runtime-evaluated-base-classes", "category": "devkit" }
@@ -37,12 +37,18 @@
         { "command": "aeth-devkit.addToRuntimeBaseClasses", "when": "editorLangId == python", "group": "1_modification@100" }
       ],
       "editor/content": [
-        { "command": "aeth-devkit.replaceFile", "group": "navigation@1", "when": "resourceScheme == aeth-devkit-proposed" },
-        { "command": "aeth-devkit.keepFile", "group": "navigation@2", "when": "resourceScheme == aeth-devkit-proposed" }
+        { "command": "aeth-devkit.applyAccepted", "group": "navigation@1", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.acceptAllHunks", "group": "navigation@2", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.replaceFile", "group": "navigation@3", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.replaceAll", "group": "navigation@4", "when": "resourceScheme == aeth-devkit-proposed && aeth-devkit.offerReplaceAll" },
+        { "command": "aeth-devkit.keepFile", "group": "navigation@5", "when": "resourceScheme == aeth-devkit-proposed" }
       ],
       "editor/title": [
-        { "command": "aeth-devkit.replaceFile", "group": "navigation@1", "when": "resourceScheme == aeth-devkit-proposed && !aeth-devkit.contentMenu" },
-        { "command": "aeth-devkit.keepFile", "group": "navigation@2", "when": "resourceScheme == aeth-devkit-proposed && !aeth-devkit.contentMenu" }
+        { "command": "aeth-devkit.applyAccepted", "group": "navigation@1", "when": "resourceScheme == aeth-devkit-proposed && !aeth-devkit.contentMenu" },
+        { "command": "aeth-devkit.acceptAllHunks", "group": "navigation@2", "when": "resourceScheme == aeth-devkit-proposed && !aeth-devkit.contentMenu" },
+        { "command": "aeth-devkit.replaceFile", "group": "navigation@3", "when": "resourceScheme == aeth-devkit-proposed && !aeth-devkit.contentMenu" },
+        { "command": "aeth-devkit.replaceAll", "group": "navigation@4", "when": "resourceScheme == aeth-devkit-proposed && !aeth-devkit.contentMenu && aeth-devkit.offerReplaceAll" },
+        { "command": "aeth-devkit.keepFile", "group": "navigation@5", "when": "resourceScheme == aeth-devkit-proposed && !aeth-devkit.contentMenu" }
       ]
     }
   },
