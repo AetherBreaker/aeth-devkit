@@ -1,9 +1,9 @@
 # Docker standardization — design
 
-Status: draft for review. Depends on
-[the CI release workflow design](2026-09-03-ci-release-workflow-design.md): the container
-binary is a release asset that workflow builds. The consent prompts here are
-terminal-only and complete on their own;
+Status: approved 2026-09-03; this record and its plan are deleted before the branch merges
+(the convention set by the CI release workflow branch). Depends on the CI release workflow
+(merged): the container binary is a release asset that workflow builds. The consent
+prompts here are terminal-only and complete on their own;
 [the VS Code extension design](2026-09-03-vscode-extension-design.md) layers an in-editor
 flow on top of them later.
 
@@ -42,13 +42,26 @@ service shape with per-project values.
   missing (merge semantics as today). **No migration code**: the old keys are left in
   place and an advisory names them (see Advisories). IMAPReportCollector's `mkdirs = [""]`
   is a data bug to fix by hand, listed in TODO.md.
+- **Why `mkdirs` has no successor** (decided 2026-09-03). `/app` is created by `WORKDIR` as
+  root:root 755 and nothing chowns it, so `nonroot` cannot create directories in it
+  (verified: `mkdir` as an unprivileged user in a root-owned 755 directory is
+  `Permission denied`). `mkdirs` existed only so applications could write scratch
+  directories beside their code. The image keeps that posture deliberately (code stays
+  root-owned and read-only to the app; the app writes only to mounted data or a temp
+  dir), so ephemeral directories belong in `tempfile` paths, not under `/app`.
+  ScheduledInvoiceProcessor and ScheduledReportAggregator carry a high-priority TODO to
+  move `file_holding` / `timeclock_playground` to temp dirs before adopting this standard.
+- An entry that is empty, `.`, `..`, absolute, or escapes `/app` after normalisation is a
+  hard error in the entrypoint (the `mkdirs = [""]` shape would otherwise `chown -R /app`).
 
 ## Container binary: crate `aeth-devkit-container`
 
 A new workspace crate producing the binary `devkit-container`. No Python at build or run
-time inside the image. Dependencies: `toml`, `anyhow`, `clap`, `nix` (already in the
-lock) for the privilege drop. Subcommands, all reading `/app/pyproject.toml`
-(overridable with `--pyproject` for tests):
+time inside the image. Dependencies: `toml_edit` (already a workspace dependency; read-only
+parse), `anyhow`, `clap`, `nix` with the `user` feature (already in the lock) for the
+privilege drop. Subcommands, all reading `/app/pyproject.toml` (overridable with
+`--pyproject` for tests; `run` also takes `--app-root` so the mkdir/chown loop is testable
+in a temp dir):
 
 - `app-extra` — prints `--extra app` when `[project.optional-dependencies].app` exists,
   else nothing. Replaces `detect_app_extra.py`.
@@ -67,13 +80,14 @@ lock) for the privilege drop. Subcommands, all reading `/app/pyproject.toml`
   5. `setgroups([])`, `setgid(999)`, `setuid(999)`, then `exec /app/.venv/bin/<script>`.
      gosu is no longer installed.
 
-`get_mkdirs.py` has no successor: its distinction is gone with the merged key.
+`get_mkdirs.py` has no successor (see the schema section for why).
 
 ## Templates
 
 `python/aeth_devkit/templates/docker/`:
 
-- `Dockerfile.template` — the common content, LF, stray blank line removed. Changes from
+- `template.Dockerfile` (the existing `template_file_name` convention for extension-less
+  targets) — the common content, LF, stray blank line removed. Changes from
   the current file: the builder stage `ADD`s
   `https://github.com/AetherBreaker/aeth-devkit/releases/download/v{devkit_version}/devkit-container-x86_64-unknown-linux-musl`
   to `/app/devkit-container` and `chmod +x`; the two `uv run --no-project python
@@ -81,7 +95,9 @@ lock) for the privilege drop. Subcommands, all reading `/app/pyproject.toml`
   final stage copies the binary instead of `scripts/` and `entrypoint.sh`, drops the gosu
   layer, and sets `ENTRYPOINT ["/app/devkit-container", "run"]`. `{devkit_version}` is the
   version of the devkit that ran setup-project (`CARGO_PKG_VERSION`), so a devkit release
-  drifts every project's Dockerfile by one line, surfaced through the normal prompt.
+  drifts every project's Dockerfile by one line, surfaced through the normal prompt. The
+  `mv /tmp/repo/src` line uses `{python_dir}` (the image still has no Rust toolchain, so a
+  mixed project cannot build in it; the placeholder just stops the template lying).
 - `compose.template.yaml` — the fresh-file scaffold, one service block per listed
   service (see Compose scaffold).
 
@@ -90,9 +106,11 @@ not templated; they are reported as **stray** (see Static files).
 
 New placeholders: `{devkit_version}`; `{git_repo}` (origin URL normalised to
 `https://github.com/<owner>/<repo>.git`, reusing docker-pin's normaliser);
-`{git_tag}` (latest remote tag via `gh` as docker-pin resolves it, falling back to `v` +
-the pyproject version when there are no tags or `gh` is unavailable, with a `note:`);
-`{service}` (per block in the compose scaffold).
+`{git_tag}` (latest stable remote tag via `gh` as docker-pin resolves it, falling back to
+`v` + the pyproject version when there are no tags, origin is not GitHub, or `gh` fails,
+with a `note:`); `{service}` (per block in the compose scaffold). `{git_tag}` is resolved
+lazily — only when a line carrying it is actually about to be written (fresh compose
+file, added service block, or a missing `GIT_TAG`) — so a routine run never calls `gh`.
 
 ## setup-project flow
 
@@ -150,7 +168,7 @@ Per listed service:
 | `build.args.GIT_TAG` | presence | `{git_tag}`; docker-pin owns the value afterwards |
 | `restart` | presence | `no` |
 | `volumes` | at-least | a bind entry with `target: /app/persisted_data`; default `source: /data/{package}_files` |
-| `environment` | at-least, only when aeth_ext is a declared dependency | `ALERTS_EMAIL=info@sweetfiretobacco.com`, `ALERTS_EMAIL_PWD=${ALERTS_EMAIL_PWD:?}`, `ALERTS_RECIPIENTS=["jacob.ogden@sweetfiretobacco.com"]` |
+| `environment` | at-least, only when the project *uses aeth_ext* (declares it as a dependency, or is aeth_ext itself) | `ALERTS_EMAIL=info@sweetfiretobacco.com`, `ALERTS_EMAIL_PWD=${ALERTS_EMAIL_PWD:?}`, `ALERTS_RECIPIENTS=["jacob.ogden@sweetfiretobacco.com"]` |
 | `networks` | presence | list form `- coolify`; an existing key of any shape is left alone |
 | `healthcheck.test` | exact | the shared heartbeat `CMD-SHELL` command |
 | `healthcheck.interval` / `timeout` / `retries` / `start_period` | exact | `30s` / `5s` / `3` / `15s` |
@@ -163,8 +181,10 @@ extra environment entries, network aliases, other services) are never touched.
 
 For each listed service, the block above with every presence/at-least default filled in,
 `container_name: {service}`, `GIT_REPO: {git_repo}`, `GIT_TAG: {git_tag}`, and the
-ALERTS entries only when aeth_ext is a dependency. Followed by the top-level `networks`
-map.
+ALERTS entries only when the project uses aeth_ext. Followed by the top-level `networks`
+map. The scaffold block is also the source of every rule's standard value: the rule table
+names key paths and kinds, and the values come from the rendered block, so the template
+and the rules cannot drift apart.
 
 ### Modes
 
@@ -180,9 +200,11 @@ map.
 
 - `services` empty but a Dockerfile or compose file exists: "Docker files found but
   `[tool.docker].services` is empty; list the app service(s) to manage them."
-- `[tool.docker]` present with `chown_paths` or `mkdirs`: "fold these into
-  `required_persisted_dirs` and delete them; the entrypoint no longer reads them." (This
-  replaces today's "table but no Docker setup" advisory, which keys off the new switch.)
+- `[tool.docker]` present with `chown_paths` or `mkdirs`: "fold `chown_paths` into
+  `required_persisted_dirs`, move any `mkdirs` scratch directories to temp dirs, and delete
+  both keys; the entrypoint no longer reads them." When `services` is also empty and no
+  Docker files exist the line ends with "— or delete the whole table if the project has no
+  Docker setup." (This replaces today's "table but no Docker setup" advisory.)
 - Stray `docker/entrypoint.sh` / `docker/scripts/` as above.
 - `{git_tag}` fallback used.
 
@@ -219,7 +241,9 @@ the asset exists before `Released` is reported.
   aeth_ext-gated environment entries, the missing-service prompt, and multi-service
   files with an unlisted sidecar; `--check` exit code with Docker drift; idempotency of a
   second run.
-- Release crate: the matrix template renders the container step.
+- Setup crate (the template is rendered there, not in the release crate): the mixed
+  Rust/Python fixture's rendered `release.yml` contains the container build step and both
+  asset names.
 
 ## Documentation
 
@@ -228,7 +252,10 @@ bullet with the Docker bullets (switch, static replace, compose rules, prompts,
 `--replace-docker`), and document the container binary under a new `devkit-container`
 heading. TODO.md: delete the Docker scaffolding item; add the IMAPReportCollector
 `mkdirs` fix, the sister-project migration checklist (add `services`, run setup-project,
-fold the old keys, delete stray scripts), and the `{container_crate}` gate note.
+fold the old keys, delete stray scripts; ScheduledInvoiceProcessor and
+ScheduledReportAggregator first move their scratch dirs to temp dirs — already on their
+own TODO lists), and the `{container_crate}` gate note. Last task on the branch: delete
+this spec and its plan.
 
 ## Out of scope
 
