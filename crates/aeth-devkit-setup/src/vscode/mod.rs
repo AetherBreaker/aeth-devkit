@@ -4,6 +4,7 @@
 
 pub mod install;
 pub mod protocol;
+pub mod session;
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,22 @@ use protocol::EXTENSION_ID;
 
 /// The `argv.json` key that grants proposed API contributions to a listed extension.
 pub const ARGV_KEY: &str = "enable-proposed-api";
+
+/// A usable VS Code: the launcher to call and the consent folder both sides share.
+/// Dropping it empties the folder, so a run leaves nothing behind however it ends.
+pub struct VsCode {
+  pub launcher: PathBuf,
+  pub consent_dir: PathBuf,
+  /// Whether the `editor/content` proposal is believed granted (see the spec).
+  pub content_menu: bool,
+  pub notes: Vec<String>,
+}
+
+impl Drop for VsCode {
+  fn drop(&mut self) {
+    let _ = std::fs::remove_dir_all(&self.consent_dir);
+  }
+}
 
 /// `code` on `PATH`. On Windows the launcher is a `.cmd` shim and `Command` does not
 /// apply `PATHEXT`, so the candidates are spelled out (std runs `.cmd` through `cmd.exe`
