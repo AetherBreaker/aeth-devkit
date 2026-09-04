@@ -13,6 +13,7 @@ use crate::changes::Changes;
 use crate::context::ProjectContext;
 use crate::docker::Consent;
 use crate::templates;
+use crate::vscode::protocol::Proposal;
 
 /// The files under `docker/` this step owns, by target name (the compose file has its own
 /// rule-based flow). One list, so `git::committable` stages exactly what is written here:
@@ -116,12 +117,23 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, co
       continue;
     }
     println!("{}", unified_diff(&rel, &original, &rendered));
-    if consent.replace(&format!("Replace {rel}? [replace / replace all / anything else keeps it]:"))? {
-      changes.record_optional(&path, Some(&original), &rendered, vec!["replaced with the devkit template".into()])?;
-      changes.notes.extend(provisional.map(str::to_string));
-    } else {
-      changes.record_optional(&path, Some(&original), &original, vec![])?;
-      println!("Kept {rel}.");
+    let proposal = Proposal::new(
+      &rel,
+      format!("Replace {rel}? [replace / replace all / anything else keeps it]:"),
+      &original,
+      &rendered,
+    );
+    let decision = consent.decide(&proposal, true)?;
+    let detail = decision.detail("replaced with the devkit template");
+    match decision.text(&proposal) {
+      Some(text) => {
+        changes.record_optional(&path, Some(&original), &text, vec![detail])?;
+        changes.notes.extend(provisional.map(str::to_string));
+      }
+      None => {
+        changes.record_optional(&path, Some(&original), &original, vec![])?;
+        println!("Kept {rel}.");
+      }
     }
   }
   // Stray leftovers of the shell-and-Python entrypoint. Reported once, never removed.

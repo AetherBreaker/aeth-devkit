@@ -25,7 +25,7 @@ pub fn hunks(current: &str, proposed: &str) -> Vec<Hunk> {
       // A group is context + changes + context; only the change ops bound the hunk.
       let mut changed = group.iter().filter(|op| !matches!(op, DiffOp::Equal { .. }));
       let first = changed.next()?;
-      let last = changed.last().unwrap_or(first);
+      let last = changed.next_back().unwrap_or(first);
       Some(Hunk {
         current: [first.old_range().start, last.old_range().end],
         proposed: [first.new_range().start, last.new_range().end],
