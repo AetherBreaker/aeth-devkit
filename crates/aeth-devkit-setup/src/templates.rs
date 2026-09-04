@@ -33,7 +33,8 @@ pub fn template_file_name(target: &str) -> String {
 
 /// Read a template (by its target name, e.g. `pyproject.toml`) and substitute
 /// `{project_root}` / `{package}` / `{python_dir}` / `{devkit_bin}` / `{publish_index}` /
-/// `{publish_index_key}`.
+/// `{publish_index_key}` / `{devkit_version}` / `{git_repo}`. `{git_tag}` and `{service}`
+/// are deliberately left in place for the Docker scaffold, which fills them per block.
 pub fn load(templates_dir: &Path, name: &str, ctx: &ProjectContext, escape: Escape) -> Result<String> {
   let path = templates_dir.join(template_file_name(name));
   let text = std::fs::read_to_string(&path).with_context(|| format!("reading template {}", path.display()))?;
@@ -74,22 +75,37 @@ pub fn substitute(text: &str, ctx: &ProjectContext, escape: Escape) -> String {
           .unwrap_or_default(),
       ),
     )
+    .replace("{devkit_version}", env!("CARGO_PKG_VERSION"))
+    .replace("{git_repo}", &esc(&git_repo(ctx)))
 }
 
-/// Block markers for line-based templates (YAML): `# setup-project: if-publish-index` …
-/// `# setup-project: end` survives only when the project has a publish index,
-/// `# setup-project: if-no-publish-index` … `# setup-project: end` only when it has none.
-/// Marker lines are dropped either way. Markers may be indented; the lines inside keep
-/// their own indentation, so a block can sit anywhere in the document.
-pub fn gate_publish_index(text: &str, has_publish_index: bool) -> String {
+/// The value compose files carry in `GIT_REPO`: a GitHub origin normalised to
+/// `https://github.com/<owner>/<repo>.git` (owner/repo case kept), any other origin as
+/// written, and empty when there is no origin (the Repo rule then skips itself).
+pub fn git_repo(ctx: &ProjectContext) -> String {
+  let Some(origin) = ctx.origin.as_deref() else {
+    return String::new();
+  };
+  match aeth_devkit_core::github::github_repo_path(origin) {
+    Some(path) => format!("https://github.com/{path}.git"),
+    None => origin.to_string(),
+  }
+}
+
+/// Block markers for line-based templates: `# setup-project: if-<name>` … `end` survives
+/// only when `enabled(name)`, `if-no-<name>` … `end` only when it does not. Marker lines
+/// are dropped either way; they may be indented and the lines inside keep their own
+/// indentation. Unknown marker lines pass through untouched.
+pub fn gate(text: &str, enabled: &dyn Fn(&str) -> bool) -> String {
   let mut out = String::with_capacity(text.len());
   // `Some(keep)` while inside a block, saying whether its lines are emitted.
   let mut block: Option<bool> = None;
   for line in text.lines() {
     match line.trim().strip_prefix("# setup-project: ") {
-      Some("if-publish-index") => block = Some(has_publish_index),
-      Some("if-no-publish-index") => block = Some(!has_publish_index),
       Some("end") => block = None,
+      // `if-no-` must be tried first: `if-no-x` also starts with `if-`.
+      Some(m) if m.starts_with("if-no-") => block = Some(!enabled(&m["if-no-".len()..])),
+      Some(m) if m.starts_with("if-") => block = Some(enabled(&m["if-".len()..])),
       _ => {
         if block.unwrap_or(true) {
           out.push_str(line);
@@ -99,6 +115,11 @@ pub fn gate_publish_index(text: &str, has_publish_index: bool) -> String {
     }
   }
   out
+}
+
+/// [`gate`] for the release workflow: `if-publish-index` / `if-no-publish-index`.
+pub fn gate_publish_index(text: &str, has_publish_index: bool) -> String {
+  gate(text, &|name| name == "publish-index" && has_publish_index)
 }
 
 /// How a hook should invoke `devkit`: the venv's own console script when one exists
@@ -267,5 +288,65 @@ mod publish_index_tests {
   #[test]
   fn gate_leaves_unmarked_text_alone() {
     assert_eq!(gate_publish_index("x\n  y\n", true), "x\n  y\n");
+  }
+}
+
+#[cfg(test)]
+mod docker_placeholder_tests {
+  use super::*;
+  use std::collections::HashSet;
+
+  fn ctx(origin: Option<&str>) -> ProjectContext {
+    ProjectContext {
+      root: std::path::PathBuf::from("/p"),
+      package: "proj".into(),
+      dependencies: HashSet::new(),
+      has_docker: true,
+      python_dir: "src".into(),
+      has_rust: false,
+      publish_index: None,
+      name: "proj".into(),
+      version: Some("1.2.3".into()),
+      origin: origin.map(str::to_string),
+      docker_services: vec!["proj".into()],
+      docker_legacy_keys: vec![],
+    }
+  }
+
+  #[test]
+  fn git_repo_is_the_canonical_https_form_for_github_origins() {
+    assert_eq!(
+      git_repo(&ctx(Some("git@github.com:AetherBreaker/aeth_ext.git"))),
+      "https://github.com/AetherBreaker/aeth_ext.git"
+    );
+    assert_eq!(
+      git_repo(&ctx(Some("https://gitlab.com/o/r"))),
+      "https://gitlab.com/o/r",
+      "non-GitHub kept as-is"
+    );
+    assert_eq!(git_repo(&ctx(None)), "");
+  }
+
+  #[test]
+  fn docker_placeholders_substitute_except_the_lazy_ones() {
+    let out = substitute(
+      "{devkit_version} {git_repo} {git_tag} {service} {python_dir}",
+      &ctx(Some("https://github.com/o/r.git")),
+      Escape::None,
+    );
+    assert_eq!(
+      out,
+      format!(
+        "{} https://github.com/o/r.git {{git_tag}} {{service}} src",
+        env!("CARGO_PKG_VERSION")
+      )
+    );
+  }
+
+  #[test]
+  fn gate_handles_any_marker_name() {
+    let t = "a\n# setup-project: if-aeth-ext\nx\n# setup-project: end\n# setup-project: if-no-aeth-ext\ny\n# setup-project: end\n";
+    assert_eq!(gate(t, &|n| n == "aeth-ext"), "a\nx\n");
+    assert_eq!(gate(t, &|_| false), "a\ny\n");
   }
 }

@@ -1,0 +1,36 @@
+services:
+# setup-project: service-block
+  {service}:
+    container_name: {service}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        GIT_REPO: {git_repo}
+        GIT_TAG: {git_tag}
+    restart: no
+    volumes:
+      - type: bind
+        source: /data/{package}_files
+        target: /app/persisted_data
+    # setup-project: if-aeth-ext
+    environment:
+      - ALERTS_EMAIL=info@sweetfiretobacco.com
+      - ALERTS_EMAIL_PWD=${ALERTS_EMAIL_PWD:?}
+      - ALERTS_RECIPIENTS=["jacob.ogden@sweetfiretobacco.com"]
+    # setup-project: end
+    networks:
+      - coolify
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - bash -ec '[ -f /app/persisted_data/logs/heartbeat.txt ] && ts=$$(cat /app/persisted_data/logs/heartbeat.txt 2>/dev/null) && [ -n "$$ts" ] && hb=$$(date -d "$$ts" +%s 2>/dev/null) && now=$$(date +%s) && [ $$((now - hb)) -lt 180 ]'
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+# setup-project: end-service-block
+
+networks:
+  coolify:
+    external: true
