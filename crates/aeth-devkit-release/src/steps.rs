@@ -276,27 +276,36 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   }
   // Captured (not inherited) because gh prints the release URL, which we return.
   let out = deps.runner.run_capture("gh", &args, root)?;
-  if !out.success() {
-    // `gh release create` can create the release and then fail uploading an asset. Probe
-    // before giving up so a half-made release is still deleted by the rollback. If the
-    // probe itself errors, assume the worst and queue the delete anyway.
-    let view: Vec<String> = ["release", "view", &tag].iter().map(|s| s.to_string()).collect();
-    let created = match deps.runner.run_capture("gh", &view, root) {
-      Ok(o) if o.success() => true,
-      Ok(o) if o.stderr.contains(crate::preflight::GH_NOT_FOUND) => false,
-      _ => true,
-    };
-    if created {
-      let id = crate::ci::release_id(deps.runner, root, &tag);
-      journal.push(Undo::DeleteGithubRelease { tag, id });
+  // The release's id: the rollback deletes by it, so a release someone else makes for the
+  // tag during the minutes-long wait is never the one removed (by tag if the lookup fails).
+  let (release_url, id) = if out.success() {
+    (
+      out.stdout.trim().to_string(),
+      crate::ci::release_id(deps.runner, root, &tag).ok().flatten(),
+    )
+  } else {
+    // `gh release create` can fail after the server created the release (a lost reply, a
+    // failed follow-up). The release event has then fired and its workflow may be running,
+    // so an existing release is carried on with exactly as if creation had succeeded:
+    // step 8 watches (or cancels) the run, and a rollback deletes the release by id.
+    // Nothing created is an ordinary failure; not knowing means nothing may be unwound.
+    let why = format!("gh release create failed: {}{}", out.stdout.trim(), out.stderr.trim());
+    match crate::ci::release_id(deps.runner, root, &tag) {
+      Ok(Some(id)) => {
+        eprintln!("  warning: {why}; the release exists, continuing");
+        (format!("release {tag}"), Some(id))
+      }
+      Ok(None) => bail!("{why}"),
+      Err(e) => {
+        journal.push(Undo::DeleteGithubRelease {
+          tag: tag.clone(),
+          id: None,
+        });
+        return Err(crate::ci::Unsettled(format!("{why}, and whether the release exists could not be determined ({e:#})")).into());
+      }
     }
-    bail!("gh release create failed: {}{}", out.stdout.trim(), out.stderr.trim());
-  }
-  // By id, so the rollback deletes this release and not whichever one owns the tag by the
-  // time the minutes-long wait is over.
-  let id = crate::ci::release_id(deps.runner, root, &tag);
+  };
   journal.push(Undo::DeleteGithubRelease { tag: tag.clone(), id });
-  let release_url = out.stdout.trim().to_string();
 
   // No interrupt check here: the release exists, so its workflow may already be running,
   // and a Ctrl-C is honoured by step 8 finding and cancelling that run. `--no-wait` asked

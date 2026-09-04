@@ -51,6 +51,10 @@ struct SeqRunner {
   /// while the release is being created.
   interrupted: Rc<AtomicBool>,
   interrupt_on_create: Cell<bool>,
+  /// The release-id query (`release view <tag> --json databaseId`) answers "not found"
+  /// until `gh release create` has succeeded, so a scripted create failure means no
+  /// release. A test models "create failed but the server made it" by setting this.
+  release_exists_anyway: Cell<bool>,
   /// Cleared by a test that scripts runs which exist *before* the release (an earlier
   /// release of the tag), which the pre-flight must see.
   gate_runs: Cell<bool>,
@@ -96,10 +100,22 @@ impl Runner for SeqRunner {
   }
   fn run_capture(&self, program: &str, args: &[String], cwd: &Path) -> anyhow::Result<CapturedOutput> {
     if program == "gh" && starts(args, &["release", "create"]) {
-      self.released.set(true);
+      let out = self.inner.run_capture(program, args, cwd)?;
+      if out.success() || self.release_exists_anyway.get() {
+        self.released.set(true);
+      }
       if self.interrupt_on_create.get() {
         self.interrupted.store(true, Ordering::SeqCst);
       }
+      return Ok(out);
+    }
+    if program == "gh" && starts(args, &["release", "view", "v1.0.1", "--json", "databaseId"]) && !self.released.get() {
+      self.inner.run_capture(program, args, cwd)?; // recorded
+      return Ok(CapturedOutput {
+        code: Some(1),
+        stderr: "release not found".into(),
+        ..Default::default()
+      });
     }
     if program == "gh" && starts(args, &["run", "view", "123456", "--json", "status,conclusion"]) && self.live_polls.get() > 0 {
       self.live_polls.set(self.live_polls.get() - 1);
@@ -188,6 +204,7 @@ impl World {
         live_polls: Cell::new(0),
         interrupted: Rc::clone(&flag),
         interrupt_on_create: Cell::new(false),
+        release_exists_anyway: Cell::new(false),
         gate_runs: Cell::new(true),
       },
       devpi: SeqDevpi {
@@ -548,23 +565,34 @@ fn github_failure_unwinds_everything_with_lease() {
 }
 
 #[test]
-fn partial_github_release_is_deleted_on_rollback() {
+fn a_release_created_despite_a_failed_gh_create_is_carried_through() {
   let w = World::new(&[]);
-  let before = w.state();
-  // `create` fails (say, an asset upload), but `view` afterwards finds the release.
+  // `create` reports failure (a lost reply), but the release exists — the fixture answers
+  // its id — so its workflow is watched and the release completes like any other.
   w.runner.script("gh", &["release", "create"], 1, "");
-  w.runner
-    .script("gh", &["release", "view"], 0, "https://github.com/o/demo/releases/tag/v1.0.1\n");
-  let mut a = w.args(&["patch"]);
-  a.force = true; // the pre-flight probe sees that same `view` answer
-  assert!(!ok(run(&a, &w.deps()).unwrap()));
-  assert_eq!(w.state(), before);
+  w.runner.release_exists_anyway.set(true);
+  assert!(ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
   let gh = w.runner.calls_for("gh");
-  let create_at = gh.iter().position(|c| starts(c, &["release", "create"])).unwrap();
-  assert!(
-    gh[create_at..].iter().any(|c| deletes_release(c)),
-    "the half-created release must be deleted during rollback: {gh:?}"
-  );
+  assert!(gh.iter().any(|c| starts(c, &["run", "watch"])), "{gh:?}");
+  assert!(gh.iter().all(|c| !deletes_release(c)), "{gh:?}");
+}
+
+#[test]
+fn an_unverifiable_release_creation_is_left_in_place() {
+  let w = World::new(&[]);
+  w.runner.script("gh", &["release", "create"], 1, "");
+  w.runner.release_exists_anyway.set(true);
+  // Whether the release exists cannot be determined: its workflow may be running, so
+  // nothing is unwound; the manual commands include the by-tag release deletion.
+  w.runner
+    .script_err("gh", &["release", "view", "v1.0.1", "--json", "databaseId"], 1, "HTTP 502");
+  let before = w.state();
+  assert!(!ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+  let after = w.state();
+  assert_ne!(after.head, before.head);
+  assert!(after.tag.is_some());
+  let gh = w.runner.calls_for("gh");
+  assert!(gh.iter().all(|c| !deletes_release(c) && !starts(c, &["run", "watch"])), "{gh:?}");
 }
 
 #[test]

@@ -104,19 +104,26 @@ pub fn check_no_active_run(runner: &dyn Runner, root: &Path, tag: &str) -> Resul
   Ok(runs.into_iter().map(|r| r.id).collect())
 }
 
-/// The database id of the release for `tag`, so the rollback can delete exactly that
-/// release rather than whichever one owns the tag by then. `None` when the lookup fails:
-/// the caller then falls back to deleting by tag.
-pub fn release_id(runner: &dyn Runner, root: &Path, tag: &str) -> Option<String> {
-  let out = runner
-    .run_capture(
-      "gh",
-      &s(&["release", "view", tag, "--json", "databaseId", "--jq", ".databaseId"]),
-      root,
-    )
-    .ok()?;
-  let id = out.stdout.trim();
-  (out.success() && !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then(|| id.to_string())
+/// The database id of the release for `tag` (`None`: no such release), so the rollback
+/// can delete exactly that release rather than whichever one owns the tag by then, and so
+/// a failed `gh release create` can be told apart from one that failed after creating.
+pub fn release_id(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Option<String>> {
+  let out = runner.run_capture(
+    "gh",
+    &s(&["release", "view", tag, "--json", "databaseId", "--jq", ".databaseId"]),
+    root,
+  )?;
+  if out.success() {
+    let id = out.stdout.trim();
+    if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
+      return Ok(Some(id.to_string()));
+    }
+    bail!("gh release view {tag} printed no release id: {id:?}");
+  }
+  if out.stderr.contains(crate::preflight::GH_NOT_FOUND) {
+    return Ok(None);
+  }
+  bail!("gh release view {tag} failed: {}", out.stderr.trim())
 }
 
 /// The error [`wait_for_run`] fails with when the workflow's state is unknown — its run
@@ -284,16 +291,24 @@ pub fn verify_published(deps: &Deps, root: &Path, cfg: &Config, version: &str) -
       Err(e) => Some(e),
     };
     if waited >= VERIFY_TIMEOUT {
-      let why = match last_error {
-        Some(e) => format!("the last query failed: {e:#}"),
-        None => "the index does not list it".into(),
-      };
-      bail!(
-        "the release workflow succeeded but {}=={version} is not on {} after {}s ({why}); inspect the publish job's log",
-        cfg.package,
-        cfg.target.label(),
-        VERIFY_TIMEOUT.as_secs()
-      );
+      // Consistent, successful "absent" answers are the only proof the publish did not
+      // happen; a query that keeps failing proves nothing, and the run's `uv publish` may
+      // well have succeeded — nothing may be unwound under that.
+      return Err(match last_error {
+        Some(e) => Unsettled(format!(
+          "the release workflow succeeded but whether {}=={version} is on {} could not be determined after {}s (last query failed: {e:#})",
+          cfg.package,
+          cfg.target.label(),
+          VERIFY_TIMEOUT.as_secs()
+        ))
+        .into(),
+        None => anyhow!(
+          "the release workflow succeeded but {}=={version} is not on {} after {}s; inspect the publish job's log",
+          cfg.package,
+          cfg.target.label(),
+          VERIFY_TIMEOUT.as_secs()
+        ),
+      });
     }
     (deps.sleep)(POLL_INTERVAL);
     waited += POLL_INTERVAL;
@@ -610,11 +625,14 @@ mod tests {
   fn release_id_is_read_after_creation() {
     let r = RecordingRunner::new(0);
     r.script("gh", &["release", "view"], 0, "42\n");
-    assert_eq!(release_id(&r, Path::new("."), "v1.2.3").as_deref(), Some("42"));
+    assert_eq!(release_id(&r, Path::new("."), "v1.2.3").unwrap().as_deref(), Some("42"));
     let call = &r.calls_for("gh")[0];
     assert_eq!(call[..5].to_vec(), vec!["release", "view", "v1.2.3", "--json", "databaseId"]);
+    let none = RecordingRunner::new(0);
+    none.script_err("gh", &["release", "view"], 1, "release not found");
+    assert_eq!(release_id(&none, Path::new("."), "v1.2.3").unwrap(), None);
     let broken = RecordingRunner::new(1);
-    assert_eq!(release_id(&broken, Path::new("."), "v1.2.3"), None);
+    assert!(release_id(&broken, Path::new("."), "v1.2.3").is_err());
   }
 
   #[test]
@@ -757,7 +775,10 @@ mod tests {
     let d = deps(&r, &absent, &flag, &sleep);
     let err = verify_published(&d, Path::new("."), &cfg(), "1.0.0").unwrap_err();
     assert!(err.to_string().contains("demo==1.0.0 is not on PyPI"), "{err}");
-    assert!(err.to_string().contains("does not list it"), "{err}");
+    assert!(
+      err.downcast_ref::<Unsettled>().is_none(),
+      "consistent absence is a plain failure: {err}"
+    );
     assert!(total.get() >= VERIFY_TIMEOUT);
     // A persistent request failure is reported as such, not as "not listed".
     let broken = SlowIndex {
@@ -769,6 +790,10 @@ mod tests {
     let d = deps(&r, &broken, &flag, NO_SLEEP);
     let err = verify_published(&d, Path::new("."), &cfg(), "1.0.0").unwrap_err();
     assert!(err.to_string().contains("HTTP 502"), "{err}");
+    assert!(
+      err.downcast_ref::<Unsettled>().is_some(),
+      "a failing query is not proof of absence: {err}"
+    );
   }
 
   #[test]

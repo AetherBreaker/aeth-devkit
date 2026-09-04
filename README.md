@@ -68,8 +68,11 @@ byte-for-byte no-op.
   any drift is replaced, reported, and counts for `--check`. The publish step targets the
   sole `[[tool.uv.index]]` with a `publish-url` through repository secrets
   `UV_INDEX_<KEY>_USERNAME` / `_PASSWORD`, or PyPI via trusted publishing when no index
-  publishes; several publish indexes are a config error. The first install prints a
-  `note:` with the secret names or the trusted-publisher registration values.
+  publishes; several publish indexes are a config error. Before attaching or publishing,
+  the workflow checks that the release owning the tag is still the one that triggered
+  it, so a release deleted and recreated mid-build gets nothing from the old run. The
+  first install prints a `note:` with the secret names or the trusted-publisher
+  registration values.
 - **Claude config** - `.claude/settings.json` (shared, no machine-specific paths) vs
   `settings.local.json` (absolute env paths + hook commands). Hook merge keeps exactly one
   entry per devkit hook, updates it in place, and leaves user hooks alone. `.mcp.json`:
