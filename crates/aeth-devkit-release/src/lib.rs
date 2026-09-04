@@ -240,10 +240,16 @@ pub fn run_outcome(args: &Args, deps: &Deps) -> Result<Outcome> {
     // release and tag it is about to upload to, and could never un-publish. Leave every
     // step in place and hand the user the same commands the unwind would have run.
     Err(e) if e.downcast_ref::<ci::Unsettled>().is_some() => {
+      // PyPI cannot take a version back, so a rerun would only hit the immutable-version
+      // abort; a private index is cleaned up by the next run's probe.
+      let then = if cfg.target == PublishTarget::Pypi {
+        "if the run published, bump to a new version (PyPI files cannot be removed); otherwise"
+      } else {
+        "either run `devkit release` again for this version — it detects what exists and offers to remove it — or"
+      };
       eprintln!(
         "\nERROR: Release failed: {e:#}\nNOT rolling back: the run may still publish. When it has stopped (see Actions), \
-         either run `devkit release` again for this version — it detects what exists and offers to remove it — \
-         or undo by hand, in this order:"
+         {then} undo by hand, in this order:"
       );
       for undo in journal.into_iter().rev() {
         eprintln!("  {}", undo.manual_command());

@@ -69,6 +69,11 @@ pub fn list_runs(runner: &dyn Runner, root: &Path, tag: &str) -> Result<Vec<Run>
   ]);
   let out = runner.run_capture("gh", &args, root)?;
   if !out.success() {
+    // A first release: setup-project committed the workflow locally, but the remote has
+    // never seen it until step 6 pushes `main`. No workflow there means no runs of it.
+    if out.stderr.to_ascii_lowercase().contains("could not find any workflows") {
+      return Ok(Vec::new());
+    }
     bail!("gh run list failed: {}", out.stderr.trim());
   }
   out
@@ -252,10 +257,12 @@ pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, known: &[String]) -> Re
     settle(deps, root, &id, "interrupted")?;
   } else {
     println!("  run {id} started; watching...");
-    match deps.runner.run_inherit("gh", &s(&["run", "watch", &id, "--exit-status"]), root)? {
-      Some(0) => {}
-      Some(code) => settle(deps, root, &id, &format!("gh run watch exited with {code}"))?,
-      None => settle(deps, root, &id, "gh run watch was terminated by a signal")?,
+    // A watcher that could not even be started leaves the run just as live as one that died.
+    match deps.runner.run_inherit("gh", &s(&["run", "watch", &id, "--exit-status"]), root) {
+      Ok(Some(0)) => {}
+      Ok(Some(code)) => settle(deps, root, &id, &format!("gh run watch exited with {code}"))?,
+      Ok(None) => settle(deps, root, &id, "gh run watch was terminated by a signal")?,
+      Err(e) => settle(deps, root, &id, &format!("gh run watch could not be run: {e:#}"))?,
     }
   }
   // The URL is informational: the run already succeeded, so a failed lookup (auth or API
@@ -521,6 +528,10 @@ mod tests {
     assert!(list_runs(&empty, Path::new("."), "v1.2.3").unwrap().is_empty());
     let broken = RecordingRunner::new(1);
     assert!(list_runs(&broken, Path::new("."), "v1.2.3").is_err());
+    // Before the first push of the workflow the remote has none: no runs, not an error.
+    let unpushed = RecordingRunner::new(0);
+    unpushed.script_err("gh", &["run", "list"], 1, "could not find any workflows named release.yml");
+    assert!(list_runs(&unpushed, Path::new("."), "v1.2.3").unwrap().is_empty());
   }
 
   #[test]
