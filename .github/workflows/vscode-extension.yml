@@ -1,0 +1,73 @@
+# Releases the VS Code extension on its own tag stream (`vscode-extension-vN`) whenever a
+# devkit release ships with changes under `vscode-extension/` since the previous extension
+# tag. It fires on the same `release: published` event as release.yml, so `devkit release`
+# needs no knowledge of the extension. The release it creates uses the workflow token,
+# and events raised with that token never start workflows, so nothing re-fires.
+name: VS Code extension
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DEVKIT_TAG: ${{ github.event.release.tag_name || github.sha }}
+
+jobs:
+  release:
+    # Only devkit's own `v*` tags; a hand-made extension release must not recurse.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: vscode-extension
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          # Every tag, to find the previous extension release.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Next extension version, if anything changed
+        id: version
+        shell: bash
+        run: |
+          prev="$(git tag --list 'vscode-extension-v*' | sed 's/^vscode-extension-v//' | sort -n | tail -1)"
+          if [ -n "$prev" ] && git diff --quiet "vscode-extension-v$prev" "$GITHUB_SHA" -- .; then
+            echo "extension unchanged since vscode-extension-v$prev; nothing to release"
+            exit 0
+          fi
+          echo "n=$(( ${prev:-0} + 1 ))" >> "$GITHUB_OUTPUT"
+
+      - if: steps.version.outputs.n
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
+
+      - if: steps.version.outputs.n
+        run: npm ci
+
+      - if: steps.version.outputs.n
+        run: npm test
+
+      - if: steps.version.outputs.n
+        run: bash scripts/package.sh "${{ steps.version.outputs.n }}"
+
+      - if: steps.version.outputs.n
+        name: Tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N: ${{ steps.version.outputs.n }}
+        run: |
+          gh release create "vscode-extension-v$N" --target "$GITHUB_SHA" \
+            --title "VS Code extension $N" \
+            --notes "aeth-devkit VS Code extension build $N, from devkit $DEVKIT_TAG. Installed by devkit setup-project; not published to the marketplace." \
+            "aeth-devkit-vscode-$N.vsix"
