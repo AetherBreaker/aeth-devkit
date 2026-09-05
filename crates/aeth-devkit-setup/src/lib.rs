@@ -303,10 +303,11 @@ pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps:
       .push("Docker files found but `[tool.docker].services` is empty; list the app service(s) to manage them.".into());
   }
   if !ctx.docker_legacy_keys.is_empty() {
-    let tail = if !ctx.has_docker && !unmanaged_docker_files {
-      " — or delete the whole table if the project has no Docker setup."
-    } else {
+    // Any Docker setup at all (services or files) means the table is not junk.
+    let tail = if ctx.has_docker || unmanaged_docker_files {
       ""
+    } else {
+      " — or delete the whole table if the project has no Docker setup."
     };
     changes.notes.push(format!(
       "pyproject.toml [tool.docker] still has {}: fold `chown_paths` into `required_persisted_dirs`, move any `mkdirs` \

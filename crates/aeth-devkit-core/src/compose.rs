@@ -245,20 +245,6 @@ pub fn replace_value(line: &str, new_value: &str) -> String {
   format!("{head}{space}{rendered}{gap}{comment}")
 }
 
-/// Apply `(line index, new value)` edits to `text`, returning the new content: the
-/// `SetValue` subset of [`tree::apply_edits`], which owns the line-ending rule (CRLF and
-/// the trailing newline are preserved) so pin and setup-project cannot drift apart.
-pub fn apply_pins(text: &str, edits: &[(usize, String)]) -> String {
-  let edits: Vec<tree::Edit> = edits
-    .iter()
-    .map(|(line, value)| tree::Edit::SetValue {
-      line: *line,
-      value: value.clone(),
-    })
-    .collect();
-  tree::apply_edits(text, &edits)
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -349,34 +335,5 @@ volumes: {}
       "  PACKAGE_VERSION: \"2.0.0\""
     );
     assert_eq!(replace_value("  X: '1.0'", "2.0"), "  X: '2.0'");
-  }
-
-  #[test]
-  fn apply_pins_edits_only_named_lines() {
-    let blocks = parse_services(COMPOSE);
-    let targets = match_services(&blocks, "my-package", Some("github.com/owner/repo")).unwrap();
-    let edits: Vec<(usize, String)> = targets
-      .iter()
-      .map(|t| {
-        (
-          t.line,
-          if t.kind == PinKind::GitTag {
-            "v2.0.0".to_string()
-          } else {
-            "2.0.0".to_string()
-          },
-        )
-      })
-      .collect();
-    let out = apply_pins(COMPOSE, &edits);
-    assert!(out.contains("GIT_TAG: v2.0.0  # pinned"));
-    assert!(out.contains("PACKAGE_VERSION: \"2.0.0\""));
-    assert!(out.contains("PACKAGE_VERSION: 9.9.9"), "unmatched service untouched");
-    assert!(out.ends_with('\n'));
-    // A CRLF checkout keeps its line endings, like every setup-project edit.
-    let crlf = COMPOSE.replace('\n', "\r\n");
-    let out = apply_pins(&crlf, &edits);
-    assert!(out.contains("GIT_TAG: v2.0.0  # pinned\r\n"), "{out:?}");
-    assert!(!out.contains("\n\n") && out.ends_with("\r\n"), "{out:?}");
   }
 }
