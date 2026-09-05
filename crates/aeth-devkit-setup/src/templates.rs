@@ -217,6 +217,7 @@ mod devkit_bin_tests {
       origin: None,
       docker_services: vec![],
       docker_legacy_keys: vec![],
+      docker_files: false,
       python_dir: "src".into(),
       has_rust: false,
       has_container_crate: false,
@@ -260,6 +261,7 @@ mod publish_index_tests {
       origin: None,
       docker_services: vec![],
       docker_legacy_keys: vec![],
+      docker_files: false,
       python_dir: "src".into(),
       has_rust: false,
       has_container_crate: false,
@@ -308,6 +310,7 @@ mod docker_placeholder_tests {
       origin: origin.map(str::to_string),
       docker_services: vec!["proj".into()],
       docker_legacy_keys: vec![],
+      docker_files: false,
     }
   }
 

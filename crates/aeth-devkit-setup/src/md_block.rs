@@ -197,6 +197,7 @@ mod tests {
       origin: None,
       docker_services: vec![],
       docker_legacy_keys: vec![],
+      docker_files: false,
       python_dir: "src".into(),
       has_rust: false,
       has_container_crate: false,

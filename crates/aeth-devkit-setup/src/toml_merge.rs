@@ -84,7 +84,7 @@ impl Merger<'_> {
       {
         continue;
       }
-      if conditional_docker(template, key) && !self.ctx.has_docker {
+      if conditional_docker(template, key) && !(self.ctx.has_docker || self.ctx.docker_files) {
         continue;
       }
       let tkey = template.key(key).expect("iterating template keys").clone();
@@ -212,8 +212,8 @@ fn conditional_dep(template: &Table, key: &str) -> Option<String> {
     .find_map(|l| l.strip_prefix(IF_DEP_MARKER).map(|d| d.trim().to_string()))
 }
 
-/// `# setup-project: if-docker` above a template table: merge only into projects that
-/// actually have a Docker setup (see `ProjectContext::has_docker`).
+/// `# setup-project: if-docker` above a template table: merge only into projects with a
+/// Docker setup — a listed service, or Docker files on disk that seed the table.
 fn conditional_docker(template: &Table, key: &str) -> bool {
   marker_lines(template, key).iter().any(|l| l == IF_DOCKER_MARKER)
 }
@@ -358,6 +358,7 @@ mod tests {
       origin: None,
       docker_services: vec![],
       docker_legacy_keys: vec![],
+      docker_files: false,
       python_dir: "src".into(),
       has_rust: false,
       has_container_crate: false,
@@ -424,6 +425,7 @@ mod docker_tests {
       origin: None,
       docker_services: if has_docker { vec!["proj".into()] } else { vec![] },
       docker_legacy_keys: vec![],
+      docker_files: false,
       python_dir: "src".into(),
       has_rust: false,
       has_container_crate: false,

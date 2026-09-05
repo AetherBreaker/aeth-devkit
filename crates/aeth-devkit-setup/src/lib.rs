@@ -36,9 +36,9 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
 }
 
 /// [`run`] with injectable Docker collaborators (prompt, `gh` runner, consent mode) and a
-/// context the caller discovered. A committing caller must discover *before*
-/// `git::stage_bases`: staging resets `pyproject.toml` to HEAD, and the switches read from
-/// it (`[tool.docker].services`, dependencies) have to come from the user's working copy.
+/// context the caller discovered — before `git::stage_bases` when committing, which
+/// resets `pyproject.toml` to HEAD; `cli` refuses a `[tool.docker].services` that differs
+/// between the two rather than merge on one and switch on the other.
 /// Returns the collected change log; nothing is written when `dry_run` is set.
 pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps: &docker::Deps) -> Result<Changes> {
   let mut changes = Changes::new(dry_run);
@@ -294,17 +294,15 @@ pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps:
     }
   }
 
-  // 14. Obsolete artifacts: reported, never removed. The Docker probe walks the whole
-  //     tree, so it runs at most once.
-  let unmanaged_docker_files = !ctx.has_docker && ctx.docker_files_present();
-  if unmanaged_docker_files {
+  // 14. Obsolete artifacts: reported, never removed.
+  if !ctx.has_docker && ctx.docker_files {
     changes
       .notes
       .push("Docker files found but `[tool.docker].services` is empty; list the app service(s) to manage them.".into());
   }
   if !ctx.docker_legacy_keys.is_empty() {
     // Any Docker setup at all (services or files) means the table is not junk.
-    let tail = if ctx.has_docker || unmanaged_docker_files {
+    let tail = if ctx.has_docker || ctx.docker_files {
       ""
     } else {
       " — or delete the whole table if the project has no Docker setup."
