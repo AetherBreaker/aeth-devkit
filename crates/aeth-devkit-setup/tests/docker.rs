@@ -319,9 +319,9 @@ fn a_compose_file_without_services_is_noted_and_the_run_goes_on() {
   assert_eq!(read(root, "docker/compose.yaml"), include_only, "left alone");
   assert!(root.join("docker/Dockerfile").is_file(), "the rest of the Docker step still ran");
   assert!(
-    changes.notes.iter().any(|n| n.contains("no top-level `services:` key")),
+    changes.problems.iter().any(|n| n.contains("no top-level `services:` key")),
     "{:?}",
-    changes.notes
+    changes.problems
   );
   // Inline `services:` and an inline service block: nothing can be spliced under them
   // (the top-level `networks` block is still added around an inline service).
@@ -343,7 +343,7 @@ fn a_compose_file_without_services_is_noted_and_the_run_goes_on() {
     let out = read(root, "docker/compose.yaml");
     assert!(out.starts_with(text), "the inline part is untouched: {out}");
     assert!(!out.contains("container_name"), "{out}");
-    assert!(changes.notes.iter().any(|n| n.contains(note)), "{text}: {:?}", changes.notes);
+    assert!(changes.problems.iter().any(|n| n.contains(note)), "{text}: {:?}", changes.problems);
   }
 }
 

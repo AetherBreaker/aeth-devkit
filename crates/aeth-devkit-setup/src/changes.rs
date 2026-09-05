@@ -24,6 +24,10 @@ pub struct Changes {
   pub managed: Vec<PathBuf>,
   /// Advisory `note:` lines — things the user may want to clean up by hand. Never written.
   pub notes: Vec<String>,
+  /// `problem:` lines: drift the run saw in a file it manages but could not edit (a compose
+  /// shape the engine does not model). Never written, never committed; `--check` fails on
+  /// them, since a listed service is a declared intent to have the file managed.
+  pub problems: Vec<String>,
 }
 
 impl Changes {
@@ -33,6 +37,7 @@ impl Changes {
       files: Vec::new(),
       managed: Vec::new(),
       notes: Vec::new(),
+      problems: Vec::new(),
     }
   }
 

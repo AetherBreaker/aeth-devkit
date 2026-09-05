@@ -68,8 +68,9 @@ fn refuse_uncommitted_services(root: &Path) -> Result<()> {
   Ok(())
 }
 
-/// Exit codes: 0 ok, 1 `--check` found drift, 3 commit failed (the template changes were
-/// rolled back). Errors bubble up for the caller to print (exit 2).
+/// Exit codes: 0 ok, 1 `--check` found drift or a `problem:` (see `Changes::problems`),
+/// 3 commit failed (the template changes were rolled back). Errors bubble up for the
+/// caller to print (exit 2).
 pub fn run(args: &Args) -> Result<ExitCode> {
   let dry_run = args.dry_run || args.check;
   let templates = crate::templates::locate(args.templates_dir.as_deref())?;
@@ -128,6 +129,14 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   for note in &changes.notes {
     println!("note: {note}");
   }
+  for problem in &changes.problems {
+    println!("problem: {problem}");
+  }
+  let check_code = if args.check && !changes.problems.is_empty() {
+    ExitCode::from(1)
+  } else {
+    ExitCode::SUCCESS
+  };
   if changes.is_empty() {
     // No file differs from its merge base; undo the staging so the user's uncommitted
     // edits to managed files are back in place.
@@ -135,7 +144,7 @@ pub fn run(args: &Args) -> Result<ExitCode> {
       aeth_devkit_core::commit::unstage_clean_base(&root, bases)?;
     }
     println!("Nothing to do — project already matches the templates.");
-    return Ok(ExitCode::SUCCESS);
+    return Ok(check_code);
   }
   let header = if dry_run { "Would change:" } else { "Changed:" };
   println!("{header}\n{}", changes.report(&root));

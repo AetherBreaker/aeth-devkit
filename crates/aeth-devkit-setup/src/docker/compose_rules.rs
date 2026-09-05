@@ -47,7 +47,7 @@ pub struct Outcome {
   /// Drift the engine saw but would not edit: a YAML shape it does not model (flow style,
   /// a list where the standard has a mapping). Splicing block lines into those is not
   /// YAML, so the user is told instead.
-  pub notes: Vec<String>,
+  pub problems: Vec<String>,
 }
 
 /// The scaffold subtree rooted at `sc_node`, re-indented to sit under `parent`.
@@ -100,7 +100,7 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
           // spliced into it is not YAML. Settled so sibling rules do not repeat the note.
           if !tree::list_items(lines, &parent).is_empty() {
             let at = path[..depth].join(".");
-            out.notes.push(format!(
+            out.problems.push(format!(
               "{name}: {at} is written as a list, so {prefix} was not added; switch it to the mapping form or add the key by hand"
             ));
             settled.push(at);
@@ -159,7 +159,7 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
             })
           });
           if mounted != Some(true) {
-            out.notes.push(format!(
+            out.problems.push(format!(
               "{name}: {dotted} is written inline and mounts nothing at {want}; add the bind mount by hand or switch to the block form"
             ));
           }
@@ -200,7 +200,7 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
             .filter(|k| !keys.iter().any(|have| have == k))
             .collect();
           if !missing.is_empty() {
-            out.notes.push(format!(
+            out.problems.push(format!(
               "{name}: {dotted} is written inline and lacks {}; add them by hand or switch to the block form",
               missing.join(", ")
             ));
@@ -296,7 +296,7 @@ pub fn top_level_edits(lines: &[String], sc_tail: &[String]) -> Outcome {
     });
     if !ok {
       out
-        .notes
+        .problems
         .push("networks is written inline and lacks coolify with external: true; add it by hand or switch to the block form".into());
     }
     return out;
@@ -312,7 +312,7 @@ pub fn top_level_edits(lines: &[String], sc_tail: &[String]) -> Outcome {
   if coolify.is_inline() {
     if !flow_external(&coolify.value) {
       out
-        .notes
+        .problems
         .push("networks.coolify is written inline without external: true; set it by hand or switch to the block form".into());
     }
     return out;
@@ -390,7 +390,7 @@ services:
     let t = top_level_edits(&lines, &split_lines(TAIL));
     o.edits.extend(t.edits);
     o.details.extend(t.details);
-    o.notes.extend(t.notes);
+    o.problems.extend(t.problems);
     (apply_edits(doc, &o.edits), o)
   }
 
@@ -577,7 +577,7 @@ networks:
       let doc = service_with(volumes, environment, ARGS_OK);
       let (out, o) = run_full(&doc);
       assert_eq!(out, doc, "{volumes} / {environment}: {:?}", o.details);
-      assert!(o.notes.is_empty(), "{volumes} / {environment}: {:?}", o.notes);
+      assert!(o.problems.is_empty(), "{volumes} / {environment}: {:?}", o.problems);
     }
     // Non-compliant flow style: still no edit (block items under a scalar are not YAML),
     // but a note naming what is missing. Substrings do not count: `/app/persisted_data_old`
@@ -589,22 +589,22 @@ networks:
     );
     let (out, o) = run_full(&doc);
     assert_eq!(out, doc, "{:?}", o.details);
-    assert_eq!(o.notes.len(), 2, "{:?}", o.notes);
+    assert_eq!(o.problems.len(), 2, "{:?}", o.problems);
     assert!(
-      o.notes[0].contains("volumes") && o.notes[0].contains("/app/persisted_data"),
+      o.problems[0].contains("volumes") && o.problems[0].contains("/app/persisted_data"),
       "{:?}",
-      o.notes
+      o.problems
     );
     assert!(
-      o.notes[1].contains("environment") && o.notes[1].contains("lacks ALERTS_EMAIL, ALERTS_RECIPIENTS"),
+      o.problems[1].contains("environment") && o.problems[1].contains("lacks ALERTS_EMAIL, ALERTS_RECIPIENTS"),
       "{:?}",
-      o.notes
+      o.problems
     );
     // An anchor or alias is not a flow collection either: noted, never edited.
     let doc = service_with(" *shared", " *shared", ARGS_OK);
     let (out, o) = run_full(&doc);
     assert_eq!(out, doc, "{:?}", o.details);
-    assert_eq!(o.notes.len(), 2, "{:?}", o.notes);
+    assert_eq!(o.problems.len(), 2, "{:?}", o.problems);
   }
 
   #[test]
@@ -618,7 +618,7 @@ networks:
     )
     .replace("    build:\n", "    build: &b\n");
     let (out, o) = run_full(&doc);
-    assert_eq!(out, doc, "{:?} {:?}", o.details, o.notes);
+    assert_eq!(out, doc, "{:?} {:?}", o.details, o.problems);
     let doc = doc.replace("      - ALERTS_RECIPIENTS=c\n", "");
     let (out, o) = run_full(&doc);
     assert!(out.contains("    environment: &env\n"), "{out}");
@@ -626,7 +626,7 @@ networks:
       out.contains("      - ALERTS_EMAIL_PWD=b\n      - ALERTS_RECIPIENTS=[\"jacob.ogden@sweetfiretobacco.com\"]\n"),
       "{out}"
     );
-    assert!(o.notes.is_empty(), "{:?}", o.notes);
+    assert!(o.problems.is_empty(), "{:?}", o.problems);
   }
 
   #[test]
@@ -644,7 +644,7 @@ networks:
       assert!(doc.ends_with(tail), "{doc}");
       let (out, o) = run_full(&doc);
       assert_eq!(out, doc, "{tail}: {:?}", o.details);
-      assert_eq!(o.notes.is_empty(), ok, "{tail}: {:?}", o.notes);
+      assert_eq!(o.problems.is_empty(), ok, "{tail}: {:?}", o.problems);
     }
   }
 
@@ -658,8 +658,8 @@ networks:
     );
     let (out, o) = run_full(&doc);
     assert_eq!(out, doc, "{:?}", o.details);
-    assert_eq!(o.notes.len(), 1, "one note for args, not one per key: {:?}", o.notes);
-    assert!(o.notes[0].contains("build.args is written as a list"), "{:?}", o.notes);
+    assert_eq!(o.problems.len(), 1, "one note for args, not one per key: {:?}", o.problems);
+    assert!(o.problems[0].contains("build.args is written as a list"), "{:?}", o.problems);
   }
 
   #[test]

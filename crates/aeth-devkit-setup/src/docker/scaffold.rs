@@ -179,6 +179,7 @@ mod tests {
       docker_services: vec!["proj".into()],
       docker_legacy_keys: vec![],
       docker_files: false,
+      silence_unlisted_services_warning: false,
     }
   }
 

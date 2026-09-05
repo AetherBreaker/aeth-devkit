@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 
 pub use aeth_devkit_core::paths::strip_verbatim;
 
@@ -28,9 +28,13 @@ pub struct ProjectContext {
   /// Legacy `[tool.docker]` keys still present (`chown_paths`, `mkdirs`); only reported.
   pub docker_legacy_keys: Vec<String>,
   /// A Dockerfile at the root or under `docker/`, or a compose file anywhere docker-pin
-  /// would find one. Seeds the `[tool.docker]` table and drives the "services is empty"
-  /// reminder; never a switch on its own.
+  /// would find one. Seeds the `[tool.docker]` table and drives the unlisted-services
+  /// warning; never a switch on its own.
   pub docker_files: bool,
+  /// `[tool.docker].silence_unlisted_services_warning`: quiets the warning that Docker
+  /// files exist while `services` lists nothing, for projects that keep their own Docker
+  /// setup. Read nowhere else; `services` stays the only functional switch.
+  pub silence_unlisted_services_warning: bool,
   /// Directory holding the Python package: `python` for mixed Rust/Python projects
   /// (where `src/` is Rust), otherwise `src`.
   pub python_dir: String,
@@ -118,6 +122,15 @@ impl ProjectContext {
       .collect();
     let has_docker = !docker_services.is_empty();
     let docker_files = docker_files_in(&root);
+    let silence_unlisted_services_warning = match docker.and_then(|d| d.get("silence_unlisted_services_warning")) {
+      None => false,
+      Some(item) => item.as_bool().ok_or_else(|| {
+        anyhow!(
+          "[tool.docker].silence_unlisted_services_warning must be a boolean, got {}",
+          item.type_name()
+        )
+      })?,
+    };
     let version = doc
       .get("project")
       .and_then(|p| p.get("version"))
@@ -142,6 +155,7 @@ impl ProjectContext {
       docker_services,
       docker_legacy_keys,
       docker_files,
+      silence_unlisted_services_warning,
       python_dir,
       has_rust,
       has_container_crate,

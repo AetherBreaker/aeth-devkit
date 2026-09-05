@@ -218,6 +218,7 @@ mod devkit_bin_tests {
       docker_services: vec![],
       docker_legacy_keys: vec![],
       docker_files: false,
+      silence_unlisted_services_warning: false,
       python_dir: "src".into(),
       has_rust: false,
       has_container_crate: false,
@@ -262,6 +263,7 @@ mod publish_index_tests {
       docker_services: vec![],
       docker_legacy_keys: vec![],
       docker_files: false,
+      silence_unlisted_services_warning: false,
       python_dir: "src".into(),
       has_rust: false,
       has_container_crate: false,
@@ -311,6 +313,7 @@ mod docker_placeholder_tests {
       docker_services: vec!["proj".into()],
       docker_legacy_keys: vec![],
       docker_files: false,
+      silence_unlisted_services_warning: false,
     }
   }
 

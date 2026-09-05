@@ -295,10 +295,12 @@ pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps:
   }
 
   // 14. Obsolete artifacts: reported, never removed.
-  if !ctx.has_docker && ctx.docker_files {
-    changes
-      .notes
-      .push("Docker files found but `[tool.docker].services` is empty; list the app service(s) to manage them.".into());
+  if !ctx.has_docker && ctx.docker_files && !ctx.silence_unlisted_services_warning {
+    changes.notes.push(
+      "Docker files found but no service is listed in `[tool.docker].services`; list the app service(s) to manage \
+       them, or set `[tool.docker].silence_unlisted_services_warning = true` to keep your own Docker setup."
+        .into(),
+    );
   }
   if !ctx.docker_legacy_keys.is_empty() {
     // Any Docker setup at all (services or files) means the table is not junk.

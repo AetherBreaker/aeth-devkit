@@ -45,7 +45,8 @@ second run is a byte-for-byte no-op.
 - **Project discovery** - Detects the package name and layout (`src/` vs `python/`), Rust
   (`Cargo.toml` enables the Rust overlays), Docker (`[tool.docker].services` non-empty
   enables `.dockerignore` and the Docker step; Docker files on disk seed the `[tool.docker]`
-  table with `services = []` and a reminder to list the service), and the declared
+  table with `services = []` and a warning to list the service, silenced by
+  `[tool.docker].silence_unlisted_services_warning = true`, which nothing else reads), and the declared
   dependencies (drives `if-dep` gating). A committing run refuses a `services` value that
   differs from HEAD's: commit it, then rerun.
 - **pyproject merge** - Comment-preserving deep merge of the template into
@@ -97,8 +98,9 @@ second run is a byte-for-byte no-op.
   All compose edits are one diff and one prompt; a listed service missing from the file is
   offered as a scaffold block (`add`). Keys the standard does not name are never touched,
   and a shape the engine does not model (a flow-style `volumes: [...]` / `environment: {...}`,
-  a list-form `build.args`) is judged on its text and reported as a `note:` rather than
-  edited, so the file is never left unparseable.
+  a list-form `build.args`) is judged on its text and reported as a `problem:` rather than
+  edited, so the file is never left unparseable; `--check` exits 1 on any `problem:`, since
+  a listed service declares the file managed.
   `--replace-docker` answers `replace all` up front; adding a listed-but-absent service is
   always asked, never pre-answered. `--dry-run`/`--check` print everything and count Docker
   drift. `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to delete, never
