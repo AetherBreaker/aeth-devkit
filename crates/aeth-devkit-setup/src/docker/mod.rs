@@ -77,16 +77,14 @@ impl<'a> Consent<'a> {
     }
   }
 
-  /// Whether a listed-but-absent service may be scaffolded into the compose file. Without
-  /// a human, `ReplaceAll` can only have come from `--replace-docker` (a prompt cannot
-  /// have upgraded it), and the flag answers `add` so `--check` and `--replace-docker`
-  /// agree in CI; a plain non-tty run records the silent skip so the run's note fires.
+  /// Whether a listed-but-absent service may be scaffolded into the compose file. Adding
+  /// is never pre-answered: `replace all` (and so `--replace-docker`) covers only files
+  /// whose diff was shown, so without a human the skip is recorded and the run's note fires.
   pub fn add(&self, question: &str) -> Result<bool> {
     match self.mode.get() {
       Mode::DryRun => Ok(true), // an intended edit, shown like every other
       _ if self.interactive => Ok(self.prompt.ask(question)? == "add"),
-      Mode::ReplaceAll => Ok(true),
-      Mode::Ask | Mode::KeepAll => {
+      _ => {
         self.declined_silently.set(true);
         Ok(false)
       }
@@ -107,7 +105,7 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, deps: &Deps, changes: &
   if consent.kept_silently() {
     changes
       .notes
-      .push("Docker files were left alone because no terminal was available to confirm; pass --replace-docker to apply them.".into());
+      .push("Docker changes were left alone because no terminal was available to confirm them.".into());
   }
   Ok(())
 }
@@ -255,11 +253,11 @@ mod consent_tests {
     let keep = Consent::new(&p, Mode::KeepAll, false);
     assert!(!keep.replace("a?").unwrap() && !keep.add("b?").unwrap());
     assert!(keep.kept_silently());
-    // --replace-docker without a terminal: the flag stands in for every answer.
+    // `replace all` covers shown diffs only; an add still needs a human.
     let all = Consent::new(&p, Mode::ReplaceAll, false);
     assert!(all.replace("a?").unwrap());
-    assert!(all.add("b?").unwrap());
-    assert!(!all.kept_silently());
+    assert!(!all.add("b?").unwrap());
+    assert!(all.kept_silently());
     assert!(p.asked.borrow().is_empty());
   }
 }
