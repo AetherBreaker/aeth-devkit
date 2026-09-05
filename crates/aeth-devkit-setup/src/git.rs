@@ -18,10 +18,11 @@ use crate::changes::Changes;
 
 pub const COMMIT_SUBJECT: &str = "Standardize project configuration with devkit";
 
-/// Every committable file `setup-project` can write. Static except the Docker pair: the
-/// compose file is wherever docker-pin's discovery finds it (or `docker/compose.yaml` when
-/// it will be created). Env files and `settings.local.json` are intentionally local and
-/// never committed, so they are not listed. Staging a path the project lacks is a no-op.
+/// Every committable file `setup-project` can write. Static except the Docker files: the
+/// templated ones are `static_files::TARGETS`, and the compose file is wherever
+/// docker-pin's discovery finds it (or `docker/compose.yaml` when it will be created). Env
+/// files and `settings.local.json` are intentionally local and never committed, so they
+/// are not listed. Staging a path the project lacks is a no-op.
 pub fn committable(root: &Path) -> Vec<String> {
   let mut out: Vec<String> = [
     "pyproject.toml",
@@ -38,11 +39,11 @@ pub fn committable(root: &Path) -> Vec<String> {
     ".github/workflows/claude.yml",
     ".github/workflows/release.yml",
     ".mcp.json",
-    "docker/Dockerfile",
   ]
   .iter()
   .map(|s| s.to_string())
   .collect();
+  out.extend(crate::docker::static_files::TARGETS.iter().map(|t| format!("docker/{t}")));
   let compose = aeth_devkit_core::compose::find_compose_file(root)
     .ok()
     .flatten()

@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use similar::TextDiff;
 
 use crate::changes::Changes;
@@ -12,21 +12,11 @@ use crate::context::ProjectContext;
 use crate::docker::Consent;
 use crate::templates;
 
-/// Target file name for a template file name, or `None` for files this step does not own:
-/// `template.Dockerfile` → `Dockerfile`, `entrypoint.template.sh` → `entrypoint.sh`;
-/// the compose file (`compose.template.yaml`) has its own rule-based flow.
-pub fn target_name(template_file: &str) -> Option<String> {
-  if template_file == "compose.template.yaml" {
-    return None;
-  }
-  if let Some(rest) = template_file.strip_prefix("template.") {
-    return Some(rest.to_string());
-  }
-  // `x.template.ext` → `x.ext`: split at the *last* `.template.` so a stem containing
-  // the word keeps it.
-  let (stem, ext) = template_file.rsplit_once(".template.")?;
-  Some(format!("{stem}.{ext}"))
-}
+/// The files under `docker/` this step owns, by target name (the compose file has its own
+/// rule-based flow). One list, so `git::committable` stages exactly what is written here:
+/// a file added to the templates but not to this list would be replaced without the
+/// HEAD-reset every other managed file gets, then left out of the commit.
+pub const TARGETS: &[&str] = &["Dockerfile"];
 
 pub fn normalize_newlines(s: &str) -> String {
   s.replace("\r\n", "\n")
@@ -44,18 +34,10 @@ pub fn unified_diff(rel: &str, old: &str, new: &str) -> String {
 }
 
 pub fn apply(ctx: &ProjectContext, templates_dir: &Path, consent: &Consent, changes: &mut Changes) -> Result<()> {
-  let dir = templates_dir.join("docker");
-  let mut targets: Vec<String> = std::fs::read_dir(&dir)
-    .with_context(|| format!("reading {}", dir.display()))?
-    .filter_map(|e| e.ok())
-    .filter(|e| e.path().is_file())
-    .filter_map(|e| target_name(&e.file_name().to_string_lossy()))
-    .collect();
-  targets.sort(); // deterministic prompt order
-  for target in targets {
+  for target in TARGETS {
     let rel = format!("docker/{target}");
     let rendered = templates::load(templates_dir, &rel, ctx, templates::Escape::None)?;
-    let path = ctx.root.join("docker").join(&target);
+    let path = ctx.root.join("docker").join(target);
     let Some(original) = crate::read_optional(&path)? else {
       changes.record_optional(&path, None, &rendered, vec!["created from template".into()])?;
       continue;
@@ -96,11 +78,11 @@ mod tests {
   use super::*;
 
   #[test]
-  fn template_names_map_back_to_targets() {
-    assert_eq!(target_name("template.Dockerfile").as_deref(), Some("Dockerfile"));
-    assert_eq!(target_name("entrypoint.template.sh").as_deref(), Some("entrypoint.sh"));
-    assert_eq!(target_name("compose.template.yaml"), None, "the compose file has its own flow");
-    assert_eq!(target_name("README.md"), None);
+  fn every_managed_docker_file_is_committable() {
+    let committable = crate::git::committable(std::path::Path::new("."));
+    for t in TARGETS {
+      assert!(committable.iter().any(|c| c == &format!("docker/{t}")), "{t}: {committable:?}");
+    }
   }
 
   #[test]
