@@ -82,8 +82,9 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
       let sc_node = tree::descend(sc_lines, sc_svc, &path[..=depth]).expect("scaffold holds every rule path");
       match tree::child(lines, &parent, key) {
         Some(n) if depth + 1 == path.len() => found = Some(n),
-        // `build: .` where a mapping is needed: replace the line with the scaffold block.
-        Some(n) if !n.value.is_empty() => {
+        // `build: .` (or `build: {…}`) where a block mapping is needed: replace the line
+        // with the scaffold block. An anchored block (`build: &b` + children) walks on.
+        Some(n) if n.is_inline() => {
           out.edits.push(Edit::Replace {
             from: n.line,
             to: n.end,
@@ -138,15 +139,26 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
         }
       }
       Kind::VolumeTarget => {
-        let want = tree::list_items(sc_lines, &std)
+        let sc_items = tree::list_items(sc_lines, &std);
+        let want = sc_items
           .first()
           .and_then(|it| tree::item_child(sc_lines, it, "target"))
           .map(|t| t.value)
           .unwrap_or_default();
+        // Short form `source:target[:mode]`; long form has `target` inside the item.
+        let short_form = |text: &str| text.split(':').nth(1) == Some(want.as_str());
         // Flow style (`volumes: [...]`): block items appended under it are not YAML, so
-        // the text decides and a missing mount is left to the user.
-        if !node.value.is_empty() {
-          if !node.value.contains(&want) {
+        // the entries are judged in place and a missing mount is left to the user.
+        if node.is_inline() {
+          let mounted = tree::flow_entries(&node.value).map(|entries| {
+            entries.iter().any(|e| match tree::flow_entries(e) {
+              Some(pairs) => pairs
+                .iter()
+                .any(|p| p.split_once(':').is_some_and(|(k, v)| k.trim() == "target" && v.trim() == want)),
+              None => short_form(e),
+            })
+          });
+          if mounted != Some(true) {
             out.notes.push(format!(
               "{name}: {dotted} is written inline and mounts nothing at {want}; add the bind mount by hand or switch to the block form"
             ));
@@ -154,14 +166,11 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
           continue;
         }
         let items = tree::list_items(lines, &node);
-        let mounted = items.iter().any(|it| {
-          tree::item_child(lines, it, "target").is_some_and(|t| t.value == want)
-            // Short form `source:target[:mode]`.
-            || it.text.split(':').nth(1) == Some(want.as_str())
-        });
+        let mounted = items
+          .iter()
+          .any(|it| tree::item_child(lines, it, "target").is_some_and(|t| t.value == want) || short_form(&it.text));
         if !mounted {
           let indent = items.first().map_or(tree::child_indent(lines, &node), |it| it.indent);
-          let sc_items = tree::list_items(sc_lines, &std);
           let sc_item = &sc_items[0];
           out.edits.push(Edit::Insert {
             at: node.end,
@@ -172,12 +181,23 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
       }
       Kind::EnvKeys => {
         let sc_items = tree::list_items(sc_lines, &std);
-        // Flow style (`environment: {...}`): same rule as volumes.
-        if !node.value.is_empty() {
-          let missing: Vec<&str> = sc_items
+        // `KEY=value` list items; a bare `KEY` has an empty value.
+        let sc_pairs: Vec<(&str, &str)> = sc_items
+          .iter()
+          .map(|it| it.text.split_once('=').unwrap_or((&it.text, "")))
+          .collect();
+        // Flow style (`environment: {...}` or `[...]`): same rule as volumes — the entry
+        // keys are compared exactly, as `K: v` pairs or `K=v` strings.
+        if node.is_inline() {
+          let keys: Vec<String> = tree::flow_entries(&node.value)
+            .unwrap_or_default()
             .iter()
-            .map(|it| it.text.split_once('=').map_or(it.text.as_str(), |(k, _)| k))
-            .filter(|k| !node.value.contains(&format!("{k}=")) && !node.value.contains(&format!("{k}:")))
+            .map(|e| e.split_once([':', '=']).map_or(e.as_str(), |(k, _)| k).trim().to_string())
+            .collect();
+          let missing: Vec<&str> = sc_pairs
+            .iter()
+            .map(|(k, _)| *k)
+            .filter(|k| !keys.iter().any(|have| have == k))
             .collect();
           if !missing.is_empty() {
             out.notes.push(format!(
@@ -194,24 +214,16 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
         let indent = items.first().map_or(tree::child_indent(lines, &node), |it| it.indent);
         let mut added: Vec<String> = Vec::new();
         let mut new_lines: Vec<String> = Vec::new();
-        for it in sc_items {
-          let (key, value) = it.text.split_once('=').unwrap_or((&it.text, ""));
+        for (it, (key, value)) in sc_items.iter().zip(&sc_pairs) {
           if present(key) {
             continue;
           }
           new_lines.push(if map_form {
-            // A mapping value is quoted where a plain scalar would read as something else:
-            // `["a"]` is a sequence, `*x` an alias, ` #` starts a comment, empty is null.
-            let plain = !value.is_empty()
-              && !value.starts_with(['[', '{', '"', '\'', '*', '&', '!', '%', '@', '`', '|', '>', '#', '-', '?', ','])
-              && !value.contains(": ")
-              && !value.contains(" #");
-            let value = if plain {
-              value.to_string()
-            } else {
-              format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-            };
-            format!("{}{key}: {value}", " ".repeat(indent))
+            // Always double-quoted: a plain scalar could read as a sequence (`["a"]`), a
+            // boolean (`no`), a number (`0800`), or a comment (` #`), and quoting is never
+            // wrong for an environment value. Same escapes as `templates::substitute`.
+            let quoted = format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""));
+            format!("{}{key}: {quoted}", " ".repeat(indent))
           } else {
             format!("{}- {}", " ".repeat(indent), it.text)
           });
@@ -229,7 +241,7 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
         let have: Vec<String> = tree::list_items(lines, &node).into_iter().map(|i| i.text).collect();
         let want: Vec<String> = tree::list_items(sc_lines, &std).into_iter().map(|i| i.text).collect();
         // An inline form (`test: ["CMD", …]`) has a value and no items: always a mismatch.
-        if have != want || !node.value.is_empty() {
+        if have != want || node.is_inline() {
           out.edits.push(Edit::Replace {
             from: node.line,
             to: node.end,
@@ -264,6 +276,31 @@ pub fn top_level_edits(lines: &[String], sc_tail: &[String]) -> Outcome {
     return out;
   };
   let sc_coolify = tree::child(sc_tail, &sc_networks, "coolify").expect("template tail has coolify");
+  let sc_external = tree::child(sc_tail, &sc_coolify, "external").expect("template tail has external");
+  // `external: true` inside a flow mapping (`{external: true}`).
+  let flow_external = |value: &str| {
+    tree::flow_entries(value).is_some_and(|pairs| {
+      pairs.iter().any(|p| {
+        p.split_once(':')
+          .is_some_and(|(k, v)| k.trim() == "external" && v.trim() == sc_external.value)
+      })
+    })
+  };
+  // `networks: {coolify: {external: true}}`: nothing can be inserted under an inline
+  // value, so it is judged in place and anything missing is left to the user.
+  if networks.is_inline() {
+    let ok = tree::flow_entries(&networks.value).is_some_and(|entries| {
+      entries
+        .iter()
+        .any(|e| e.split_once(':').is_some_and(|(k, v)| k.trim() == "coolify" && flow_external(v)))
+    });
+    if !ok {
+      out
+        .notes
+        .push("networks is written inline and lacks coolify with external: true; add it by hand or switch to the block form".into());
+    }
+    return out;
+  }
   let Some(coolify) = tree::child(lines, &networks, "coolify") else {
     out.edits.push(Edit::Insert {
       at: networks.end,
@@ -272,7 +309,14 @@ pub fn top_level_edits(lines: &[String], sc_tail: &[String]) -> Outcome {
     out.details.push("added networks.coolify".into());
     return out;
   };
-  let sc_external = tree::child(sc_tail, &sc_coolify, "external").expect("template tail has external");
+  if coolify.is_inline() {
+    if !flow_external(&coolify.value) {
+      out
+        .notes
+        .push("networks.coolify is written inline without external: true; set it by hand or switch to the block form".into());
+    }
+    return out;
+  }
   match tree::child(lines, &coolify, "external") {
     None => {
       out.edits.push(Edit::Insert {
@@ -346,6 +390,7 @@ services:
     let t = top_level_edits(&lines, &split_lines(TAIL));
     o.edits.extend(t.edits);
     o.details.extend(t.details);
+    o.notes.extend(t.notes);
     (apply_edits(doc, &o.edits), o)
   }
 
@@ -479,8 +524,8 @@ networks:
     assert!(details.iter().any(|d| d == "app: replaced build"), "{details:?}");
   }
 
-  /// A service whose only non-standard trait is the shape under test; every other key is
-  /// already compliant so the assertions see one rule at a time.
+  // A service whose only non-standard trait is the shape under test; every other key is
+  // already compliant so the assertions see one rule at a time.
   fn service_with(volumes: &str, environment: &str, args: &str) -> String {
     format!(
       "services:
@@ -516,15 +561,32 @@ networks:
   const ENV_OK: &str = " {ALERTS_EMAIL: a, ALERTS_EMAIL_PWD: b, ALERTS_RECIPIENTS: c}";
 
   #[test]
-  fn inline_volumes_and_environment_are_judged_on_their_text_and_never_edited() {
-    // Compliant flow style: no edit, no note, no false drift.
-    let doc = service_with(" [\"/data/x:/app/persisted_data\"]", ENV_OK, ARGS_OK);
-    let (out, o) = run_full(&doc);
-    assert_eq!(out, doc, "{:?}", o.details);
-    assert!(o.notes.is_empty(), "{:?}", o.notes);
+  fn inline_volumes_and_environment_are_judged_by_their_entries_and_never_edited() {
+    // Compliant flow style, in every spelling: no edit, no note, no false drift.
+    for (volumes, environment) in [
+      (" [\"/data/x:/app/persisted_data\"]", ENV_OK),
+      (
+        " [{type: bind, source: /d, target: /app/persisted_data}]",
+        " {ALERTS_EMAIL : a, ALERTS_EMAIL_PWD : b, ALERTS_RECIPIENTS : c}",
+      ),
+      (
+        " ['/tmp/a:/app/scratch', /d:/app/persisted_data:ro]",
+        " [ALERTS_EMAIL=a, \"ALERTS_EMAIL_PWD=b\", ALERTS_RECIPIENTS=c]",
+      ),
+    ] {
+      let doc = service_with(volumes, environment, ARGS_OK);
+      let (out, o) = run_full(&doc);
+      assert_eq!(out, doc, "{volumes} / {environment}: {:?}", o.details);
+      assert!(o.notes.is_empty(), "{volumes} / {environment}: {:?}", o.notes);
+    }
     // Non-compliant flow style: still no edit (block items under a scalar are not YAML),
-    // but a note naming what is missing.
-    let doc = service_with(" [\"/tmp/a:/app/scratch\"]", " {ALERTS_EMAIL: a}", ARGS_OK);
+    // but a note naming what is missing. Substrings do not count: `/app/persisted_data_old`
+    // is not the target, `OLD_ALERTS_EMAIL` is not `ALERTS_EMAIL`.
+    let doc = service_with(
+      " [\"/tmp/a:/app/persisted_data_old\", \"/app/persisted_data:/backup\"]",
+      " {OLD_ALERTS_EMAIL: a, ALERTS_EMAIL_PWD: b}",
+      ARGS_OK,
+    );
     let (out, o) = run_full(&doc);
     assert_eq!(out, doc, "{:?}", o.details);
     assert_eq!(o.notes.len(), 2, "{:?}", o.notes);
@@ -534,10 +596,56 @@ networks:
       o.notes
     );
     assert!(
-      o.notes[1].contains("environment") && o.notes[1].contains("ALERTS_EMAIL_PWD, ALERTS_RECIPIENTS"),
+      o.notes[1].contains("environment") && o.notes[1].contains("lacks ALERTS_EMAIL, ALERTS_RECIPIENTS"),
       "{:?}",
       o.notes
     );
+    // An anchor or alias is not a flow collection either: noted, never edited.
+    let doc = service_with(" *shared", " *shared", ARGS_OK);
+    let (out, o) = run_full(&doc);
+    assert_eq!(out, doc, "{:?}", o.details);
+    assert_eq!(o.notes.len(), 2, "{:?}", o.notes);
+  }
+
+  #[test]
+  fn an_anchored_block_is_a_block() {
+    // `volumes: &v` + items and `build: &b` + children are walked like any block; the
+    // anchor survives and only the real gaps are filled.
+    let doc = service_with(
+      " &vols\n      - /data/x:/app/persisted_data",
+      " &env\n      - ALERTS_EMAIL=a\n      - ALERTS_EMAIL_PWD=b\n      - ALERTS_RECIPIENTS=c",
+      ARGS_OK,
+    )
+    .replace("    build:\n", "    build: &b\n");
+    let (out, o) = run_full(&doc);
+    assert_eq!(out, doc, "{:?} {:?}", o.details, o.notes);
+    let doc = doc.replace("      - ALERTS_RECIPIENTS=c\n", "");
+    let (out, o) = run_full(&doc);
+    assert!(out.contains("    environment: &env\n"), "{out}");
+    assert!(
+      out.contains("      - ALERTS_EMAIL_PWD=b\n      - ALERTS_RECIPIENTS=[\"jacob.ogden@sweetfiretobacco.com\"]\n"),
+      "{out}"
+    );
+    assert!(o.notes.is_empty(), "{:?}", o.notes);
+  }
+
+  #[test]
+  fn inline_networks_are_judged_in_place() {
+    let block = "\n      - /data/x:/app/persisted_data";
+    for (tail, ok) in [
+      ("networks: {coolify: {external: true}}\n", true),
+      ("networks: {other: {}, coolify: {external: true}}\n", true),
+      ("networks: {coolify: {external: false}}\n", false),
+      ("networks: {other: {external: true}}\n", false),
+      ("networks:\n  coolify: {external: true}\n", true),
+      ("networks:\n  coolify: {internal: true}\n", false),
+    ] {
+      let doc = service_with(block, ENV_OK, ARGS_OK).replace("networks:\n  coolify:\n    external: true\n", tail);
+      assert!(doc.ends_with(tail), "{doc}");
+      let (out, o) = run_full(&doc);
+      assert_eq!(out, doc, "{tail}: {:?}", o.details);
+      assert_eq!(o.notes.is_empty(), ok, "{tail}: {:?}", o.notes);
+    }
   }
 
   #[test]
@@ -555,7 +663,7 @@ networks:
   }
 
   #[test]
-  fn map_form_environment_quotes_values_that_are_not_plain_scalars() {
+  fn map_form_environment_values_are_always_quoted() {
     let doc = service_with(
       "
       - /data/x:/app/persisted_data",
@@ -568,8 +676,8 @@ networks:
       out.contains(
         "    environment:
       FOO: bar
-      ALERTS_EMAIL: info@sweetfiretobacco.com
-      ALERTS_EMAIL_PWD: ${ALERTS_EMAIL_PWD:?}
+      ALERTS_EMAIL: \"info@sweetfiretobacco.com\"
+      ALERTS_EMAIL_PWD: \"${ALERTS_EMAIL_PWD:?}\"
       ALERTS_RECIPIENTS: \"[\\\"jacob.ogden@sweetfiretobacco.com\\\"]\"
 "
       ),

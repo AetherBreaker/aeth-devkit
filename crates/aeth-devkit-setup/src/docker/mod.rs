@@ -35,8 +35,7 @@ pub struct Deps<'a> {
   pub prompt: &'a dyn Prompt,
   pub mode: Mode,
   /// Whether a human can answer the add-service question (stdin is a terminal and this
-  /// is not a dry run). With a human present, `replace all` still asks per service so the
-  /// name is read by someone; without one, `--replace-docker` stands in for the answer.
+  /// is not a dry run); see [`Consent::add`] for what happens without one.
   pub interactive: bool,
 }
 
@@ -142,11 +141,20 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
   // An include-only file, a placeholder, or an unrelated file the tree walk found first:
   // not a reason to abort a run whose Dockerfile is already on disk, so the compose step
   // steps aside and says so.
-  let Some(services) = tree::top_level(&lines, "services") else {
-    changes.notes.push(format!(
-      "{rel} has no top-level `services:` key, so the compose step left it alone; add the app service there by hand, or remove the file to get a scaffold."
-    ));
-    return Ok(());
+  let services = match tree::top_level(&lines, "services") {
+    Some(s) if !s.is_inline() => s,
+    found => {
+      // Still recorded as managed (the gitignore advisory in `lib` reads that list).
+      changes.record_optional(&path, Some(&text), &text, vec![])?;
+      changes.notes.push(if found.is_some() {
+        format!("{rel} writes `services:` inline, which the compose step cannot edit; switch it to the block form.")
+      } else {
+        format!(
+          "{rel} has no top-level `services:` key, so the compose step left it alone; add the app service there by hand, or remove the file to get a scaffold."
+        )
+      });
+      return Ok(());
+    }
   };
   let present = tree::children(&lines, &services);
   let mut edits: Vec<Edit> = Vec::new();
@@ -158,6 +166,12 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
     let sc_services = tree::top_level(&sc_doc, "services").expect("scaffold starts with services:");
     let sc_svc = tree::child(&sc_doc, &sc_services, name).expect("scaffold block names the service");
     match present.iter().find(|n| &n.key == name) {
+      // `app: {image: x}`: nothing can be inserted under it.
+      Some(svc) if svc.is_inline() => {
+        changes.notes.push(format!(
+          "{rel}: service {name} is written inline, which the compose step cannot edit; switch it to the block form."
+        ));
+      }
       Some(svc) => {
         let o = compose_rules::service_edits(&lines, svc, &sc_doc, &sc_svc, name);
         edits.extend(o.edits);
@@ -188,6 +202,7 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
   let o = compose_rules::top_level_edits(&lines, &tree::split_lines(&sc.tail));
   edits.extend(o.edits);
   details.extend(o.details);
+  changes.notes.extend(o.notes);
   if edits.is_empty() {
     changes.record_optional(&path, Some(&text), &text, vec![])?;
     return Ok(());
