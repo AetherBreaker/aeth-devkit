@@ -32,6 +32,9 @@ pub struct ProjectContext {
   pub python_dir: String,
   /// Whether the project also contains a Rust crate (`Cargo.toml` at the root).
   pub has_rust: bool,
+  /// Whether the workspace holds `crates/aeth-devkit-container`: only devkit itself does,
+  /// and only its release workflow may build and attach the container binary.
+  pub has_container_crate: bool,
   /// Name of the sole `[[tool.uv.index]]` with a `publish-url`, which the release workflow
   /// publishes to; `None` means PyPI via trusted publishing.
   pub publish_index: Option<String>,
@@ -56,6 +59,7 @@ impl ProjectContext {
       .unwrap_or_else(|| root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
 
     let has_rust = root.join("Cargo.toml").is_file();
+    let has_container_crate = root.join("crates").join("aeth-devkit-container").join("Cargo.toml").is_file();
     // The workflow publishes to exactly one place; with several candidates any choice is
     // wrong half the time, so it is a configuration error rather than a guess.
     let publish = aeth_devkit_core::pyproject::publish_indexes(&doc)?;
@@ -150,6 +154,7 @@ impl ProjectContext {
       docker_legacy_keys,
       python_dir,
       has_rust,
+      has_container_crate,
       publish_index,
     })
   }

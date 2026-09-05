@@ -74,8 +74,9 @@ run is a byte-for-byte no-op.
   the workflow checks that the release owning the tag is still the one that triggered
   it, so a release deleted and recreated mid-build gets nothing from the old run. The
   first install prints a `note:` with the secret names or the trusted-publisher
-  registration values. The maturin-matrix variant also builds `aeth-devkit-container`
-  per platform (static musl on Linux) and attaches both binaries to the release.
+  registration values. In devkit itself (the `aeth-devkit-container` crate is present) the
+  maturin-matrix variant also builds the container binary per platform (static musl on
+  Linux) and attaches it to the release; a Rust sister project gets the wheels alone.
 - **Claude config** - `.claude/settings.json` (shared, no machine-specific paths) vs
   `settings.local.json` (absolute env paths + hook commands). Hook merge keeps exactly one
   entry per devkit hook, updates it in place, and leaves user hooks alone. `.mcp.json`:
@@ -104,7 +105,7 @@ run is a byte-for-byte no-op.
   `{git_tag}` (latest stable remote tag, resolved lazily, falling back to `v<pyproject
   version>` with a note) and `{service}` are filled per compose scaffold block. YAML
   templates gate blocks with `# setup-project: if-<name>` / `if-no-<name>` … `end` markers
-  (`publish-index`, `aeth-ext`).
+  (`publish-index`, `container-crate`, `aeth-ext`).
 - **Post-apply** - `tombi format` on pyproject (non-fatal), then a quiet auto-commit of
   exactly the changed files (`Standardize project configuration with devkit`, per-file
   body; never env files or `settings.local.json`) via the machinery shared with `lock` and

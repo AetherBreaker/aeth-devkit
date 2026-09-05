@@ -183,7 +183,11 @@ pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps:
       "github/workflows/release.yml"
     };
     let raw = templates::load(templates_dir, template_name, ctx, templates::Escape::None)?;
-    let rendered = templates::gate_publish_index(&raw, ctx.publish_index.is_some());
+    let rendered = templates::gate(&raw, &|name| match name {
+      "publish-index" => ctx.publish_index.is_some(),
+      "container-crate" => ctx.has_container_crate,
+      _ => false,
+    });
     let original = read_optional(&path)?;
     let devkit_owned = original.as_deref().is_some_and(|o| o.starts_with(DEVKIT_WORKFLOW_HEADER));
     let first_install = !devkit_owned;
