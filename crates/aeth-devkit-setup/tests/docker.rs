@@ -271,6 +271,59 @@ fn a_missing_service_is_added_only_on_add_and_sidecars_are_untouched() {
 }
 
 #[test]
+fn replace_docker_without_a_terminal_adds_missing_services_and_keep_all_says_why() {
+  let dir = project(&["demo-app", "worker"], "https://github.com/O/Demo.git");
+  let root = dir.path();
+  write(
+    root,
+    "docker/compose.yaml",
+    "services:
+  demo-app:
+    container_name: demo-app
+",
+  );
+  // Nobody to ask and no flag: nothing added, and the note names the way out.
+  let (changes, prompt, _) = run(root, Mode::KeepAll, false, &[], false);
+  assert!(prompt.asked.borrow().is_empty());
+  assert!(!read(root, "docker/compose.yaml").contains("  worker:"));
+  assert!(changes.notes.iter().any(|n| n.contains("--replace-docker")), "{:?}", changes.notes);
+  // The flag stands in for the answer, so CI's --replace-docker clears what --check reports.
+  let (dry, _, _) = run(root, Mode::DryRun, false, &[], true);
+  assert!(
+    dry.files.iter().any(|f| f.details.iter().any(|d| d == "added service worker")),
+    "{dry:?}"
+  );
+  let (changes, prompt, _) = run(root, Mode::ReplaceAll, false, &[], false);
+  assert!(prompt.asked.borrow().is_empty());
+  assert!(read(root, "docker/compose.yaml").contains(
+    "
+  worker:
+    container_name: worker
+"
+  ));
+  assert!(!changes.notes.iter().any(|n| n.contains("--replace-docker")), "{:?}", changes.notes);
+  assert!(run(root, Mode::DryRun, false, &[], true).0.is_empty(), "--check agrees afterwards");
+}
+
+#[test]
+fn a_compose_file_without_services_is_noted_and_the_run_goes_on() {
+  let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
+  let root = dir.path();
+  let include_only = "include:
+  - path: other.yaml
+";
+  write(root, "docker/compose.yaml", include_only);
+  let (changes, _, _) = run(root, Mode::ReplaceAll, false, &[], false);
+  assert_eq!(read(root, "docker/compose.yaml"), include_only, "left alone");
+  assert!(root.join("docker/Dockerfile").is_file(), "the rest of the Docker step still ran");
+  assert!(
+    changes.notes.iter().any(|n| n.contains("no top-level `services:` key")),
+    "{:?}",
+    changes.notes
+  );
+}
+
+#[test]
 fn stray_entrypoint_files_are_reported_not_deleted() {
   let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
   let root = dir.path();
