@@ -70,6 +70,18 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, co
     // the file is actually written below, so the note waits.
     let mut provisional = None;
     if rendered.contains("{container_version}") {
+      // A Dockerfile that fetches the binary through some other URL shape (a mirror, an
+      // ARG) reads as unpinned, so the template's own pin replaces it in the diff below.
+      // Said out loud: silently swapping someone's pin inside a whole-file diff is the
+      // one part of that diff they are least likely to look for.
+      if original
+        .as_deref()
+        .is_some_and(|o| o.contains("devkit-container") && pinned_container_version(o).is_none())
+      {
+        changes.notes.push(format!(
+          "{rel} fetches devkit-container through a URL devkit does not recognise, so the template's own `container-v<N>` pin is offered in its place; keep the file to stay on yours."
+        ));
+      }
       let version = match original.as_deref().and_then(pinned_container_version) {
         Some(n) => n,
         None => match newest_container_version(runner, &ctx.root) {
@@ -175,6 +187,20 @@ mod tests {
     assert_eq!(newest_container_version(&r, root).unwrap(), None);
     assert!(newest_container_version(&RecordingRunner::new(1), root).is_err());
   }
+  #[test]
+  fn an_unrecognised_pin_is_named_rather_than_swapped_silently() {
+    // The whole-file diff would show the swap, but not that devkit failed to read the
+    // project's own pin; only a file that fetches the binary at all is worth the note.
+    for (text, noted) in [
+      ("ADD https://mirror/devkit-container-x86_64-unknown-linux-musl /app/d\n", true),
+      ("ADD https://x/releases/download/container-v5/devkit-container /app/d\n", false),
+      ("FROM scratch\n", false),
+    ] {
+      let says = text.contains("devkit-container") && pinned_container_version(text).is_none();
+      assert_eq!(says, noted, "{text}");
+    }
+  }
+
   #[test]
   fn diff_names_both_sides_and_ignores_crlf_only_drift() {
     let d = unified_diff("docker/Dockerfile", "a\nb\n", "a\nc\n");
