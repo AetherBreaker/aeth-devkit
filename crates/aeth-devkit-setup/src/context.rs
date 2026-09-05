@@ -102,12 +102,23 @@ impl ProjectContext {
     }
 
     let docker = doc.get("tool").and_then(|t| t.get("docker"));
-    // Only string entries count; a malformed list is treated as empty rather than fatal.
-    let docker_services: Vec<String> = docker
-      .and_then(|d| d.get("services"))
-      .and_then(|s| s.as_array())
-      .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-      .unwrap_or_default();
+    // The only Docker switch, so a value that cannot mean anything is an error: treated as
+    // empty it would silently turn Docker off with no other signal on a fresh project.
+    let docker_services: Vec<String> = match docker.and_then(|d| d.get("services")) {
+      None => Vec::new(),
+      Some(item) => {
+        let strings = item
+          .as_array()
+          .map(|a| a.iter().map(|v| v.as_str().map(str::to_string)).collect::<Option<Vec<_>>>());
+        match strings {
+          Some(Some(list)) => list,
+          _ => bail!(
+            "[tool.docker].services must be an array of service names, got {}",
+            item.to_string().trim()
+          ),
+        }
+      }
+    };
     let docker_legacy_keys: Vec<String> = ["chown_paths", "mkdirs"]
       .into_iter()
       .filter(|k| docker.is_some_and(|d| d.get(k).is_some()))
@@ -261,6 +272,12 @@ mod docker_detection {
     let empty = project("[project]\nname = \"p\"\n[tool.docker]\nservices = []\n", &[]);
     let ctx = ProjectContext::discover(empty.path()).unwrap();
     assert!(!ctx.has_docker && !ctx.docker_files_present());
+    // A value that cannot be a service list is an error, not "no Docker".
+    for bad in ["services = \"p\"", "services = [{ name = \"p\" }]", "services = [\"p\", 1]"] {
+      let dir = project(&format!("[project]\nname = \"p\"\n[tool.docker]\n{bad}\n"), &[]);
+      let err = ProjectContext::discover(dir.path()).unwrap_err().to_string();
+      assert!(err.contains("services must be an array"), "{bad}: {err}");
+    }
   }
 
   #[test]
