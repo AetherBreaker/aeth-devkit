@@ -27,6 +27,26 @@ fn read(root: &Path, rel: &str) -> String {
 }
 
 /// A project resembling IMAPReportCollector with aeth_ext's VS Code files.
+/// [`aeth_devkit_setup::run`] with the Docker step's `gh` lookups answered locally: the
+/// fixture lists a service and ships no Dockerfile, so the container-pin lookup would
+/// otherwise hit GitHub on every first run (and fail without a token in CI).
+fn run(root: &Path, dry_run: bool) -> anyhow::Result<aeth_devkit_setup::changes::Changes> {
+  let runner = aeth_devkit_core::process::RecordingRunner::new(0);
+  runner.script("gh", &["api"], 0, "container-v4\ncontainer-v3\n");
+  let deps = aeth_devkit_setup::docker::Deps {
+    runner: &runner,
+    prompt: &aeth_devkit_core::prompt::ScriptedPrompt::new(&[]),
+    mode: if dry_run {
+      aeth_devkit_setup::docker::Mode::DryRun
+    } else {
+      aeth_devkit_setup::docker::Mode::KeepAll
+    },
+    interactive: false,
+  };
+  let ctx = aeth_devkit_setup::context::ProjectContext::discover(root)?;
+  aeth_devkit_setup::run_with(&ctx, &templates(), dry_run, &deps)
+}
+
 fn make_project() -> tempfile::TempDir {
   let dir = tempfile::tempdir().unwrap();
   let root = dir.path();
@@ -50,7 +70,7 @@ fn applies_and_is_idempotent() {
   let dir = make_project();
   let root = dir.path();
 
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   let changed: Vec<String> = changes
     .files
     .iter()
@@ -150,7 +170,7 @@ fn applies_and_is_idempotent() {
   assert!(read(root, ".dockerignore").contains(".cache/"));
 
   // Second run: nothing changes.
-  let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let again = run(root, false).unwrap();
   assert!(again.is_empty(), "second run should be a no-op, got:\n{}", again.report(root));
 }
 
@@ -159,7 +179,7 @@ fn dry_run_writes_nothing() {
   let dir = make_project();
   let root = dir.path();
   let before = read(root, "pyproject.toml");
-  let changes = aeth_devkit_setup::run(root, &templates(), true).unwrap();
+  let changes = run(root, true).unwrap();
   assert!(!changes.is_empty());
   assert_eq!(read(root, "pyproject.toml"), before);
   assert!(!root.join(".vscode/extensions.json").exists());
@@ -175,7 +195,7 @@ fn uv_init_gitignore_is_replaced_and_mypy_is_conditional() {
     "[project]\n  name = \"demo-app\"\n  version = \"0.1.0\"\n  dependencies = []\n\n[dependency-groups]\n  dev = [\"mypy>=1\"]\n",
   );
   write(root, ".gitignore", &fs::read_to_string(fixtures().join("gitignore-uv")).unwrap());
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   let gi = read(root, ".gitignore");
   assert!(!gi.contains("project-specific"), "{gi}");
   assert!(gi.starts_with("# Byte-compiled"));
@@ -185,7 +205,7 @@ fn uv_init_gitignore_is_replaced_and_mypy_is_conditional() {
   assert!(root.join(".vscode/launch.json").is_file());
   assert!(!root.join(".dockerignore").exists(), "no docker setup → no .dockerignore");
   assert!(!changes.is_empty());
-  assert!(aeth_devkit_setup::run(root, &templates(), false).unwrap().is_empty());
+  assert!(run(root, false).unwrap().is_empty());
 }
 
 #[test]
@@ -201,7 +221,7 @@ fn mixed_rust_python_project_uses_python_dir_and_rust_overlays() {
   write(root, "src/main.rs", "fn main() {}\n");
   write(root, "python/mixed_tool/__init__.py", "");
   write(root, ".gitignore", "# custom\nsecrets/\n");
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  run(root, false).unwrap();
 
   let py = read(root, "pyproject.toml");
   assert!(py.contains("src       = [\"./python\", \"../*/src\", \"../*/python\"]"), "{py}");
@@ -227,7 +247,7 @@ fn mixed_rust_python_project_uses_python_dir_and_rust_overlays() {
     wf.contains("dist/*.whl dist/*.tar.gz"),
     "publish must not feed binaries to uv: {wf}"
   );
-  assert!(aeth_devkit_setup::run(root, &templates(), false).unwrap().is_empty());
+  assert!(run(root, false).unwrap().is_empty());
 }
 
 #[test]
@@ -240,7 +260,7 @@ fn plain_python_project_gets_no_rust_overlays() {
     "[project]\n  name = \"plain\"\n  version = \"0.1.0\"\n  dependencies = []\n",
   );
   write(root, "src/plain/__init__.py", "");
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  run(root, false).unwrap();
   assert!(read(root, "pyproject.toml").contains("src       = [\"./src\", \"../*/src\", \"../*/python\"]"));
   assert!(!read(root, ".vscode/extensions.json").contains("rust-analyzer"));
   assert!(!read(root, ".vscode/settings.json").contains("[rust]"));
@@ -261,7 +281,7 @@ fn commits_only_changed_trackable_files_in_a_git_repo() {
   git(&["add", "unrelated.txt"]);
 
   let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   assert!(aeth_devkit_setup::git::is_git_tracked(root));
   let hash = aeth_devkit_setup::git::commit_changes(root, &changes, &mut bases).unwrap();
   assert!(hash.is_some());
@@ -291,7 +311,7 @@ fn commits_only_changed_trackable_files_in_a_git_repo() {
 
   // Nothing to commit on a second run.
   let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
-  let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let again = run(root, false).unwrap();
   assert!(aeth_devkit_setup::git::commit_changes(root, &again, &mut bases).unwrap().is_none());
 }
 
@@ -308,7 +328,7 @@ fn uncommitted_edits_to_managed_files_stay_out_of_the_commit() {
   write(root, ".gitignore", &format!("{}{user_rule}\n", read(root, ".gitignore")));
 
   let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   let hash = aeth_devkit_setup::git::commit_changes(root, &changes, &mut bases).unwrap();
   assert!(hash.is_some());
 
@@ -374,7 +394,7 @@ fn an_uncommitted_services_change_cancels_a_committing_run() {
     git(root, &["commit", "-q", "-m", "services"]);
     let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
     let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
-    let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+    let changes = run(root, false).unwrap();
     assert!(
       aeth_devkit_setup::git::commit_changes(root, &changes, &mut bases)
         .unwrap()
@@ -392,7 +412,7 @@ fn tool_docker_is_seeded_only_where_docker_files_exist() {
   let root = dir.path();
   write(root, "pyproject.toml", &strip_tool_docker(&read(root, "pyproject.toml")));
   write(root, "docker/Dockerfile", "FROM scratch\n");
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   let py = read(root, "pyproject.toml");
   let doc: toml_edit::DocumentMut = py.parse().unwrap();
   assert!(doc["tool"]["docker"]["services"].as_array().is_some_and(|a| a.is_empty()), "{py}");
@@ -410,11 +430,12 @@ fn tool_docker_is_seeded_only_where_docker_files_exist() {
     "{:?}",
     changes.notes
   );
-  assert!(aeth_devkit_setup::run(root, &templates(), false).unwrap().is_empty());
+  assert!(run(root, false).unwrap().is_empty());
 }
 
 #[test]
 fn a_headless_run_is_refused_unless_it_is_a_dry_run_or_check() {
+  let super_run = run;
   // Only a real process has a non-tty stdin, so this goes through the binary. `--check`
   // on the fixture drifts (exit 1) and a plain run is refused before touching anything
   // (exit 2, the error exit); `--no-commit` and `--replace-docker` are refused the same.
@@ -445,9 +466,14 @@ fn a_headless_run_is_refused_unless_it_is_a_dry_run_or_check() {
     assert!(err.contains("only --dry-run or --check are allowed"), "{flags:?}: {err}");
   }
   assert_eq!(read(root, "pyproject.toml"), before, "nothing touched");
+  // Set up once (in-process, no network), then the headless dry forms are accepted: clean
+  // is 0, a deleted managed file is drift (1 for --check, still 0 for --dry-run).
+  super_run(root, false).unwrap();
+  assert_eq!(run(&["--check"]).0, Some(0));
+  fs::remove_file(root.join(".dockerignore")).unwrap();
   assert_eq!(run(&["--check"]).0, Some(1), "drift is still reported");
   assert_eq!(run(&["--dry-run"]).0, Some(0));
-  assert_eq!(read(root, "pyproject.toml"), before);
+  assert!(!root.join(".dockerignore").exists(), "dry forms write nothing");
 }
 
 #[test]
@@ -458,7 +484,7 @@ fn the_unlisted_services_warning_can_be_silenced() {
   write(root, "docker/Dockerfile", "FROM scratch\n");
   // The warning and the key that quiets it name each other.
   write(root, "pyproject.toml", &py);
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   let warning = changes.notes.iter().find(|n| n.contains("no service is listed")).unwrap();
   assert!(warning.contains("silence_unlisted_services_warning = true"), "{warning}");
   // Set (with the seeded keys kept), the warning is gone and nothing else changes: the key
@@ -468,7 +494,7 @@ fn the_unlisted_services_warning_can_be_silenced() {
     "pyproject.toml",
     &read(root, "pyproject.toml").replace("[tool.docker]\n", "[tool.docker]\n  silence_unlisted_services_warning = true\n"),
   );
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   assert!(
     !changes.notes.iter().any(|n| n.contains("no service is listed")),
     "{:?}",
@@ -483,7 +509,7 @@ fn the_unlisted_services_warning_can_be_silenced() {
       "pyproject.toml",
       &read(root, "pyproject.toml").replace("warning = true", "warning = \"yes\""),
     );
-    aeth_devkit_setup::run(root, &templates(), false).unwrap_err().to_string()
+    run(root, false).unwrap_err().to_string()
   };
   assert!(err.contains("must be a boolean"), "{err}");
 }
@@ -502,10 +528,10 @@ fn check_fails_on_a_compose_file_the_engine_cannot_edit() {
     no_commit: true,
     replace_docker: false,
   };
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  run(root, false).unwrap();
   assert_eq!(aeth_devkit_setup::cli::run(&args(true)).unwrap(), std::process::ExitCode::SUCCESS);
   write(root, "docker/compose.yaml", "services: {imap-report-collector: {image: x}}\n");
-  let changes = aeth_devkit_setup::run(root, &templates(), true).unwrap();
+  let changes = run(root, true).unwrap();
   assert!(changes.is_empty(), "no drift, only a problem: {changes:?}");
   assert_eq!(changes.problems.len(), 1, "{:?}", changes.problems);
   assert_eq!(aeth_devkit_setup::cli::run(&args(true)).unwrap(), std::process::ExitCode::from(1));
@@ -521,7 +547,7 @@ fn replaces_legacy_poe_tasks_include_script() {
   assert!(py.contains("poe_tasks:tasks"), "fixture should start with the legacy include");
   write(root, "pyproject.toml", &py);
 
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  run(root, false).unwrap();
   let out = read(root, "pyproject.toml");
   assert!(!out.contains("poe_tasks:tasks"), "{out}");
   let code: String = out.lines().map(|l| l.split('#').next().unwrap_or("")).collect();
@@ -535,7 +561,7 @@ fn agents_md_gets_a_managed_block_and_keeps_project_text() {
   let root = dir.path();
   write(root, "AGENTS.md", "# My Project\n\nProject-specific notes.\n");
 
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  run(root, false).unwrap();
   let agents = read(root, "AGENTS.md");
   assert!(agents.starts_with("# My Project\n\nProject-specific notes.\n"), "{agents}");
   assert!(
@@ -547,7 +573,7 @@ fn agents_md_gets_a_managed_block_and_keeps_project_text() {
   let has_aeth_ext = read(root, "pyproject.toml").contains("aeth-ext");
   assert_eq!(agents.contains("## Pydantic Dataclass Conventions"), has_aeth_ext, "{agents}");
 
-  let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let again = run(root, false).unwrap();
   assert!(
     !again.files.iter().any(|f| f.path.ends_with("AGENTS.md")),
     "second run must not touch AGENTS.md: {}",
@@ -562,7 +588,7 @@ fn claude_config_files_are_created_and_create_if_missing_ones_are_never_rewritte
   write(root, ".claude/CLAUDE.md", "my own claude notes\n");
   write(root, ".github/workflows/claude.yml", "name: mine\n");
 
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   let report = changes.report(root);
   for rel in [".claude/settings.json", ".claude/settings.local.json", ".mcp.json"] {
     assert!(report.contains(&format!("{rel}: created")), "{report}");
@@ -581,7 +607,7 @@ fn claude_config_files_are_created_and_create_if_missing_ones_are_never_rewritte
   assert!(shared.get("env").is_none(), "env belongs in the local half: {shared}");
   assert_eq!(shared["enabledMcpjsonServers"], serde_json::json!(["github", "context7"]));
 
-  let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let again = run(root, false).unwrap();
   assert!(again.is_empty(), "second run must be a no-op:\n{}", again.report(root));
 }
 
@@ -593,7 +619,7 @@ fn the_committed_settings_carry_no_absolute_or_os_specific_path() {
   let dir = make_project();
   let root = dir.path();
   write(root, ".venv/Scripts/devkit.exe", "");
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  run(root, false).unwrap();
 
   let shared = read(root, ".claude/settings.json");
   let root_str = root.to_string_lossy().replace('\\', "/");
@@ -616,7 +642,7 @@ fn claude_md_and_workflow_are_created_when_missing_and_devkit_bin_prefers_the_ve
   let root = dir.path();
   write(root, ".venv/Scripts/devkit.exe", "");
 
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  run(root, false).unwrap();
   assert!(read(root, ".claude/CLAUDE.md").starts_with("@../AGENTS.md\n"));
   assert!(read(root, ".github/workflows/claude.yml").contains("claude-code-action@v1"));
   let local: serde_json::Value = serde_json::from_str(&read(root, ".claude/settings.local.json")).unwrap();
@@ -628,7 +654,7 @@ fn claude_md_and_workflow_are_created_when_missing_and_devkit_bin_prefers_the_ve
 fn pyproject_gets_sister_src_globs_future_annotations_ban_and_google_docstrings() {
   let dir = make_project();
   let root = dir.path();
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  run(root, false).unwrap();
   let py = read(root, "pyproject.toml");
   let doc: toml_edit::DocumentMut = py.parse().unwrap();
   let ruff = &doc["tool"]["ruff"];
@@ -660,7 +686,7 @@ fn docker_less_project_gets_no_tool_docker_and_no_dockerignore() {
   let dir = make_project();
   let root = dir.path();
   write(root, "pyproject.toml", &strip_tool_docker(&read(root, "pyproject.toml")));
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  run(root, false).unwrap();
   assert!(!read(root, "pyproject.toml").contains("[tool.docker]"));
   assert!(!root.join(".dockerignore").exists());
 }
@@ -687,7 +713,7 @@ fn obsolete_artifacts_are_reported_not_removed() {
     "fixture is expected to carry the table"
   );
 
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   assert!(
     changes.notes.iter().any(|n| n.contains("copilot-instructions.md")),
     "{:?}",
@@ -709,7 +735,7 @@ fn a_gitignored_managed_file_is_reported_and_the_gitignore_is_left_alone() {
   let before = read(root, ".gitignore");
   write(root, ".gitignore", &format!("{before}\n# project rule\n*.json\n"));
 
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   // Step 6 still merges the shipped template into .gitignore — that is the project opting
   // in. What must never appear is a negation reversing a rule the project wrote itself.
   let gi = read(root, ".gitignore");
@@ -740,7 +766,7 @@ fn an_ignored_parent_directory_is_named_as_the_cause() {
   let gi = read(root, ".gitignore");
   write(root, ".gitignore", &format!("{gi}\n# project rule\n.claude/\n"));
 
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   let note = changes
     .notes
     .iter()
@@ -758,12 +784,12 @@ fn a_gitignore_tightened_after_setup_is_still_reported() {
   let dir = make_project();
   let root = dir.path();
   git_init(root);
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  run(root, false).unwrap();
 
   // Now the project tightens its own .gitignore, after everything is already in place.
   let gi = read(root, ".gitignore");
   write(root, ".gitignore", &format!("{gi}\n.claude/\n"));
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
 
   assert!(
     changes.notes.iter().any(|n| n.contains(".claude/settings.json")),
@@ -803,10 +829,10 @@ fn dry_run_reports_exactly_what_a_real_run_writes() {
   }
 
   let before = snapshot(a.path());
-  let dry = aeth_devkit_setup::run(a.path(), &templates(), true).unwrap();
+  let dry = run(a.path(), true).unwrap();
   assert_eq!(snapshot(a.path()), before, "--dry-run must not write anything");
 
-  let real = aeth_devkit_setup::run(b.path(), &templates(), false).unwrap();
+  let real = run(b.path(), false).unwrap();
 
   fn rels(c: &aeth_devkit_setup::changes::Changes, root: &Path) -> Vec<String> {
     // `run` records paths under the *canonicalized* root, which on Windows need not be the
@@ -860,7 +886,7 @@ fn commit_works_when_the_caller_spells_the_root_differently() {
 
   let odd_root = root.join("src").join("..");
   let mut bases = aeth_devkit_setup::git::stage_bases(&odd_root).unwrap();
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   let hash = aeth_devkit_setup::git::commit_changes(&odd_root, &changes, &mut bases).unwrap();
   assert!(hash.is_some(), "a differently-spelled root must still commit the managed files");
 }
@@ -869,7 +895,7 @@ fn commit_works_when_the_caller_spells_the_root_differently() {
 fn release_workflow_is_installed_and_replaced_on_drift() {
   let dir = make_project();
   let root = dir.path();
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   let wf = read(root, ".github/workflows/release.yml");
   // The fixture is a pure-Python project with one publish index (SFTPyPI).
   assert!(wf.contains("uv publish --index SFTPyPI dist/*"), "{wf}");
@@ -888,23 +914,23 @@ fn release_workflow_is_installed_and_replaced_on_drift() {
 
   // Devkit-owned: a hand edit is put back, and it counts as a change (so `--check` fails).
   write(root, ".github/workflows/release.yml", "name: mine\n");
-  let changes = aeth_devkit_setup::run(root, &templates(), true).unwrap();
+  let changes = run(root, true).unwrap();
   assert!(changes.files.iter().any(|f| f.path.ends_with("release.yml")), "{:?}", changes.files);
   assert_eq!(
     read(root, ".github/workflows/release.yml"),
     "name: mine\n",
     "dry run must not write"
   );
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  run(root, false).unwrap();
   assert_eq!(read(root, ".github/workflows/release.yml"), wf);
   // The secrets note is for the first install only.
-  let again = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let again = run(root, false).unwrap();
   assert!(again.notes.iter().all(|n| !n.contains("UV_INDEX_")), "{:?}", again.notes);
 
   // Replacing a workflow the project wrote itself introduces the credential requirement
   // just like an install into an empty project, so the note is printed again.
   write(root, ".github/workflows/release.yml", "name: mine\n");
-  let replaced = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let replaced = run(root, false).unwrap();
   assert!(
     replaced.notes.iter().any(|n| n.contains("UV_INDEX_SFTPYPI_USERNAME")),
     "{:?}",
@@ -918,7 +944,7 @@ fn release_workflow_uses_pypi_when_no_index_publishes() {
   let root = dir.path();
   let py = read(root, "pyproject.toml").replace("publish-url", "x-publish-url");
   write(root, "pyproject.toml", &py);
-  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let changes = run(root, false).unwrap();
   let wf = read(root, ".github/workflows/release.yml");
   assert!(wf.contains("uv publish --trusted-publishing always dist/*"), "{wf}");
   assert!(wf.contains("id-token: write"), "{wf}");
@@ -938,7 +964,7 @@ fn rust_projects_get_the_maturin_matrix_workflow() {
   let dir = make_project();
   let root = dir.path();
   write(root, "Cargo.toml", "[package]\nname = \"x\"\nversion = \"0.1.0\"\n");
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  run(root, false).unwrap();
   let wf = read(root, ".github/workflows/release.yml");
   assert!(wf.contains("PyO3/maturin-action@v1"), "{wf}");
   assert!(

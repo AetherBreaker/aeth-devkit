@@ -97,7 +97,7 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
         Some(n) => parent = n,
         None => {
           // `args:` holding `- GIT_TAG=v1`: the parent is a sequence, and a mapping line
-          // spliced into it is not YAML. Settled so sibling rules do not repeat the note.
+          // spliced into it is not YAML. Settled so sibling rules do not repeat the problem.
           if !tree::list_items(lines, &parent).is_empty() {
             let at = path[..depth].join(".");
             out.problems.push(format!(
@@ -562,7 +562,7 @@ networks:
 
   #[test]
   fn inline_volumes_and_environment_are_judged_by_their_entries_and_never_edited() {
-    // Compliant flow style, in every spelling: no edit, no note, no false drift.
+    // Compliant flow style, in every spelling: no edit, no problem, no false drift.
     for (volumes, environment) in [
       (" [\"/data/x:/app/persisted_data\"]", ENV_OK),
       (
@@ -580,7 +580,7 @@ networks:
       assert!(o.problems.is_empty(), "{volumes} / {environment}: {:?}", o.problems);
     }
     // Non-compliant flow style: still no edit (block items under a scalar are not YAML),
-    // but a note naming what is missing. Substrings do not count: `/app/persisted_data_old`
+    // but a problem naming what is missing. Substrings do not count: `/app/persisted_data_old`
     // is not the target, `OLD_ALERTS_EMAIL` is not `ALERTS_EMAIL`.
     let doc = service_with(
       " [\"/tmp/a:/app/persisted_data_old\", \"/app/persisted_data:/backup\"]",
@@ -649,7 +649,7 @@ networks:
   }
 
   #[test]
-  fn a_list_form_parent_gets_one_note_instead_of_mapping_lines() {
+  fn a_list_form_parent_gets_one_problem_instead_of_mapping_lines() {
     let doc = service_with(
       "
       - /data/x:/app/persisted_data",
@@ -658,7 +658,7 @@ networks:
     );
     let (out, o) = run_full(&doc);
     assert_eq!(out, doc, "{:?}", o.details);
-    assert_eq!(o.problems.len(), 1, "one note for args, not one per key: {:?}", o.problems);
+    assert_eq!(o.problems.len(), 1, "one problem for args, not one per key: {:?}", o.problems);
     assert!(o.problems[0].contains("build.args is written as a list"), "{:?}", o.problems);
   }
 
