@@ -248,8 +248,8 @@ rendered it. No Python runs in the image outside the app itself.
   `999:999`; `setgroups([])`, `setgid`, `setuid`; `exec /app/.venv/bin/<script>`. `/app`
   itself stays root-owned: the app writes only to its mounted dirs or temp dirs. Entries
   that are empty, `.`, `..`, absolute or escape `/app` are errors; a table still carrying
-  `chown_paths`/`mkdirs` without `required_persisted_dirs` is refused with the migration
-  hint. Flags `--pyproject`, `--app-root`, `--mountinfo` exist for tests.
+  `chown_paths`/`mkdirs` (with or without `required_persisted_dirs`) is refused with the
+  migration hint. Flags `--pyproject`, `--app-root`, `--mountinfo` exist for tests.
 
 ### `devkit release-and-pin`
 

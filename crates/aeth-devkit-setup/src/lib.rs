@@ -304,7 +304,7 @@ pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps:
     };
     changes.notes.push(format!(
       "pyproject.toml [tool.docker] still has {}: fold `chown_paths` into `required_persisted_dirs`, move any `mkdirs` \
-       scratch directories to temp dirs, and delete both keys; the entrypoint no longer reads them{tail}",
+       scratch directories to temp dirs, and delete both keys; the entrypoint refuses to start while they remain{tail}",
       ctx.docker_legacy_keys.join(" and ")
     ));
   }
