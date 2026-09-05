@@ -195,7 +195,13 @@ on the line.
   an edit nor rewritten to LF) → annotated tag → one atomic `git push` of branch + tag →
   `gh release create` with the notes (or `--generate-notes`) and no files → wait for the
   release workflow run (`gh run list` until a run that did not exist before the release
-  appears, up to 120 s, then `gh run watch --exit-status`; a watcher that dies — Ctrl-C, API blip — while the
+  appears, up to 120 s, then a live view of it polled from `gh run view --json status,conclusion,jobs`
+  every 5 s: the jobs are laid out in side-by-side columns, each column holding its own steps, so a
+  frame is as tall as the longest job rather than the sum of every job's steps, and each refresh is
+  drawn over the last one in the terminal's *normal* buffer — unlike `gh run watch`, which takes over
+  the alternate buffer, where there is no scrollback and anything past the terminal's height is
+  unreachable. A frame that still does not fit is appended rather than repainted, so it stays
+  scrollable, and a failed run names the job and step in full underneath. A watch that ends before the run does — Ctrl-C, or an API that stayed unreadable for 120 s — while the
   run is still going cancels the run and waits for it to stop, so nothing is published
   after the rollback, and a Ctrl-C that lands once the release exists does the same; a
   run that will not stop, or runs that cannot be listed at all, leave the release in
