@@ -10,6 +10,7 @@ use anyhow::{Context as _, Result, bail};
 use clap::Parser;
 use toml_edit::DocumentMut;
 
+use aeth_devkit_core::compose::tree::{self, Edit};
 use aeth_devkit_core::compose::{self, PinKind};
 use aeth_devkit_core::index::IndexClient;
 use aeth_devkit_core::paths::strip_verbatim;
@@ -147,7 +148,7 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
   );
 
   // --- Report and short-circuit. ---
-  let mut edits: Vec<(usize, String)> = Vec::new();
+  let mut edits: Vec<Edit> = Vec::new();
   for t in &targets {
     let new = value_for(t.kind);
     let already = parse_lenient(&t.current).is_some_and(|v| v == resolved.version);
@@ -159,7 +160,7 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
       if already { " (already pinned)" } else { "" },
     );
     if !already {
-      edits.push((t.line, new));
+      edits.push(Edit::SetValue { line: t.line, value: new });
     }
   }
   if edits.is_empty() {
@@ -184,7 +185,7 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
   }
 
   let message = format!("chore: pin {package} to {display}");
-  let pinned_text = compose::apply_pins(&base_text, &edits);
+  let pinned_text = tree::apply_edits(&base_text, &edits);
 
   if will_commit && dirty {
     // Commit the pin against HEAD's copy; the user's uncommitted edits ride on top.

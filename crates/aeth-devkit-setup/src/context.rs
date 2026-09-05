@@ -110,18 +110,16 @@ impl ProjectContext {
     // empty it would silently turn Docker off with no other signal on a fresh project.
     let docker_services: Vec<String> = match docker.and_then(|d| d.get("services")) {
       None => Vec::new(),
-      Some(item) => {
-        let strings = item
-          .as_array()
-          .map(|a| a.iter().map(|v| v.as_str().map(str::to_string)).collect::<Option<Vec<_>>>());
-        match strings {
-          Some(Some(list)) => list,
-          _ => bail!(
+      // `and_then` flattens "not an array" and "an array with a non-string" into one `None`.
+      Some(item) => item
+        .as_array()
+        .and_then(|a| a.iter().map(|v| v.as_str().map(str::to_string)).collect())
+        .with_context(|| {
+          format!(
             "[tool.docker].services must be an array of service names, got {}",
             item.to_string().trim()
-          ),
-        }
-      }
+          )
+        })?,
     };
     let docker_legacy_keys: Vec<String> = ["chown_paths", "mkdirs"]
       .into_iter()
