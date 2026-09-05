@@ -33,8 +33,9 @@ pub fn template_file_name(target: &str) -> String {
 
 /// Read a template (by its target name, e.g. `pyproject.toml`) and substitute
 /// `{project_root}` / `{package}` / `{python_dir}` / `{devkit_bin}` / `{publish_index}` /
-/// `{publish_index_key}` / `{devkit_version}` / `{git_repo}`. `{git_tag}` and `{service}`
-/// are deliberately left in place for the Docker scaffold, which fills them per block.
+/// `{publish_index_key}` / `{git_repo}`. `{git_tag}` and `{service}` are deliberately left
+/// in place for the Docker scaffold, which fills them per block, as is
+/// `{container_version}` for the Dockerfile step, which reads the project's pin first.
 pub fn load(templates_dir: &Path, name: &str, ctx: &ProjectContext, escape: Escape) -> Result<String> {
   let path = templates_dir.join(template_file_name(name));
   let text = std::fs::read_to_string(&path).with_context(|| format!("reading template {}", path.display()))?;
@@ -75,7 +76,6 @@ pub fn substitute(text: &str, ctx: &ProjectContext, escape: Escape) -> String {
           .unwrap_or_default(),
       ),
     )
-    .replace("{devkit_version}", env!("CARGO_PKG_VERSION"))
     .replace("{git_repo}", &esc(&git_repo(ctx)))
 }
 
@@ -221,7 +221,6 @@ mod devkit_bin_tests {
       silence_unlisted_services_warning: false,
       python_dir: "src".into(),
       has_rust: false,
-      has_container_crate: false,
       publish_index: None,
     }
   }
@@ -266,7 +265,6 @@ mod publish_index_tests {
       silence_unlisted_services_warning: false,
       python_dir: "src".into(),
       has_rust: false,
-      has_container_crate: false,
       publish_index: publish_index.map(str::to_string),
     }
   }
@@ -305,7 +303,6 @@ mod docker_placeholder_tests {
       has_docker: true,
       python_dir: "src".into(),
       has_rust: false,
-      has_container_crate: false,
       publish_index: None,
       name: "proj".into(),
       version: Some("1.2.3".into()),
@@ -334,17 +331,11 @@ mod docker_placeholder_tests {
   #[test]
   fn docker_placeholders_substitute_except_the_lazy_ones() {
     let out = substitute(
-      "{devkit_version} {git_repo} {git_tag} {service} {python_dir}",
+      "{container_version} {git_repo} {git_tag} {service} {python_dir}",
       &ctx(Some("https://github.com/o/r.git")),
       Escape::None,
     );
-    assert_eq!(
-      out,
-      format!(
-        "{} https://github.com/o/r.git {{git_tag}} {{service}} src",
-        env!("CARGO_PKG_VERSION")
-      )
-    );
+    assert_eq!(out, "{container_version} https://github.com/o/r.git {git_tag} {service} src");
   }
 
   #[test]

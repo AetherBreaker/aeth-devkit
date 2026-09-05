@@ -216,11 +216,10 @@ fn mixed_rust_python_project_uses_python_dir_and_rust_overlays() {
   let gi = read(root, ".gitignore");
   assert!(gi.contains("*.pdb"), "rust overlay must be merged: {gi}");
   assert!(gi.contains("secrets/"), "{gi}");
-  // A Rust sister project has no `aeth-devkit-container` crate: its workflow must not try
-  // to build one, and the toolchain line must not end in a dangling comma.
+  // The container binary is devkit's own release stream (`.github/workflows/devkit-container.yml`
+  // in devkit, not a template), so no rendered release workflow mentions it.
   let wf = read(root, ".github/workflows/release.yml");
-  assert!(!wf.contains("aeth-devkit-container"), "{wf}");
-  assert!(!wf.contains("container_target"), "{wf}");
+  assert!(!wf.contains("container"), "{wf}");
   assert!(wf.contains("targets: ${{ matrix.target }}\n"), "{wf}");
   assert!(wf.contains("name: Wheel (${{ matrix.target }})"), "{wf}");
   assert!(!wf.contains("setup-project:"), "markers must not leak: {wf}");
@@ -229,21 +228,6 @@ fn mixed_rust_python_project_uses_python_dir_and_rust_overlays() {
     "publish must not feed binaries to uv: {wf}"
   );
   assert!(aeth_devkit_setup::run(root, &templates(), false).unwrap().is_empty());
-
-  // devkit itself: the crate exists, so the container binary is built and attached.
-  write(
-    root,
-    "crates/aeth-devkit-container/Cargo.toml",
-    "[package]\nname = \"aeth-devkit-container\"\n",
-  );
-  aeth_devkit_setup::run(root, &templates(), false).unwrap();
-  let wf = read(root, ".github/workflows/release.yml");
-  assert!(wf.contains("cargo build --release -p aeth-devkit-container --target"), "{wf}");
-  assert!(wf.contains("container_target: x86_64-unknown-linux-musl"), "{wf}");
-  assert!(wf.contains("container_target: x86_64-pc-windows-msvc"), "{wf}");
-  assert!(wf.contains("targets: ${{ matrix.target }},${{ matrix.container_target }}"), "{wf}");
-  assert!(wf.contains("name: container-${{ matrix.target }}"), "{wf}");
-  assert!(!wf.contains("setup-project:"), "markers must not leak: {wf}");
 }
 
 #[test]

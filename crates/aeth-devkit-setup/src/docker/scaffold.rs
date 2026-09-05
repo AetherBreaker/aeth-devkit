@@ -171,7 +171,6 @@ mod tests {
       has_docker: true,
       python_dir: "src".into(),
       has_rust: false,
-      has_container_crate: false,
       publish_index: None,
       name: "proj".into(),
       version: Some("1.2.3".into()),

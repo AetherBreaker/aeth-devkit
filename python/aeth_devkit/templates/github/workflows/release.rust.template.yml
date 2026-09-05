@@ -1,8 +1,7 @@
 # Installed and kept current by `devkit setup-project`; edits are replaced on the next run.
 # Triggered by `devkit release`, which creates the GitHub release with no assets and then
 # waits for this workflow to build, attach and publish them. Wheels are built per platform
-# with maturin (plus the `devkit-container` entrypoint binary, static musl on Linux, where
-# the crate exists); every artefact is attached and published from one job, so a partial
+# with maturin; every artefact is attached and published from one job, so a partial
 # publish can only follow a complete build.
 name: Release
 
@@ -26,12 +25,7 @@ env:
 
 jobs:
   build:
-    # setup-project: if-container-crate
-    name: Wheel + container (${{ matrix.target }})
-    # setup-project: end
-    # setup-project: if-no-container-crate
     name: Wheel (${{ matrix.target }})
-    # setup-project: end
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
@@ -39,18 +33,9 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            # setup-project: if-container-crate
-            container_target: x86_64-pc-windows-msvc
-            exe: .exe
-            # setup-project: end
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: "2_17"
-            # setup-project: if-container-crate
-            # The container binary is fully static so the image needs no runtime libs.
-            container_target: x86_64-unknown-linux-musl
-            exe: ""
-            # setup-project: end
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,12 +44,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          # setup-project: if-container-crate
-          targets: ${{ matrix.target }},${{ matrix.container_target }}
-          # setup-project: end
-          # setup-project: if-no-container-crate
           targets: ${{ matrix.target }}
-          # setup-project: end
 
       - uses: astral-sh/setup-uv@v5
 
@@ -81,30 +61,11 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
           args: --release --strip --out dist
 
-      # setup-project: if-container-crate
-      # The container entrypoint, named by target so the Dockerfile's ADD URL is stable.
-      - name: Build the container entrypoint binary
-        shell: bash
-        run: |
-          cargo build --release -p aeth-devkit-container --target "${{ matrix.container_target }}"
-          mkdir -p dist
-          cp "target/${{ matrix.container_target }}/release/devkit-container${{ matrix.exe }}" \
-             "dist/devkit-container-${{ matrix.container_target }}${{ matrix.exe }}"
-      # setup-project: end
-
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.target }}
           path: dist/*.whl
           if-no-files-found: error
-      # setup-project: if-container-crate
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: container-${{ matrix.target }}
-          path: dist/devkit-container-*
-          if-no-files-found: error
-      # setup-project: end
 
   sdist:
     runs-on: ubuntu-latest

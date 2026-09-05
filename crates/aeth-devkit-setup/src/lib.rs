@@ -185,7 +185,6 @@ pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps:
     let raw = templates::load(templates_dir, template_name, ctx, templates::Escape::None)?;
     let rendered = templates::gate(&raw, &|name| match name {
       "publish-index" => ctx.publish_index.is_some(),
-      "container-crate" => ctx.has_container_crate,
       _ => false,
     });
     let original = read_optional(&path)?;

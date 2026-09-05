@@ -201,7 +201,6 @@ mod tests {
       silence_unlisted_services_warning: false,
       python_dir: "src".into(),
       has_rust: false,
-      has_container_crate: false,
       publish_index: None,
     }
   }
