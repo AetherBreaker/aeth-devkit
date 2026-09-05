@@ -79,9 +79,8 @@ second run is a byte-for-byte no-op.
   the workflow checks that the release owning the tag is still the one that triggered
   it, so a release deleted and recreated mid-build gets nothing from the old run. The
   first install prints a `note:` with the secret names or the trusted-publisher
-  registration values. In devkit itself (the `aeth-devkit-container` crate is present) the
-  maturin-matrix variant also builds the container binary per platform (static musl on
-  Linux) and attaches it to the release; a Rust sister project gets the wheels alone.
+  registration values. The `devkit-container` binary is not part of this workflow: devkit
+  releases it on its own tag stream (see **`devkit-container`** below).
 - **Claude config** - `.claude/settings.json` (shared, no machine-specific paths) vs
   `settings.local.json` (absolute env paths + hook commands). Hook merge keeps exactly one
   entry per devkit hook, updates it in place, and leaves user hooks alone. `.mcp.json`:
@@ -106,12 +105,14 @@ second run is a byte-for-byte no-op.
   drift. `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to delete, never
   removed.
 - **Placeholders** - `{project_root}`, `{package}`, `{python_dir}`, `{devkit_bin}`,
-  `{publish_index}`, `{publish_index_key}`, `{devkit_version}`, `{git_repo}` with
-  per-format escaping; `{devkit_bin}` prefers the venv binary over `uv run devkit`;
-  `{git_tag}` (latest stable remote tag, resolved lazily, falling back to `v<pyproject
-  version>` with a note) and `{service}` are filled per compose scaffold block. YAML
-  templates gate blocks with `# setup-project: if-<name>` / `if-no-<name>` … `end` markers
-  (`publish-index`, `container-crate`, `aeth-ext`).
+  `{publish_index}`, `{publish_index_key}`, `{git_repo}` with per-format escaping;
+  `{devkit_bin}` prefers the venv binary over `uv run devkit`; `{git_tag}` (latest stable
+  remote tag, resolved lazily, falling back to `v<pyproject version>` with a note) and
+  `{service}` are filled per compose scaffold block; `{container_version}` in the
+  Dockerfile keeps the project's existing `container-v<N>` pin and resolves a missing one
+  to devkit's newest `container-v*` tag (provisionally `1`, with a note, when that cannot be
+  read). YAML templates gate blocks with `# setup-project: if-<name>` / `if-no-<name>` …
+  `end` markers (`publish-index`, `aeth-ext`).
 - **Post-apply** - `tombi format` on pyproject (non-fatal), then a quiet auto-commit of
   exactly the changed files (`Standardize project configuration with devkit`, per-file
   body; never env files or `settings.local.json`) via the machinery shared with `lock` and
@@ -240,10 +241,15 @@ no push), `--no-push`, `-c/--compose-file`, `--root`.
 
 ### `devkit-container`
 
-A separate static binary (crate `aeth-devkit-container`, release assets
-`devkit-container-x86_64-unknown-linux-musl` and `devkit-container-x86_64-pc-windows-msvc.exe`)
-that the templated Dockerfile downloads at build time, pinned to the devkit version that
-rendered it. No Python runs in the image outside the app itself.
+A separate static binary (crate `aeth-devkit-container`) that the templated Dockerfile
+downloads at build time. It has its own release stream: `.github/workflows/devkit-container.yml`
+runs on every devkit release and, when `crates/aeth-devkit-container/` or `Cargo.lock`
+changed since the previous `container-v<N>` tag, publishes `container-v<N+1>` with the
+assets `devkit-container-x86_64-unknown-linux-musl` and
+`devkit-container-x86_64-pc-windows-msvc.exe`. A Dockerfile therefore pins a container
+build, not a devkit version, and drifts only when the binary changed; setup-project fills a
+missing pin and never advances an existing one (that is a future command's job, see
+TODO.md). No Python runs in the image outside the app itself.
 
 - `app-extra` - prints `--extra app` when `[project.optional-dependencies].app` exists.
 - `readme` - prints `project.readme` (string or `{ file = … }` form).

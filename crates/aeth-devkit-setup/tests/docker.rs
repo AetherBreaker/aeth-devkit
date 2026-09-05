@@ -53,6 +53,13 @@ fn run(root: &Path, mode: Mode, interactive: bool, answers: &[&str], dry_run: bo
   let prompt = ScriptedPrompt::new(answers);
   let runner = RecordingRunner::new(0);
   runner.script("gh", &["api"], 0, "v1.1.0\nv1.0.0\n");
+  // Newest registration wins: devkit's own tags answer the container-pin lookup.
+  runner.script(
+    "gh",
+    &["api", "repos/AetherBreaker/aeth-devkit/tags"],
+    0,
+    "v9.1.0\ncontainer-v3\ncontainer-v2\n",
+  );
   let changes = {
     let deps = Deps {
       runner: &runner,
@@ -74,12 +81,10 @@ fn fresh_project_gets_dockerfile_and_compose_then_is_idempotent() {
   assert!(prompt.asked.borrow().is_empty(), "creation never prompts");
   let df = read(root, "docker/Dockerfile");
   assert!(
-    df.contains(&format!(
-      "/v{}/devkit-container-x86_64-unknown-linux-musl",
-      env!("CARGO_PKG_VERSION")
-    )),
-    "{df}"
+    df.contains("/container-v3/devkit-container-x86_64-unknown-linux-musl"),
+    "newest container tag: {df}"
   );
+  assert!(!df.contains("{container_version}"), "{df}");
   assert!(df.contains("mv /tmp/repo/src /app/src"), "{df}");
   assert!(!df.contains("gosu"), "{df}");
   let compose = read(root, "docker/compose.yaml");
@@ -92,12 +97,70 @@ fn fresh_project_gets_dockerfile_and_compose_then_is_idempotent() {
     "aeth-ext dependency: {compose}"
   );
   assert!(compose.ends_with("networks:\n  coolify:\n    external: true\n"), "{compose}");
-  assert_eq!(runner.calls_for("gh").len(), 1);
+  assert_eq!(runner.calls_for("gh").len(), 2, "one lookup each for the container pin and GIT_TAG");
   assert!(changes.files.iter().any(|f| f.path.ends_with("compose.yaml") && f.created));
 
   let (again, _, runner) = run(root, Mode::Ask, true, &[], false);
   assert!(again.is_empty(), "{}", again.report(root));
-  assert!(runner.calls_for("gh").is_empty(), "a routine run never resolves the tag");
+  assert!(
+    runner.calls_for("gh").is_empty(),
+    "a routine run resolves neither the pin nor the tag"
+  );
+}
+
+#[test]
+fn an_existing_container_pin_is_kept_and_a_missing_one_is_filled() {
+  let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
+  let root = dir.path();
+  run(root, Mode::Ask, true, &[], false);
+  let df = read(root, "docker/Dockerfile");
+  // An older pin is not drift: advancing it is a separate command's job.
+  write(root, "docker/Dockerfile", &df.replace("container-v3", "container-v1"));
+  let (changes, prompt, runner) = run(root, Mode::Ask, true, &[], false);
+  assert!(changes.is_empty(), "{}", changes.report(root));
+  assert!(prompt.asked.borrow().is_empty());
+  assert!(runner.calls_for("gh").is_empty(), "{:?}", runner.calls_for("gh"));
+  assert!(read(root, "docker/Dockerfile").contains("container-v1/"), "kept");
+  // Other drift is still shown, with the kept pin on the template side of the diff.
+  write(
+    root,
+    "docker/Dockerfile",
+    &read(root, "docker/Dockerfile").replace("PYTHONOPTIMIZE=1", "PYTHONOPTIMIZE=2"),
+  );
+  let (changes, prompt, _) = run(root, Mode::Ask, true, &["replace"], false);
+  assert_eq!(prompt.asked.borrow().len(), 1);
+  assert!(!changes.is_empty());
+  let df = read(root, "docker/Dockerfile");
+  assert!(df.contains("container-v1/") && df.contains("PYTHONOPTIMIZE=1"), "{df}");
+  // A Dockerfile from before the tag stream has no pin: the lookup fills it (as drift).
+  write(root, "docker/Dockerfile", &df.replace("container-v1/", "v9.0.0/"));
+  let (changes, _, runner) = run(root, Mode::Ask, true, &["replace"], false);
+  assert!(!changes.is_empty());
+  assert_eq!(runner.calls_for("gh").len(), 1);
+  assert!(read(root, "docker/Dockerfile").contains("container-v3/"));
+}
+
+#[test]
+fn without_devkit_tags_the_pin_is_provisional_and_noted() {
+  let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
+  let root = dir.path();
+  let prompt = ScriptedPrompt::new(&[]);
+  let runner = RecordingRunner::new(0);
+  runner.script("gh", &["api"], 0, "v1.1.0\n");
+  let deps = Deps {
+    runner: &runner,
+    prompt: &prompt,
+    mode: Mode::Ask,
+    interactive: true,
+  };
+  let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
+  let changes = aeth_devkit_setup::run_with(&ctx, &templates(), false, &deps).unwrap();
+  assert!(read(root, "docker/Dockerfile").contains("/container-v1/"));
+  assert!(
+    changes.notes.iter().any(|n| n.contains("container-v1 provisionally")),
+    "{:?}",
+    changes.notes
+  );
 }
 
 #[test]

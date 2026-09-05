@@ -100,7 +100,7 @@ impl<'a> Consent<'a> {
 /// Everything Docker: static files first, then the compose file, then advisories.
 pub fn apply(ctx: &ProjectContext, templates_dir: &Path, deps: &Deps, changes: &mut Changes) -> Result<()> {
   let consent = Consent::new(deps.prompt, deps.mode, deps.interactive);
-  static_files::apply(ctx, templates_dir, &consent, changes)?;
+  static_files::apply(ctx, templates_dir, deps.runner, &consent, changes)?;
   compose(ctx, templates_dir, deps.runner, &consent, changes)?;
   if consent.kept_silently() {
     changes
