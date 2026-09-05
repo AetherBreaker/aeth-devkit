@@ -178,6 +178,7 @@ mod tests {
       origin: origin.map(str::to_string),
       docker_services: vec!["proj".into()],
       docker_legacy_keys: vec![],
+      docker_files: false,
     }
   }
 

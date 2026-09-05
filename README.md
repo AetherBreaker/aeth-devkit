@@ -42,8 +42,10 @@ run is a byte-for-byte no-op.
 
 - **Project discovery** - Detects the package name and layout (`src/` vs `python/`), Rust
   (`Cargo.toml` enables the Rust overlays), Docker (`[tool.docker].services` non-empty
-  enables `.dockerignore`, `[tool.docker]`, and the Docker step), and the declared
-  dependencies (drives `if-dep` gating).
+  enables `.dockerignore` and the Docker step; Docker files on disk seed the `[tool.docker]`
+  table with `services = []` and a reminder to list the service), and the declared
+  dependencies (drives `if-dep` gating). A committing run refuses a `services` value that
+  differs from HEAD's: commit it, then rerun.
 - **pyproject merge** - Comment-preserving deep merge of the template into
   `pyproject.toml` — scalars replace, arrays union, dependency arrays match by normalized
   package name so pins upgrade in place, `[tool.setup-project].keep` opts paths out,

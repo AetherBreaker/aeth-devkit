@@ -7,7 +7,7 @@ design exists. Check items off in place; delete them once released.
 
 - [ ] Sister-project Docker migration (after the first devkit release that ships
       `devkit-container`): in each of aeth_ext, IMAPReportCollector, ScheduledInvoiceProcessor,
-      ScheduledReportAggregator — add `[tool.docker].services = ["<service>"]`, run
+      ScheduledReportAggregator — add `[tool.docker].services = ["<service>"]`, commit it, run
       `poe setup-project` (answer `replace` for the Dockerfile, review the compose diff),
       fold `chown_paths` into `required_persisted_dirs`, delete `chown_paths`/`mkdirs`,
       delete `docker/entrypoint.sh` and `docker/scripts/`, then `poe docker-pin`.

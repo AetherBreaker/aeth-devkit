@@ -15,7 +15,7 @@ pub struct ProjectContext {
   /// Normalized names of every declared dependency (runtime, optional, and groups).
   pub dependencies: HashSet<String>,
   /// Whether `[tool.docker].services` lists at least one service — the only Docker
-  /// switch. Docker files alone do not count (see `docker_files_present`).
+  /// switch. Docker files alone do not count (see `docker_files`).
   pub has_docker: bool,
   /// `[project].name` as written (dist name; `package` is the import name).
   pub name: String,
@@ -27,6 +27,10 @@ pub struct ProjectContext {
   pub docker_services: Vec<String>,
   /// Legacy `[tool.docker]` keys still present (`chown_paths`, `mkdirs`); only reported.
   pub docker_legacy_keys: Vec<String>,
+  /// A Dockerfile at the root or under `docker/`, or a compose file anywhere docker-pin
+  /// would find one. Seeds the `[tool.docker]` table and drives the "services is empty"
+  /// reminder; never a switch on its own.
+  pub docker_files: bool,
   /// Directory holding the Python package: `python` for mixed Rust/Python projects
   /// (where `src/` is Rust), otherwise `src`.
   pub python_dir: String,
@@ -106,27 +110,14 @@ impl ProjectContext {
     }
 
     let docker = doc.get("tool").and_then(|t| t.get("docker"));
-    // The only Docker switch, so a value that cannot mean anything is an error: treated as
-    // empty it would silently turn Docker off with no other signal on a fresh project.
-    let docker_services: Vec<String> = match docker.and_then(|d| d.get("services")) {
-      None => Vec::new(),
-      // `and_then` flattens "not an array" and "an array with a non-string" into one `None`.
-      Some(item) => item
-        .as_array()
-        .and_then(|a| a.iter().map(|v| v.as_str().map(str::to_string)).collect())
-        .with_context(|| {
-          format!(
-            "[tool.docker].services must be an array of service names, got {}",
-            item.to_string().trim()
-          )
-        })?,
-    };
+    let docker_services = services_key(&doc)?.unwrap_or_default();
     let docker_legacy_keys: Vec<String> = ["chown_paths", "mkdirs"]
       .into_iter()
       .filter(|k| docker.is_some_and(|d| d.get(k).is_some()))
       .map(str::to_string)
       .collect();
     let has_docker = !docker_services.is_empty();
+    let docker_files = docker_files_in(&root);
     let version = doc
       .get("project")
       .and_then(|p| p.get("version"))
@@ -150,6 +141,7 @@ impl ProjectContext {
       origin,
       docker_services,
       docker_legacy_keys,
+      docker_files,
       python_dir,
       has_rust,
       has_container_crate,
@@ -167,27 +159,47 @@ impl ProjectContext {
     self.has_dependency("aeth-ext") || normalize_dist_name(&self.name) == "aeth-ext"
   }
 
-  /// A Dockerfile at the root or under `docker/`, or a compose file anywhere docker-pin
-  /// would find one. Used only for the "services is empty but files exist" advisory.
-  pub fn docker_files_present(&self) -> bool {
-    let dockerfile_in = |dir: &Path| {
-      std::fs::read_dir(dir)
-        .map(|rd| {
-          rd.flatten()
-            .any(|e| e.path().is_file() && e.file_name().to_string_lossy().starts_with("Dockerfile"))
-        })
-        .unwrap_or(false)
-    };
-    dockerfile_in(&self.root)
-      || dockerfile_in(&self.root.join("docker"))
-      || aeth_devkit_core::compose::find_compose_file(&self.root).ok().flatten().is_some()
-  }
-
   /// Replace `${workspaceFolder}` with the project root and normalize separators.
   pub fn resolve_workspace_var(&self, value: &str) -> PathBuf {
     let replaced = value.replace("${workspaceFolder}", &self.root.to_string_lossy());
     PathBuf::from(replaced.replace('/', std::path::MAIN_SEPARATOR_STR))
   }
+}
+
+/// `[tool.docker].services` as written: `None` when the key is absent. The only Docker
+/// switch, so a value that cannot mean anything is an error: treated as empty it would
+/// silently turn Docker off with no other signal. `cli` compares HEAD's against the
+/// working copy's with this same reading.
+pub fn services_key(doc: &toml_edit::DocumentMut) -> Result<Option<Vec<String>>> {
+  let Some(item) = doc.get("tool").and_then(|t| t.get("docker")).and_then(|d| d.get("services")) else {
+    return Ok(None);
+  };
+  // `and_then` flattens "not an array" and "an array with a non-string" into one `None`.
+  item
+    .as_array()
+    .and_then(|a| a.iter().map(|v| v.as_str().map(str::to_string)).collect())
+    .map(Some)
+    .with_context(|| {
+      format!(
+        "[tool.docker].services must be an array of service names, got {}",
+        item.to_string().trim()
+      )
+    })
+}
+
+/// See `ProjectContext::docker_files`.
+fn docker_files_in(root: &Path) -> bool {
+  let dockerfile_in = |dir: &Path| {
+    std::fs::read_dir(dir)
+      .map(|rd| {
+        rd.flatten()
+          .any(|e| e.path().is_file() && e.file_name().to_string_lossy().starts_with("Dockerfile"))
+      })
+      .unwrap_or(false)
+  };
+  dockerfile_in(root)
+    || dockerfile_in(&root.join("docker"))
+    || aeth_devkit_core::compose::find_compose_file(root).ok().flatten().is_some()
 }
 
 /// The sole package directory under `dir` (has `__init__.py`), if unambiguous.
@@ -270,11 +282,11 @@ mod docker_detection {
     let files = project("[project]\nname = \"p\"\n", &["docker/Dockerfile", "docker/compose.yaml"]);
     let ctx = ProjectContext::discover(files.path()).unwrap();
     assert!(!ctx.has_docker);
-    // …but the advisory needs to know they exist.
-    assert!(ctx.docker_files_present());
+    // …but the seed and the advisory need to know they exist.
+    assert!(ctx.docker_files);
     let empty = project("[project]\nname = \"p\"\n[tool.docker]\nservices = []\n", &[]);
     let ctx = ProjectContext::discover(empty.path()).unwrap();
-    assert!(!ctx.has_docker && !ctx.docker_files_present());
+    assert!(!ctx.has_docker && !ctx.docker_files);
     // A value that cannot be a service list is an error, not "no Docker".
     for bad in ["services = \"p\"", "services = [{ name = \"p\" }]", "services = [\"p\", 1]"] {
       let dir = project(&format!("[project]\nname = \"p\"\n[tool.docker]\n{bad}\n"), &[]);

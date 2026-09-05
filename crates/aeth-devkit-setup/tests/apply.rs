@@ -338,86 +338,39 @@ fn uncommitted_edits_to_managed_files_stay_out_of_the_commit() {
 }
 
 #[test]
-fn an_uncommitted_services_switch_is_honoured_on_a_committing_run() {
-  let dir = make_project();
-  let root = dir.path();
-  let git = |args: &[&str]| git(root, args);
-  // HEAD is a sister project before migration: a [tool.docker] with the legacy keys and no
-  // `services`. The user adds `services` and runs setup-project without committing first —
-  // the documented migration flow.
-  let with_services = read(root, "pyproject.toml");
-  let services_line = "  services    = [\"imap-report-collector\"]
-";
-  assert!(with_services.contains(services_line), "{with_services}");
-  write(root, "pyproject.toml", &with_services.replace(services_line, ""));
-  git_init(root);
-  git(&["add", "-A"]);
-  git(&["commit", "-q", "-m", "init"]);
-  write(root, "pyproject.toml", &with_services);
-
-  // The cli's order: discover, stage, run.
-  let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
-  assert!(ctx.has_docker, "discovery must see the working copy");
-  let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
-  let deps = aeth_devkit_setup::docker::Deps {
-    runner: &aeth_devkit_core::process::SystemRunner,
-    prompt: &aeth_devkit_core::prompt::StdinPrompt,
-    mode: aeth_devkit_setup::docker::Mode::KeepAll,
-    interactive: false,
-  };
-  let changes = aeth_devkit_setup::run_with(&ctx, &templates(), false, &deps).unwrap();
-  assert!(
-    aeth_devkit_setup::git::commit_changes(root, &changes, &mut bases)
-      .unwrap()
-      .is_some()
-  );
-
-  let committed = git(&["show", "--name-only", "--format=", "HEAD"]);
-  assert!(committed.contains("docker/Dockerfile"), "{committed}");
-  assert!(committed.contains("docker/compose.yaml"), "{committed}");
-  // The user's switch is back in the working copy, still theirs to commit.
-  let py = read(root, "pyproject.toml");
-  assert!(py.contains(services_line), "{py}");
-  // A duplicate `services` key (one seeded by the template, one the user's) would fail to
-  // parse; the template must never seed the switch the user just set.
-  let doc: toml_edit::DocumentMut = py.parse().unwrap_or_else(|e| {
-    panic!(
-      "{e}
-{py}"
-    )
-  });
-  assert_eq!(doc["tool"]["docker"]["services"].as_array().unwrap().len(), 1);
-  assert!(doc["tool"]["docker"].get("required_persisted_dirs").is_some(), "{py}");
-  assert!(
-    !changes.notes.iter().any(|n| n.contains("services` is empty")),
-    "{:?}",
-    changes.notes
-  );
-}
-
-#[test]
-fn a_tool_docker_table_that_only_the_working_copy_has_runs_without_a_commit() {
-  // HEAD has no [tool.docker]; the user adds one (with `services`) uncommitted. Merging the
-  // template's table into HEAD and replaying the user's table on top would conflict or
-  // leave two tables, so the cli merges into the working copy and commits nothing.
-  for at_end in [true, false] {
+fn an_uncommitted_services_change_cancels_a_committing_run() {
+  // The committing run merges into HEAD's pyproject but takes the switch from the working
+  // copy, so a `services` that differs between the two is refused before anything is
+  // staged: the user commits it and reruns. Three shapes: the key added to an existing
+  // table, the whole table added (at the end and mid-file), and the value changed.
+  let fixture = read(make_project().path(), "pyproject.toml");
+  let services_line = "  services    = [\"imap-report-collector\"]\n";
+  assert!(fixture.contains(services_line), "{fixture}");
+  let no_key = fixture.replace(services_line, "");
+  let no_table = strip_tool_docker(&fixture);
+  let table = "[tool.docker]\n  services = [\"imap-report-collector\"]\n";
+  for (head, edited) in [
+    (no_key.clone(), fixture.clone()),
+    (no_table.clone(), format!("{no_table}\n{table}")),
+    (
+      no_table.clone(),
+      no_table.replacen("[tool.pytest", &format!("{table}\n[tool.pytest"), 1),
+    ),
+    (
+      fixture.replace("imap-report-collector\"]", "imap-report-collector\", \"worker\"]"),
+      fixture.clone(),
+    ),
+    (fixture.clone(), fixture.replace(services_line, "  services    = []\n")),
+  ] {
+    assert_ne!(head, edited);
     let dir = make_project();
     let root = dir.path();
-    let without = strip_tool_docker(&read(root, "pyproject.toml"));
-    write(root, "pyproject.toml", &without);
+    write(root, "pyproject.toml", &head);
     git_init(root);
     git(root, &["add", "-A"]);
     git(root, &["commit", "-q", "-m", "init"]);
-    let table = "[tool.docker]\n  services = [\"imap-report-collector\"]\n";
-    let edited = if at_end {
-      format!("{without}\n{table}")
-    } else {
-      without.replacen("[tool.pytest", &format!("{table}\n[tool.pytest"), 1)
-    };
-    assert_ne!(edited, without, "at_end={at_end}");
     write(root, "pyproject.toml", &edited);
-
-    let code = aeth_devkit_setup::cli::run(&aeth_devkit_setup::cli::Args {
+    let err = aeth_devkit_setup::cli::run(&aeth_devkit_setup::cli::Args {
       root: root.to_path_buf(),
       templates_dir: Some(templates()),
       dry_run: false,
@@ -425,19 +378,55 @@ fn a_tool_docker_table_that_only_the_working_copy_has_runs_without_a_commit() {
       no_commit: false,
       replace_docker: false,
     })
-    .unwrap();
-    assert_eq!(code, std::process::ExitCode::SUCCESS, "at_end={at_end}");
-    assert_eq!(
-      git(root, &["rev-list", "--count", "HEAD"]),
-      "1",
-      "nothing committed (at_end={at_end})"
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("services is not committed"), "{err}");
+    assert_eq!(read(root, "pyproject.toml"), edited, "nothing touched");
+    assert!(!root.join("docker/Dockerfile").exists());
+    assert_eq!(git(root, &["rev-list", "--count", "HEAD"]), "1");
+    // Committed, the same run goes through and the Docker step runs (or not) as the
+    // committed switch says.
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "services"]);
+    let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
+    let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
+    let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+    assert!(
+      aeth_devkit_setup::git::commit_changes(root, &changes, &mut bases)
+        .unwrap()
+        .is_some()
     );
-    let py = read(root, "pyproject.toml");
-    let doc: toml_edit::DocumentMut = py.parse().unwrap_or_else(|e| panic!("at_end={at_end}: {e}\n{py}"));
-    assert_eq!(doc["tool"]["docker"]["services"].as_array().unwrap().len(), 1, "{py}");
-    assert!(doc["tool"]["docker"].get("required_persisted_dirs").is_some(), "{py}");
-    assert!(root.join("docker/Dockerfile").is_file(), "the Docker step ran (at_end={at_end})");
+    assert_eq!(root.join("docker/Dockerfile").is_file(), ctx.has_docker);
   }
+}
+
+#[test]
+fn tool_docker_is_seeded_only_where_docker_files_exist() {
+  // Docker files but no table: both keys are seeded, `services` stays empty, nothing
+  // Docker-specific runs, and the reminder to list the service fires.
+  let dir = make_project();
+  let root = dir.path();
+  write(root, "pyproject.toml", &strip_tool_docker(&read(root, "pyproject.toml")));
+  write(root, "docker/Dockerfile", "FROM scratch\n");
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let py = read(root, "pyproject.toml");
+  let doc: toml_edit::DocumentMut = py.parse().unwrap();
+  assert!(doc["tool"]["docker"]["services"].as_array().is_some_and(|a| a.is_empty()), "{py}");
+  assert!(doc["tool"]["docker"].get("required_persisted_dirs").is_some(), "{py}");
+  assert!(!py.contains("setup-project:"), "markers must not leak: {py}");
+  assert_eq!(
+    read(root, "docker/Dockerfile"),
+    "FROM scratch\n",
+    "not managed until a service is listed"
+  );
+  assert!(!root.join("docker/compose.yaml").exists());
+  assert!(!root.join(".dockerignore").exists());
+  assert!(
+    changes.notes.iter().any(|n| n.contains("services` is empty")),
+    "{:?}",
+    changes.notes
+  );
+  assert!(aeth_devkit_setup::run(root, &templates(), false).unwrap().is_empty());
 }
 
 #[test]
@@ -587,8 +576,6 @@ fn docker_less_project_gets_no_tool_docker_and_no_dockerignore() {
   let dir = make_project();
   let root = dir.path();
   write(root, "pyproject.toml", &strip_tool_docker(&read(root, "pyproject.toml")));
-  // Docker files without `[tool.docker].services` must not count either.
-  write(root, "docker/Dockerfile", "FROM scratch\n");
   aeth_devkit_setup::run(root, &templates(), false).unwrap();
   assert!(!read(root, "pyproject.toml").contains("[tool.docker]"));
   assert!(!root.join(".dockerignore").exists());
