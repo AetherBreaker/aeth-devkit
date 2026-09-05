@@ -95,9 +95,9 @@ run is a byte-for-byte no-op.
   and a shape the engine does not model (a flow-style `volumes: [...]` / `environment: {...}`,
   a list-form `build.args`) is judged on its text and reported as a `note:` rather than
   edited, so the file is never left unparseable.
-  `--replace-docker` answers `replace all` up front; without a terminal every answer is
-  "keep" and a `note:` says so; `--dry-run`/`--check` print everything and count Docker
-  drift. `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to delete, never
+  `--replace-docker` answers `replace all` up front and, without a terminal, `add` as well
+  (so `--check` and `--replace-docker` agree in CI); without either, every answer is "keep"
+  and a `note:` says so; `--dry-run`/`--check` print everything and count Docker drift. `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to delete, never
   removed.
 - **Placeholders** - `{project_root}`, `{package}`, `{python_dir}`, `{devkit_bin}`,
   `{publish_index}`, `{publish_index_key}`, `{devkit_version}`, `{git_repo}` with

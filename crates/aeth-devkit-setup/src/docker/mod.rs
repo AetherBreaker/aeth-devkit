@@ -8,7 +8,7 @@ pub mod static_files;
 use std::cell::Cell;
 use std::path::Path;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 
 use aeth_devkit_core::process::Runner;
 use aeth_devkit_core::prompt::Prompt;
@@ -35,8 +35,8 @@ pub struct Deps<'a> {
   pub prompt: &'a dyn Prompt,
   pub mode: Mode,
   /// Whether a human can answer the add-service question (stdin is a terminal and this
-  /// is not a dry run). `replace all` never adds a service: a typo in pyproject must not
-  /// grow the compose file without someone reading the service name.
+  /// is not a dry run). With a human present, `replace all` still asks per service so the
+  /// name is read by someone; without one, `--replace-docker` stands in for the answer.
   pub interactive: bool,
 }
 
@@ -78,15 +78,20 @@ impl<'a> Consent<'a> {
     }
   }
 
-  /// Whether a listed-but-absent service may be scaffolded into the compose file.
+  /// Whether a listed-but-absent service may be scaffolded into the compose file. Without
+  /// a human, `ReplaceAll` can only have come from `--replace-docker` (a prompt cannot
+  /// have upgraded it), and the flag answers `add` so `--check` and `--replace-docker`
+  /// agree in CI; a plain non-tty run records the silent skip so the run's note fires.
   pub fn add(&self, question: &str) -> Result<bool> {
-    if self.mode.get() == Mode::DryRun {
-      return Ok(true); // an intended edit, shown like every other
+    match self.mode.get() {
+      Mode::DryRun => Ok(true), // an intended edit, shown like every other
+      _ if self.interactive => Ok(self.prompt.ask(question)? == "add"),
+      Mode::ReplaceAll => Ok(true),
+      Mode::Ask | Mode::KeepAll => {
+        self.declined_silently.set(true);
+        Ok(false)
+      }
     }
-    if !self.interactive {
-      return Ok(false);
-    }
-    Ok(self.prompt.ask(question)? == "add")
   }
 
   /// A change was kept only because nobody could be asked.
@@ -134,8 +139,14 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
     .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
   let text = std::fs::read_to_string(&path).with_context(|| format!("reading {rel}"))?;
   let lines = tree::split_lines(&text);
+  // An include-only file, a placeholder, or an unrelated file the tree walk found first:
+  // not a reason to abort a run whose Dockerfile is already on disk, so the compose step
+  // steps aside and says so.
   let Some(services) = tree::top_level(&lines, "services") else {
-    bail!("{rel} has no top-level `services:` key");
+    changes.notes.push(format!(
+      "{rel} has no top-level `services:` key, so the compose step left it alone; add the app service there by hand, or remove the file to get a scaffold."
+    ));
+    return Ok(());
   };
   let present = tree::children(&lines, &services);
   let mut edits: Vec<Edit> = Vec::new();
@@ -187,11 +198,12 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
     "Apply these edits to {rel}? [replace / replace all / anything else keeps it]:"
   ))? {
     changes.record_optional(&path, Some(&text), &new_text, details)?;
-    changes.notes.extend(tag.note());
   } else {
     changes.record_optional(&path, Some(&text), &text, vec![])?;
     println!("Kept {rel}.");
   }
+  // The note explains the value in the diff the user just saw, whichever way they answered.
+  changes.notes.extend(tag.note());
   Ok(())
 }
 
@@ -228,10 +240,11 @@ mod consent_tests {
     let keep = Consent::new(&p, Mode::KeepAll, false);
     assert!(!keep.replace("a?").unwrap() && !keep.add("b?").unwrap());
     assert!(keep.kept_silently());
-    // --replace-docker without a terminal: files replaced, services never added.
+    // --replace-docker without a terminal: the flag stands in for every answer.
     let all = Consent::new(&p, Mode::ReplaceAll, false);
     assert!(all.replace("a?").unwrap());
-    assert!(!all.add("b?").unwrap());
+    assert!(all.add("b?").unwrap());
+    assert!(!all.kept_silently());
     assert!(p.asked.borrow().is_empty());
   }
 }
