@@ -25,31 +25,22 @@ pub const TARGETS: &[&str] = &["Dockerfile"];
 pub const DEVKIT_REPO: &str = "AetherBreaker/aeth-devkit";
 
 /// The `N` of a `container-v<N>` pin in a Dockerfile's download URL, if it has one.
+/// Comment lines are skipped so a commented-out `ADD` above the live one is not the pin.
 pub fn pinned_container_version(dockerfile: &str) -> Option<u64> {
   let re = regex::Regex::new(r"releases/download/container-v(\d+)/").expect("static regex");
-  re.captures(dockerfile).and_then(|c| c[1].parse().ok())
+  dockerfile
+    .lines()
+    .filter(|l| !l.trim_start().starts_with('#'))
+    .find_map(|l| re.captures(l).and_then(|c| c[1].parse().ok()))
 }
 
-/// `{container_version}` for a Dockerfile without a pin: the newest `container-v*` tag on
-/// devkit's repository, or provisionally `1` (the tag the first container release makes)
-/// with a note when the tags cannot be read. An existing pin never reaches here: it is
-/// kept as is, and advancing it is a separate command's job (see TODO.md), so a routine
-/// run never talks to `gh` for the Dockerfile.
-fn resolve_container_version(runner: &dyn Runner, root: &Path, notes: &mut Vec<String>) -> String {
-  let fall_back = |why: String, notes: &mut Vec<String>| {
-    notes.push(format!(
-      "devkit-container pinned to container-v1 provisionally ({why}); the next devkit release creates that tag."
-    ));
-    "1".to_string()
-  };
-  let tags = match github::list_tags(runner, root, DEVKIT_REPO) {
-    Ok(t) => t,
-    Err(e) => return fall_back(format!("{e:#}"), notes),
-  };
-  match tags.iter().filter_map(|t| t.strip_prefix("container-v")?.parse::<u64>().ok()).max() {
-    Some(n) => n.to_string(),
-    None => fall_back("no container-v* tag on the devkit repository yet".into(), notes),
-  }
+/// The newest `container-v*` tag on devkit's repository, `None` before the first
+/// container release. A lookup error is an error: guessing a pin here would write a real
+/// but possibly stale tag that no later run revisits (an existing pin is kept as is, and
+/// advancing it is a separate command's job, see TODO.md).
+fn newest_container_version(runner: &dyn Runner, root: &Path) -> Result<Option<u64>> {
+  let tags = github::list_tags(runner, root, DEVKIT_REPO)?;
+  Ok(tags.iter().filter_map(|t| t.strip_prefix("container-v")?.parse::<u64>().ok()).max())
 }
 
 pub fn normalize_newlines(s: &str) -> String {
@@ -73,15 +64,38 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, co
     let mut rendered = templates::load(templates_dir, &rel, ctx, templates::Escape::None)?;
     let path = ctx.root.join("docker").join(target);
     let original = crate::read_optional(&path)?;
+    // `{container_version}`: the file's own pin when it carries the template's URL shape
+    // (no `gh` on a routine run); otherwise devkit's newest container tag, or `1` before
+    // the first container release exists. That provisional pin is only worth a note if
+    // the file is actually written below, so the note waits.
+    let mut provisional = None;
     if rendered.contains("{container_version}") {
       let version = match original.as_deref().and_then(pinned_container_version) {
-        Some(n) => n.to_string(),
-        None => resolve_container_version(runner, &ctx.root, &mut changes.notes),
+        Some(n) => n,
+        None => match newest_container_version(runner, &ctx.root) {
+          Ok(Some(n)) => n,
+          Ok(None) => {
+            provisional = Some(
+              "devkit-container pinned to container-v1 provisionally (no container-v* tag on the devkit repository yet); the next devkit release creates that tag.",
+            );
+            1
+          }
+          Err(e) => {
+            changes.problems.push(format!(
+              "{rel} was left alone: devkit's container releases could not be read to pin one ({e:#}); rerun with `gh` working."
+            ));
+            if let Some(original) = &original {
+              changes.record_optional(&path, Some(original), original, vec![])?;
+            }
+            continue;
+          }
+        },
       };
-      rendered = rendered.replace("{container_version}", &version);
+      rendered = rendered.replace("{container_version}", &version.to_string());
     }
     let Some(original) = original else {
       changes.record_optional(&path, None, &rendered, vec!["created from template".into()])?;
+      changes.notes.extend(provisional.map(str::to_string));
       continue;
     };
     if normalize_newlines(&original) == normalize_newlines(&rendered) {
@@ -92,6 +106,7 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, co
     println!("{}", unified_diff(&rel, &original, &rendered));
     if consent.replace(&format!("Replace {rel}? [replace / replace all / anything else keeps it]:"))? {
       changes.record_optional(&path, Some(&original), &rendered, vec!["replaced with the devkit template".into()])?;
+      changes.notes.extend(provisional.map(str::to_string));
     } else {
       changes.record_optional(&path, Some(&original), &original, vec![])?;
       println!("Kept {rel}.");
@@ -128,7 +143,7 @@ mod tests {
   }
 
   #[test]
-  fn the_pin_is_read_from_the_download_url_only() {
+  fn the_pin_is_read_from_a_live_download_url_only() {
     assert_eq!(
       pinned_container_version("ADD https://x/releases/download/container-v12/devkit-container-x86_64-unknown-linux-musl /app/d\n"),
       Some(12)
@@ -137,33 +152,29 @@ mod tests {
       pinned_container_version("ADD https://x/releases/download/v9.0.0/devkit-container /app/d\n"),
       None
     );
-    assert_eq!(pinned_container_version("# container-v3 in a comment is not a pin\n"), None);
+    assert_eq!(
+      pinned_container_version(
+        "# ADD https://x/releases/download/container-v2/d /app/d\nADD https://x/releases/download/container-v5/d /app/d\n"
+      ),
+      Some(5),
+      "a commented-out ADD is not the pin"
+    );
   }
 
   #[test]
-  fn a_missing_pin_takes_the_newest_container_tag_or_one_provisionally() {
+  fn the_newest_container_tag_is_numeric_and_a_lookup_failure_is_an_error() {
     use aeth_devkit_core::process::RecordingRunner;
     let root = std::path::Path::new(".");
     let r = RecordingRunner::new(0);
     r.script("gh", &["api"], 0, "v9.1.0\ncontainer-v3\ncontainer-v10\nv9.0.0\n");
-    let mut notes = Vec::new();
-    assert_eq!(resolve_container_version(&r, root, &mut notes), "10", "numeric, not lexical");
-    assert!(notes.is_empty());
+    assert_eq!(newest_container_version(&r, root).unwrap(), Some(10), "numeric, not lexical");
     let args = &r.calls_for("gh")[0];
     assert!(args.iter().any(|a| a == "repos/AetherBreaker/aeth-devkit/tags"), "{args:?}");
     let r = RecordingRunner::new(0);
     r.script("gh", &["api"], 0, "v9.0.0\n");
-    assert_eq!(resolve_container_version(&r, root, &mut notes), "1");
-    assert!(
-      notes[0].contains("provisionally") && notes[0].contains("no container-v* tag"),
-      "{notes:?}"
-    );
-    let r = RecordingRunner::new(1);
-    notes.clear();
-    assert_eq!(resolve_container_version(&r, root, &mut notes), "1");
-    assert!(notes[0].contains("gh api"), "{notes:?}");
+    assert_eq!(newest_container_version(&r, root).unwrap(), None);
+    assert!(newest_container_version(&RecordingRunner::new(1), root).is_err());
   }
-
   #[test]
   fn diff_names_both_sides_and_ignores_crlf_only_drift() {
     let d = unified_diff("docker/Dockerfile", "a\nb\n", "a\nc\n");

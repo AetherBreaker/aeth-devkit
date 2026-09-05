@@ -141,12 +141,43 @@ fn an_existing_container_pin_is_kept_and_a_missing_one_is_filled() {
 }
 
 #[test]
-fn without_devkit_tags_the_pin_is_provisional_and_noted() {
+fn without_devkit_tags_the_pin_is_provisional_and_noted_only_when_written() {
+  let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
+  let root = dir.path();
+  let run = |mode: Mode, interactive: bool| {
+    let prompt = ScriptedPrompt::new(&[]);
+    let runner = RecordingRunner::new(0);
+    runner.script("gh", &["api"], 0, "v1.1.0\n");
+    let deps = Deps {
+      runner: &runner,
+      prompt: &prompt,
+      mode,
+      interactive,
+    };
+    let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
+    aeth_devkit_setup::run_with(&ctx, &templates(), false, &deps).unwrap()
+  };
+  // A hand-written Dockerfile that is kept: no pin was written, so no provisional note.
+  write(root, "docker/Dockerfile", "FROM scratch\n");
+  let changes = run(Mode::KeepAll, false);
+  assert_eq!(read(root, "docker/Dockerfile"), "FROM scratch\n");
+  assert!(!changes.notes.iter().any(|n| n.contains("provisionally")), "{:?}", changes.notes);
+  let changes = run(Mode::ReplaceAll, false);
+  assert!(read(root, "docker/Dockerfile").contains("/container-v1/"));
+  assert!(
+    changes.notes.iter().any(|n| n.contains("container-v1 provisionally")),
+    "{:?}",
+    changes.notes
+  );
+}
+
+#[test]
+fn a_failed_tag_lookup_leaves_the_dockerfile_alone_as_a_problem() {
+  // `gh` missing or unauthenticated must not invent a pin that no later run revisits.
   let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
   let root = dir.path();
   let prompt = ScriptedPrompt::new(&[]);
-  let runner = RecordingRunner::new(0);
-  runner.script("gh", &["api"], 0, "v1.1.0\n");
+  let runner = RecordingRunner::new(1);
   let deps = Deps {
     runner: &runner,
     prompt: &prompt,
@@ -155,12 +186,23 @@ fn without_devkit_tags_the_pin_is_provisional_and_noted() {
   };
   let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
   let changes = aeth_devkit_setup::run_with(&ctx, &templates(), false, &deps).unwrap();
-  assert!(read(root, "docker/Dockerfile").contains("/container-v1/"));
+  assert!(!root.join("docker/Dockerfile").exists(), "not written");
+  assert!(root.join("docker/compose.yaml").is_file(), "the rest of the Docker step still ran");
   assert!(
-    changes.notes.iter().any(|n| n.contains("container-v1 provisionally")),
+    changes
+      .problems
+      .iter()
+      .any(|p| p.contains("docker/Dockerfile was left alone") && p.contains("gh")),
     "{:?}",
-    changes.notes
+    changes.problems
   );
+  assert!(!changes.notes.iter().any(|n| n.contains("provisionally")), "{:?}", changes.notes);
+  // An existing pinned file needs no lookup, so it is unaffected.
+  let (_, _, _) = run(root, Mode::Ask, true, &[], false);
+  let pinned = read(root, "docker/Dockerfile");
+  let changes = aeth_devkit_setup::run_with(&ctx, &templates(), false, &deps).unwrap();
+  assert!(changes.problems.is_empty(), "{:?}", changes.problems);
+  assert_eq!(read(root, "docker/Dockerfile"), pinned);
 }
 
 #[test]
