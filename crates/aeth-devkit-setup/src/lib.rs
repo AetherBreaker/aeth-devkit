@@ -290,14 +290,16 @@ pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps:
     }
   }
 
-  // 14. Obsolete artifacts: reported, never removed.
-  if !ctx.has_docker && ctx.docker_files_present() {
+  // 14. Obsolete artifacts: reported, never removed. The Docker probe walks the whole
+  //     tree, so it runs at most once.
+  let unmanaged_docker_files = !ctx.has_docker && ctx.docker_files_present();
+  if unmanaged_docker_files {
     changes
       .notes
       .push("Docker files found but `[tool.docker].services` is empty; list the app service(s) to manage them.".into());
   }
   if !ctx.docker_legacy_keys.is_empty() {
-    let tail = if !ctx.has_docker && !ctx.docker_files_present() {
+    let tail = if !ctx.has_docker && !unmanaged_docker_files {
       " — or delete the whole table if the project has no Docker setup."
     } else {
       ""
