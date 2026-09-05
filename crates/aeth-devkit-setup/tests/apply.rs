@@ -422,7 +422,7 @@ fn tool_docker_is_seeded_only_where_docker_files_exist() {
   assert!(!root.join("docker/compose.yaml").exists());
   assert!(!root.join(".dockerignore").exists());
   assert!(
-    changes.notes.iter().any(|n| n.contains("services` is empty")),
+    changes.notes.iter().any(|n| n.contains("no service is listed")),
     "{:?}",
     changes.notes
   );
@@ -464,6 +464,69 @@ fn a_headless_run_is_refused_unless_it_is_a_dry_run_or_check() {
   assert_eq!(run(&["--check"]).0, Some(1), "drift is still reported");
   assert_eq!(run(&["--dry-run"]).0, Some(0));
   assert_eq!(read(root, "pyproject.toml"), before);
+}
+
+#[test]
+fn the_unlisted_services_warning_can_be_silenced() {
+  let dir = make_project();
+  let root = dir.path();
+  let py = strip_tool_docker(&read(root, "pyproject.toml"));
+  write(root, "docker/Dockerfile", "FROM scratch\n");
+  // The warning and the key that quiets it name each other.
+  write(root, "pyproject.toml", &py);
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  let warning = changes.notes.iter().find(|n| n.contains("no service is listed")).unwrap();
+  assert!(warning.contains("silence_unlisted_services_warning = true"), "{warning}");
+  // Set (with the seeded keys kept), the warning is gone and nothing else changes: the key
+  // is not a switch, so the Docker step still stays off.
+  write(
+    root,
+    "pyproject.toml",
+    &read(root, "pyproject.toml").replace("[tool.docker]\n", "[tool.docker]\n  silence_unlisted_services_warning = true\n"),
+  );
+  let changes = aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  assert!(
+    !changes.notes.iter().any(|n| n.contains("no service is listed")),
+    "{:?}",
+    changes.notes
+  );
+  assert!(changes.is_empty(), "{changes:?}");
+  assert_eq!(read(root, "docker/Dockerfile"), "FROM scratch\n");
+  assert!(!root.join(".dockerignore").exists());
+  let err = {
+    write(
+      root,
+      "pyproject.toml",
+      &read(root, "pyproject.toml").replace("warning = true", "warning = \"yes\""),
+    );
+    aeth_devkit_setup::run(root, &templates(), false).unwrap_err().to_string()
+  };
+  assert!(err.contains("must be a boolean"), "{err}");
+}
+
+#[test]
+fn check_fails_on_a_compose_file_the_engine_cannot_edit() {
+  // A listed service is a declared intent to have the compose file managed, so a shape
+  // the engine cannot edit is a `problem:` and `--check` exits 1 even with no drift.
+  let dir = make_project();
+  let root = dir.path();
+  let args = |check: bool| aeth_devkit_setup::cli::Args {
+    root: root.to_path_buf(),
+    templates_dir: Some(templates()),
+    dry_run: !check,
+    check,
+    no_commit: true,
+    replace_docker: false,
+  };
+  aeth_devkit_setup::run(root, &templates(), false).unwrap();
+  assert_eq!(aeth_devkit_setup::cli::run(&args(true)).unwrap(), std::process::ExitCode::SUCCESS);
+  write(root, "docker/compose.yaml", "services: {imap-report-collector: {image: x}}\n");
+  let changes = aeth_devkit_setup::run(root, &templates(), true).unwrap();
+  assert!(changes.is_empty(), "no drift, only a problem: {changes:?}");
+  assert_eq!(changes.problems.len(), 1, "{:?}", changes.problems);
+  assert_eq!(aeth_devkit_setup::cli::run(&args(true)).unwrap(), std::process::ExitCode::from(1));
+  // A plain dry run reports it but is not a check.
+  assert_eq!(aeth_devkit_setup::cli::run(&args(false)).unwrap(), std::process::ExitCode::SUCCESS);
 }
 
 #[test]

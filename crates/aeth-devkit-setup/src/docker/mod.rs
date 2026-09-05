@@ -144,7 +144,7 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
     found => {
       // Still recorded as managed (the gitignore advisory in `lib` reads that list).
       changes.record_optional(&path, Some(&text), &text, vec![])?;
-      changes.notes.push(if found.is_some() {
+      changes.problems.push(if found.is_some() {
         format!("{rel} writes `services:` inline, which the compose step cannot edit; switch it to the block form.")
       } else {
         format!(
@@ -166,7 +166,7 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
     match present.iter().find(|n| &n.key == name) {
       // `app: {image: x}`: nothing can be inserted under it.
       Some(svc) if svc.is_inline() => {
-        changes.notes.push(format!(
+        changes.problems.push(format!(
           "{rel}: service {name} is written inline, which the compose step cannot edit; switch it to the block form."
         ));
       }
@@ -174,7 +174,7 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
         let o = compose_rules::service_edits(&lines, svc, &sc_doc, &sc_svc, name);
         edits.extend(o.edits);
         details.extend(o.details);
-        changes.notes.extend(o.notes);
+        changes.problems.extend(o.problems);
       }
       None => {
         let found = present.iter().map(|n| n.key.as_str()).collect::<Vec<_>>().join(", ");
@@ -200,7 +200,7 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
   let o = compose_rules::top_level_edits(&lines, &tree::split_lines(&sc.tail));
   edits.extend(o.edits);
   details.extend(o.details);
-  changes.notes.extend(o.notes);
+  changes.problems.extend(o.problems);
   if edits.is_empty() {
     changes.record_optional(&path, Some(&text), &text, vec![])?;
     return Ok(());
