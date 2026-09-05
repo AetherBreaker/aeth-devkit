@@ -151,6 +151,7 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
         let o = compose_rules::service_edits(&lines, svc, &sc_doc, &sc_svc, name);
         edits.extend(o.edits);
         details.extend(o.details);
+        changes.notes.extend(o.notes);
       }
       None => {
         let found = present.iter().map(|n| n.key.as_str()).collect::<Vec<_>>().join(", ");

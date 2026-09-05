@@ -44,6 +44,10 @@ pub struct Outcome {
   pub edits: Vec<Edit>,
   /// One human line per edit, for the change report.
   pub details: Vec<String>,
+  /// Drift the engine saw but would not edit: a YAML shape it does not model (flow style,
+  /// a list where the standard has a mapping). Splicing block lines into those is not
+  /// YAML, so the user is told instead.
+  pub notes: Vec<String>,
 }
 
 /// The scaffold subtree rooted at `sc_node`, re-indented to sit under `parent`.
@@ -91,6 +95,16 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
         }
         Some(n) => parent = n,
         None => {
+          // `args:` holding `- GIT_TAG=v1`: the parent is a sequence, and a mapping line
+          // spliced into it is not YAML. Settled so sibling rules do not repeat the note.
+          if !tree::list_items(lines, &parent).is_empty() {
+            let at = path[..depth].join(".");
+            out.notes.push(format!(
+              "{name}: {at} is written as a list, so {prefix} was not added; switch it to the mapping form or add the key by hand"
+            ));
+            settled.push(at);
+            break;
+          }
           out.edits.push(Edit::Insert {
             at: parent.end,
             lines: subtree_under(lines, &parent, sc_lines, &sc_node),
@@ -129,6 +143,16 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
           .and_then(|it| tree::item_child(sc_lines, it, "target"))
           .map(|t| t.value)
           .unwrap_or_default();
+        // Flow style (`volumes: [...]`): block items appended under it are not YAML, so
+        // the text decides and a missing mount is left to the user.
+        if !node.value.is_empty() {
+          if !node.value.contains(&want) {
+            out.notes.push(format!(
+              "{name}: {dotted} is written inline and mounts nothing at {want}; add the bind mount by hand or switch to the block form"
+            ));
+          }
+          continue;
+        }
         let items = tree::list_items(lines, &node);
         let mounted = items.iter().any(|it| {
           tree::item_child(lines, it, "target").is_some_and(|t| t.value == want)
@@ -147,6 +171,22 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
         }
       }
       Kind::EnvKeys => {
+        let sc_items = tree::list_items(sc_lines, &std);
+        // Flow style (`environment: {...}`): same rule as volumes.
+        if !node.value.is_empty() {
+          let missing: Vec<&str> = sc_items
+            .iter()
+            .map(|it| it.text.split_once('=').map_or(it.text.as_str(), |(k, _)| k))
+            .filter(|k| !node.value.contains(&format!("{k}=")) && !node.value.contains(&format!("{k}:")))
+            .collect();
+          if !missing.is_empty() {
+            out.notes.push(format!(
+              "{name}: {dotted} is written inline and lacks {}; add them by hand or switch to the block form",
+              missing.join(", ")
+            ));
+          }
+          continue;
+        }
         let items = tree::list_items(lines, &node);
         let map_form = items.is_empty() && !tree::children(lines, &node).is_empty();
         let present =
@@ -154,12 +194,23 @@ pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: 
         let indent = items.first().map_or(tree::child_indent(lines, &node), |it| it.indent);
         let mut added: Vec<String> = Vec::new();
         let mut new_lines: Vec<String> = Vec::new();
-        for it in tree::list_items(sc_lines, &std) {
+        for it in sc_items {
           let (key, value) = it.text.split_once('=').unwrap_or((&it.text, ""));
           if present(key) {
             continue;
           }
           new_lines.push(if map_form {
+            // A mapping value is quoted where a plain scalar would read as something else:
+            // `["a"]` is a sequence, `*x` an alias, ` #` starts a comment, empty is null.
+            let plain = !value.is_empty()
+              && !value.starts_with(['[', '{', '"', '\'', '*', '&', '!', '%', '@', '`', '|', '>', '#', '-', '?', ','])
+              && !value.contains(": ")
+              && !value.contains(" #");
+            let value = if plain {
+              value.to_string()
+            } else {
+              format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+            };
             format!("{}{key}: {value}", " ".repeat(indent))
           } else {
             format!("{}- {}", " ".repeat(indent), it.text)
@@ -282,6 +333,11 @@ services:
   const TAIL: &str = "\nnetworks:\n  coolify:\n    external: true\n";
 
   fn run(doc: &str) -> (String, Vec<String>) {
+    let (out, o) = run_full(doc);
+    (out, o.details)
+  }
+
+  fn run_full(doc: &str) -> (String, Outcome) {
     let lines = split_lines(doc);
     let sc = split_lines(STD);
     let sc_svc = child(&sc, &top_level(&sc, "services").unwrap(), "app").unwrap();
@@ -290,7 +346,7 @@ services:
     let t = top_level_edits(&lines, &split_lines(TAIL));
     o.edits.extend(t.edits);
     o.details.extend(t.details);
-    (apply_edits(doc, &o.edits), o.details)
+    (apply_edits(doc, &o.edits), o)
   }
 
   #[test]
@@ -421,6 +477,105 @@ networks:
     assert!(out.contains("      GIT_TAG: {git_tag}\n"), "{out}");
     assert!(out.contains("networks:\n  other: {}\n  coolify:\n    external: true\n"), "{out}");
     assert!(details.iter().any(|d| d == "app: replaced build"), "{details:?}");
+  }
+
+  /// A service whose only non-standard trait is the shape under test; every other key is
+  /// already compliant so the assertions see one rule at a time.
+  fn service_with(volumes: &str, environment: &str, args: &str) -> String {
+    format!(
+      "services:
+  app:
+    container_name: app
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+{args}
+    restart: no
+    volumes:{volumes}
+    environment:{environment}
+    networks:
+      - coolify
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - bash -ec 'heartbeat'
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  coolify:
+    external: true
+"
+    )
+  }
+  const ARGS_OK: &str = "        GIT_REPO: https://github.com/o/r.git
+        GIT_TAG: v1";
+  const ENV_OK: &str = " {ALERTS_EMAIL: a, ALERTS_EMAIL_PWD: b, ALERTS_RECIPIENTS: c}";
+
+  #[test]
+  fn inline_volumes_and_environment_are_judged_on_their_text_and_never_edited() {
+    // Compliant flow style: no edit, no note, no false drift.
+    let doc = service_with(" [\"/data/x:/app/persisted_data\"]", ENV_OK, ARGS_OK);
+    let (out, o) = run_full(&doc);
+    assert_eq!(out, doc, "{:?}", o.details);
+    assert!(o.notes.is_empty(), "{:?}", o.notes);
+    // Non-compliant flow style: still no edit (block items under a scalar are not YAML),
+    // but a note naming what is missing.
+    let doc = service_with(" [\"/tmp/a:/app/scratch\"]", " {ALERTS_EMAIL: a}", ARGS_OK);
+    let (out, o) = run_full(&doc);
+    assert_eq!(out, doc, "{:?}", o.details);
+    assert_eq!(o.notes.len(), 2, "{:?}", o.notes);
+    assert!(
+      o.notes[0].contains("volumes") && o.notes[0].contains("/app/persisted_data"),
+      "{:?}",
+      o.notes
+    );
+    assert!(
+      o.notes[1].contains("environment") && o.notes[1].contains("ALERTS_EMAIL_PWD, ALERTS_RECIPIENTS"),
+      "{:?}",
+      o.notes
+    );
+  }
+
+  #[test]
+  fn a_list_form_parent_gets_one_note_instead_of_mapping_lines() {
+    let doc = service_with(
+      "
+      - /data/x:/app/persisted_data",
+      ENV_OK,
+      "        - GIT_TAG=v1",
+    );
+    let (out, o) = run_full(&doc);
+    assert_eq!(out, doc, "{:?}", o.details);
+    assert_eq!(o.notes.len(), 1, "one note for args, not one per key: {:?}", o.notes);
+    assert!(o.notes[0].contains("build.args is written as a list"), "{:?}", o.notes);
+  }
+
+  #[test]
+  fn map_form_environment_quotes_values_that_are_not_plain_scalars() {
+    let doc = service_with(
+      "
+      - /data/x:/app/persisted_data",
+      "
+      FOO: bar",
+      ARGS_OK,
+    );
+    let (out, details) = run(&doc);
+    assert!(
+      out.contains(
+        "    environment:
+      FOO: bar
+      ALERTS_EMAIL: info@sweetfiretobacco.com
+      ALERTS_EMAIL_PWD: ${ALERTS_EMAIL_PWD:?}
+      ALERTS_RECIPIENTS: \"[\\\"jacob.ogden@sweetfiretobacco.com\\\"]\"
+"
+      ),
+      "{out}
+{details:?}"
+    );
   }
 
   #[test]

@@ -91,7 +91,10 @@ run is a byte-for-byte no-op.
   `networks`) and at-least (`volumes` mounting `/app/persisted_data`; the ALERTS_*
   environment when the project uses aeth_ext), plus top-level `networks.coolify.external`.
   All compose edits are one diff and one prompt; a listed service missing from the file is
-  offered as a scaffold block (`add`). Keys the standard does not name are never touched.
+  offered as a scaffold block (`add`). Keys the standard does not name are never touched,
+  and a shape the engine does not model (a flow-style `volumes: [...]` / `environment: {...}`,
+  a list-form `build.args`) is judged on its text and reported as a `note:` rather than
+  edited, so the file is never left unparseable.
   `--replace-docker` answers `replace all` up front; without a terminal every answer is
   "keep" and a `note:` says so; `--dry-run`/`--check` print everything and count Docker
   drift. `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to delete, never
