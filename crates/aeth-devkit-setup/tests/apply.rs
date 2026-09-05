@@ -327,6 +327,68 @@ fn uncommitted_edits_to_managed_files_stay_out_of_the_commit() {
 }
 
 #[test]
+fn an_uncommitted_services_switch_is_honoured_on_a_committing_run() {
+  let dir = make_project();
+  let root = dir.path();
+  let git = |args: &[&str]| {
+    let out = std::process::Command::new("git").current_dir(root).args(args).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+  };
+  // HEAD is a sister project before migration: a [tool.docker] with the legacy keys and no
+  // `services`. The user adds `services` and runs setup-project without committing first —
+  // the documented migration flow.
+  let with_services = read(root, "pyproject.toml");
+  let services_line = "  services    = [\"imap-report-collector\"]
+";
+  assert!(with_services.contains(services_line), "{with_services}");
+  write(root, "pyproject.toml", &with_services.replace(services_line, ""));
+  git_init(root);
+  git(&["add", "-A"]);
+  git(&["commit", "-q", "-m", "init"]);
+  write(root, "pyproject.toml", &with_services);
+
+  // The cli's order: discover, then stage (which resets pyproject.toml to HEAD), then run.
+  let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
+  assert!(ctx.has_docker, "discovery must see the working copy");
+  let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
+  let deps = aeth_devkit_setup::docker::Deps {
+    runner: &aeth_devkit_core::process::SystemRunner,
+    prompt: &aeth_devkit_core::prompt::StdinPrompt,
+    mode: aeth_devkit_setup::docker::Mode::KeepAll,
+    interactive: false,
+  };
+  let changes = aeth_devkit_setup::run_with(&ctx, &templates(), false, &deps).unwrap();
+  assert!(
+    aeth_devkit_setup::git::commit_changes(root, &changes, &mut bases)
+      .unwrap()
+      .is_some()
+  );
+
+  let committed = git(&["show", "--name-only", "--format=", "HEAD"]);
+  assert!(committed.contains("docker/Dockerfile"), "{committed}");
+  assert!(committed.contains("docker/compose.yaml"), "{committed}");
+  // The user's switch is back in the working copy, still theirs to commit.
+  let py = read(root, "pyproject.toml");
+  assert!(py.contains(services_line), "{py}");
+  // A duplicate `services` key (one seeded by the template, one the user's) would fail to
+  // parse; the template must never seed the switch the user just set.
+  let doc: toml_edit::DocumentMut = py.parse().unwrap_or_else(|e| {
+    panic!(
+      "{e}
+{py}"
+    )
+  });
+  assert_eq!(doc["tool"]["docker"]["services"].as_array().unwrap().len(), 1);
+  assert!(doc["tool"]["docker"].get("required_persisted_dirs").is_some(), "{py}");
+  assert!(
+    !changes.notes.iter().any(|n| n.contains("services` is empty")),
+    "{:?}",
+    changes.notes
+  );
+}
+
+#[test]
 fn replaces_legacy_poe_tasks_include_script() {
   let dir = make_project();
   let root = dir.path();

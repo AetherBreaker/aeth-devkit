@@ -44,6 +44,10 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   let templates = crate::templates::locate(args.templates_dir.as_deref())?;
   let root = crate::context::strip_verbatim(args.root.canonicalize().unwrap_or(args.root.clone()));
 
+  // Discovered before staging: staging resets `pyproject.toml` to HEAD, and the switches
+  // it carries (`[tool.docker].services`, dependencies) must reflect the user's working
+  // copy — the migration flow is "add `services`, run setup-project", not "commit first".
+  let ctx = crate::context::ProjectContext::discover(&root)?;
   // When committing, the committable managed files are merged against their `HEAD`
   // content, so the commit carries only this run's changes and the user's uncommitted
   // edits are replayed back on top afterwards (see `aeth_devkit_core::commit`).
@@ -65,7 +69,7 @@ pub fn run(args: &Args) -> Result<ExitCode> {
       },
       interactive: tty && !dry_run,
     };
-    let mut c = crate::run_with(&root, &templates, dry_run, &deps)?;
+    let mut c = crate::run_with(&ctx, &templates, dry_run, &deps)?;
     if !dry_run {
       match crate::format::format_pyproject(&root, &crate::format::SystemRunner, &mut c)? {
         crate::format::Outcome::Formatted(_) => {}
