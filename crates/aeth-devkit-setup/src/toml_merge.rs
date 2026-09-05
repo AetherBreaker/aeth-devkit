@@ -360,6 +360,7 @@ mod tests {
       docker_legacy_keys: vec![],
       python_dir: "src".into(),
       has_rust: false,
+      has_container_crate: false,
       publish_index: None,
     }
   }
@@ -425,6 +426,7 @@ mod docker_tests {
       docker_legacy_keys: vec![],
       python_dir: "src".into(),
       has_rust: false,
+      has_container_crate: false,
       publish_index: None,
     }
   }

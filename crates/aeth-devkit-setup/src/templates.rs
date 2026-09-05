@@ -117,11 +117,6 @@ pub fn gate(text: &str, enabled: &dyn Fn(&str) -> bool) -> String {
   out
 }
 
-/// [`gate`] for the release workflow: `if-publish-index` / `if-no-publish-index`.
-pub fn gate_publish_index(text: &str, has_publish_index: bool) -> String {
-  gate(text, &|name| name == "publish-index" && has_publish_index)
-}
-
 /// How a hook should invoke `devkit`: the venv's own console script when one exists
 /// (quoted, and via `$CLAUDE_PROJECT_DIR` so the file stays valid if the repo moves),
 /// else `uv run devkit`. The direct path skips `uv run`'s ~140 ms environment check on
@@ -224,6 +219,7 @@ mod devkit_bin_tests {
       docker_legacy_keys: vec![],
       python_dir: "src".into(),
       has_rust: false,
+      has_container_crate: false,
       publish_index: None,
     }
   }
@@ -266,6 +262,7 @@ mod publish_index_tests {
       docker_legacy_keys: vec![],
       python_dir: "src".into(),
       has_rust: false,
+      has_container_crate: false,
       publish_index: publish_index.map(str::to_string),
     }
   }
@@ -281,13 +278,13 @@ mod publish_index_tests {
 
   #[test]
   fn gate_keeps_exactly_one_variant_and_no_markers() {
-    assert_eq!(gate_publish_index(GATED, true), "a\nidx1\nb\nc\n");
-    assert_eq!(gate_publish_index(GATED, false), "a\nb\n  pypi\nc\n");
+    assert_eq!(gate(GATED, &|n| n == "publish-index"), "a\nidx1\nb\nc\n");
+    assert_eq!(gate(GATED, &|_| false), "a\nb\n  pypi\nc\n");
   }
 
   #[test]
   fn gate_leaves_unmarked_text_alone() {
-    assert_eq!(gate_publish_index("x\n  y\n", true), "x\n  y\n");
+    assert_eq!(gate("x\n  y\n", &|_| true), "x\n  y\n");
   }
 }
 
@@ -304,6 +301,7 @@ mod docker_placeholder_tests {
       has_docker: true,
       python_dir: "src".into(),
       has_rust: false,
+      has_container_crate: false,
       publish_index: None,
       name: "proj".into(),
       version: Some("1.2.3".into()),

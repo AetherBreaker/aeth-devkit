@@ -15,8 +15,8 @@ design exists. Check items off in place; delete them once released.
       `timeclock_playground` to temp dirs (on their own TODO lists, high priority).
 - [ ] IMAPReportCollector: `[tool.docker].mkdirs = [""]` is a data bug (would have chowned
       `/app`); goes away with the migration above.
-- [ ] `release.rust.template.yml` builds `aeth-devkit-container` unconditionally; a future
-      Rust sister project without a container crate needs a `{container_crate}`-style gate.
+- [x] `release.rust.template.yml` builds `aeth-devkit-container` only behind the
+      `if-container-crate` gate (`crates/aeth-devkit-container/Cargo.toml` present).
 - [x] `if-docker` conditional marker for template tables (mirrors `if-dep`; drives the
       `[tool.docker]` item above). Done on `feat/agent-config`.
 - [ ] Vendored gitignore refresh: a `poe` task or script that re-fetches
