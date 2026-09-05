@@ -60,7 +60,8 @@ fn run(root: &Path, mode: Mode, interactive: bool, answers: &[&str], dry_run: bo
       mode,
       interactive,
     };
-    aeth_devkit_setup::run_with(root, &templates(), dry_run, &deps).unwrap()
+    let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
+    aeth_devkit_setup::run_with(&ctx, &templates(), dry_run, &deps).unwrap()
   };
   (changes, prompt, runner)
 }
