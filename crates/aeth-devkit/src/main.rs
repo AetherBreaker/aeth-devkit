@@ -79,7 +79,7 @@ fn release_and_pin(args: &aeth_devkit_release::Args) -> anyhow::Result<ExitCode>
 fn main() -> ExitCode {
   let cli = Cli::parse();
   let result = match &cli.command {
-    Command::SetupProject(args) => aeth_devkit_setup::cli::run(args),
+    Command::SetupProject(args) => aeth_devkit_setup::cli::run_reject_headless(args),
     Command::Lock(args) => aeth_devkit_lock::run_real(args),
     Command::Release(args) => aeth_devkit_release::run_real(args),
     Command::DockerPin(args) => aeth_devkit_pin::run_real(args),

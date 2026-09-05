@@ -430,6 +430,43 @@ fn tool_docker_is_seeded_only_where_docker_files_exist() {
 }
 
 #[test]
+fn a_headless_run_is_refused_unless_it_is_a_dry_run_or_check() {
+  // Only a real process has a non-tty stdin, so this goes through the binary. `--check`
+  // on the fixture drifts (exit 1) and a plain run is refused before touching anything
+  // (exit 2, the error exit); `--no-commit` and `--replace-docker` are refused the same.
+  let dir = make_project();
+  let root = dir.path();
+  let before = read(root, "pyproject.toml");
+  let exe = env!("CARGO_BIN_EXE_devkit-setup");
+  let run = |flags: &[&str]| {
+    let out = std::process::Command::new(exe)
+      .arg("--root")
+      .arg(root)
+      .arg("--templates-dir")
+      .arg(templates())
+      .args(flags)
+      .stdin(std::process::Stdio::null())
+      .output()
+      .unwrap();
+    (out.status.code(), String::from_utf8_lossy(&out.stderr).into_owned())
+  };
+  for flags in [
+    &[][..],
+    &["--no-commit"],
+    &["--replace-docker"],
+    &["--no-commit", "--replace-docker"],
+  ] {
+    let (code, err) = run(flags);
+    assert_eq!(code, Some(2), "{flags:?}: {err}");
+    assert!(err.contains("only --dry-run or --check are allowed"), "{flags:?}: {err}");
+  }
+  assert_eq!(read(root, "pyproject.toml"), before, "nothing touched");
+  assert_eq!(run(&["--check"]).0, Some(1), "drift is still reported");
+  assert_eq!(run(&["--dry-run"]).0, Some(0));
+  assert_eq!(read(root, "pyproject.toml"), before);
+}
+
+#[test]
 fn replaces_legacy_poe_tasks_include_script() {
   let dir = make_project();
   let root = dir.path();

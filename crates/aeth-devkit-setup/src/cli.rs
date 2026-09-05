@@ -31,10 +31,21 @@ pub struct Args {
   #[arg(long)]
   pub no_commit: bool,
 
-  /// Answer `replace all` to every Docker prompt up front (also applies Docker files when
-  /// stdin is not a terminal).
+  /// Answer `replace all` to every Docker prompt up front.
   #[arg(long)]
   pub replace_docker: bool,
+}
+
+/// [`run`], refused first when stdin is not a terminal unless the run is `--dry-run` or
+/// `--check`. A headless run cannot answer a Docker prompt and would commit on nobody's
+/// behalf, so a pipeline that reaches for anything else fails fast instead of silently
+/// keeping or applying. Tests call [`run`] directly, which has no such check.
+pub fn run_reject_headless(args: &Args) -> Result<ExitCode> {
+  // `IsTerminal` is how std asks "is a human here?".
+  if !std::io::IsTerminal::is_terminal(&std::io::stdin()) && !(args.dry_run || args.check) {
+    bail!("setup-project needs a terminal to prompt and commit; without one only --dry-run or --check are allowed");
+  }
+  run(args)
 }
 
 /// A committing run merges into HEAD's pyproject but takes the Docker switch from the
@@ -77,7 +88,8 @@ pub fn run(args: &Args) -> Result<ExitCode> {
 
   // Apply the templates (plus tombi), putting the user's files back on any failure.
   let apply = |changes: &mut Option<crate::changes::Changes>| -> Result<()> {
-    // `IsTerminal` is how std asks "is a human here?": prompts only make sense on a tty.
+    // Prompts only make sense on a tty; a headless committing run only reaches here from
+    // library callers (see `run_reject_headless`), and then keeps every Docker file.
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
     let deps = crate::docker::Deps {
       runner: &aeth_devkit_core::process::SystemRunner,

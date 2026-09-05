@@ -37,8 +37,10 @@ only once they migrate to Rust. -->
 
 Flags: `--root`, `--templates-dir` (or `DEVKIT_TEMPLATES`), `--dry-run`, `--check`
 (dry-run that exits 1 on drift), `--no-commit`, `--replace-docker`. Prompts only before
-replacing a Docker file (see **Docker** below); otherwise no prompts. Idempotent — a second
-run is a byte-for-byte no-op.
+replacing a Docker file (see **Docker** below); otherwise no prompts. Without a terminal on
+stdin only `--dry-run`/`--check` are accepted; anything else is refused up front, since a
+headless run can neither answer a prompt nor commit on someone's behalf. Idempotent — a
+second run is a byte-for-byte no-op.
 
 - **Project discovery** - Detects the package name and layout (`src/` vs `python/`), Rust
   (`Cargo.toml` enables the Rust overlays), Docker (`[tool.docker].services` non-empty
@@ -97,9 +99,9 @@ run is a byte-for-byte no-op.
   and a shape the engine does not model (a flow-style `volumes: [...]` / `environment: {...}`,
   a list-form `build.args`) is judged on its text and reported as a `note:` rather than
   edited, so the file is never left unparseable.
-  `--replace-docker` answers `replace all` up front and, without a terminal, `add` as well
-  (so `--check` and `--replace-docker` agree in CI); without either, every answer is "keep"
-  and a `note:` says so; `--dry-run`/`--check` print everything and count Docker drift. `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to delete, never
+  `--replace-docker` answers `replace all` up front; adding a listed-but-absent service is
+  always asked, never pre-answered. `--dry-run`/`--check` print everything and count Docker
+  drift. `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to delete, never
   removed.
 - **Placeholders** - `{project_root}`, `{package}`, `{python_dir}`, `{devkit_bin}`,
   `{publish_index}`, `{publish_index_key}`, `{devkit_version}`, `{git_repo}` with

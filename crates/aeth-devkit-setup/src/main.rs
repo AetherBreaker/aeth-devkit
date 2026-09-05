@@ -4,7 +4,7 @@ use clap::Parser;
 
 fn main() -> ExitCode {
   let args = aeth_devkit_setup::cli::Args::parse();
-  match aeth_devkit_setup::cli::run(&args) {
+  match aeth_devkit_setup::cli::run_reject_headless(&args) {
     Ok(code) => code,
     Err(e) => {
       eprintln!("error: {e:#}");

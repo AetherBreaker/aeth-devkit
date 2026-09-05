@@ -160,7 +160,7 @@ fn non_interactive_keeps_everything_and_says_so() {
   write(root, "docker/Dockerfile", "FROM scratch\n");
   let (changes, _, _) = run(root, Mode::KeepAll, false, &[], false);
   assert!(changes.is_empty());
-  assert!(changes.notes.iter().any(|n| n.contains("--replace-docker")), "{:?}", changes.notes);
+  assert!(changes.notes.iter().any(|n| n.contains("no terminal")), "{:?}", changes.notes);
   assert_eq!(read(root, "docker/Dockerfile"), "FROM scratch\n");
   // --replace-docker without a terminal applies files.
   let (changes, _, _) = run(root, Mode::ReplaceAll, false, &[], false);
@@ -271,7 +271,7 @@ fn a_missing_service_is_added_only_on_add_and_sidecars_are_untouched() {
 }
 
 #[test]
-fn replace_docker_without_a_terminal_adds_missing_services_and_keep_all_says_why() {
+fn adding_a_missing_service_always_needs_a_human() {
   let dir = project(&["demo-app", "worker"], "https://github.com/O/Demo.git");
   let root = dir.path();
   write(
@@ -282,26 +282,28 @@ fn replace_docker_without_a_terminal_adds_missing_services_and_keep_all_says_why
     container_name: demo-app
 ",
   );
-  // Nobody to ask and no flag: nothing added, and the note names the way out.
-  let (changes, prompt, _) = run(root, Mode::KeepAll, false, &[], false);
-  assert!(prompt.asked.borrow().is_empty());
-  assert!(!read(root, "docker/compose.yaml").contains("  worker:"));
-  assert!(changes.notes.iter().any(|n| n.contains("--replace-docker")), "{:?}", changes.notes);
-  // The flag stands in for the answer, so CI's --replace-docker clears what --check reports.
+  // Nobody to ask: nothing added, whatever the mode, and the note says so; a dry run
+  // still counts the add as drift.
+  for mode in [Mode::KeepAll, Mode::ReplaceAll] {
+    let (changes, prompt, _) = run(root, mode, false, &[], false);
+    assert!(prompt.asked.borrow().is_empty());
+    assert!(!read(root, "docker/compose.yaml").contains("  worker:"));
+    assert!(changes.notes.iter().any(|n| n.contains("no terminal")), "{:?}", changes.notes);
+  }
   let (dry, _, _) = run(root, Mode::DryRun, false, &[], true);
   assert!(
     dry.files.iter().any(|f| f.details.iter().any(|d| d == "added service worker")),
     "{dry:?}"
   );
-  let (changes, prompt, _) = run(root, Mode::ReplaceAll, false, &[], false);
-  assert!(prompt.asked.borrow().is_empty());
+  // A human answering `add` gets the service and clears the drift.
+  let (changes, _, _) = run(root, Mode::Ask, true, &["add", "replace"], false);
   assert!(read(root, "docker/compose.yaml").contains(
     "
   worker:
     container_name: worker
 "
   ));
-  assert!(!changes.notes.iter().any(|n| n.contains("--replace-docker")), "{:?}", changes.notes);
+  assert!(!changes.notes.iter().any(|n| n.contains("no terminal")), "{:?}", changes.notes);
   assert!(run(root, Mode::DryRun, false, &[], true).0.is_empty(), "--check agrees afterwards");
 }
 
