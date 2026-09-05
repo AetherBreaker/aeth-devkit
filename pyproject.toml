@@ -50,16 +50,6 @@
 [tool.coverage.lcov]
   output = ".cache/coverage.lcov"
 
-[tool.docker]
-  # Paths relative to /app that the entrypoint will chown to nonroot:nonroot.
-  # Typically these are directories that will be bind-mounted as Docker volumes.
-  chown_paths = [
-    "persisted_data",
-  ]
-  # Paths relative to /app that the entrypoint will create (mkdir -p) and chown.
-  # These are implicitly included in the chown step.
-  mkdirs      = []
-
 [tool.maturin]
   bindings      = "bin"
   manifest-path = "crates/aeth-devkit/Cargo.toml"
