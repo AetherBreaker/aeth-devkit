@@ -131,6 +131,9 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   for note in &changes.notes {
     println!("note: {note}");
   }
+  for warning in &changes.warnings {
+    eprintln!("warning: {warning}");
+  }
   for problem in &changes.problems {
     println!("problem: {problem}");
   }
