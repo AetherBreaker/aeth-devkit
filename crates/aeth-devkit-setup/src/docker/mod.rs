@@ -105,7 +105,7 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, deps: &Deps, changes: &
   if consent.kept_silently() {
     changes
       .notes
-      .push("Docker changes were left alone because no terminal was available to confirm them.".into());
+      .push("Some Docker changes needed a confirmation no terminal could give and were skipped.".into());
   }
   Ok(())
 }

@@ -98,8 +98,11 @@ second run is a byte-for-byte no-op.
   offered as a scaffold block (`add`). Keys the standard does not name are never touched,
   and a shape the engine does not model (a flow-style `volumes: [...]` / `environment: {...}`,
   a list-form `build.args`) is judged on its text and reported as a `problem:` rather than
-  edited, so the file is never left unparseable; `--check` exits 1 on any `problem:`, since
-  a listed service declares the file managed.
+  edited, so the file is never left unparseable; so is a compose file with no top-level
+  `services:` key, an inline `services:`, or an inline service block, which the step
+  leaves whole. `--check` exits 1 on any `problem:`, since a listed service declares the
+  file managed. A Dockerfile whose `container-v<N>` pin cannot be filled because devkit's
+  releases could not be read (no `gh`, offline) is a `problem:` too and is left unwritten.
   `--replace-docker` answers `replace all` up front; adding a listed-but-absent service is
   always asked, never pre-answered. `--dry-run`/`--check` print everything and count Docker
   drift. `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to delete, never
@@ -110,8 +113,8 @@ second run is a byte-for-byte no-op.
   remote tag, resolved lazily, falling back to `v<pyproject version>` with a note) and
   `{service}` are filled per compose scaffold block; `{container_version}` in the
   Dockerfile keeps the project's existing `container-v<N>` pin and resolves a missing one
-  to devkit's newest `container-v*` tag (provisionally `1`, with a note, when that cannot be
-  read). YAML templates gate blocks with `# setup-project: if-<name>` / `if-no-<name>` …
+  to devkit's newest `container-v*` tag (`1` with a note before any exists; a failed
+  lookup is a `problem:`). YAML templates gate blocks with `# setup-project: if-<name>` / `if-no-<name>` …
   `end` markers (`publish-index`, `aeth-ext`).
 - **Post-apply** - `tombi format` on pyproject (non-fatal), then a quiet auto-commit of
   exactly the changed files (`Standardize project configuration with devkit`, per-file
@@ -247,9 +250,10 @@ runs on every devkit release and, when `crates/aeth-devkit-container/` or `Cargo
 changed since the previous `container-v<N>` tag, publishes `container-v<N+1>` with the
 assets `devkit-container-x86_64-unknown-linux-musl` and
 `devkit-container-x86_64-pc-windows-msvc.exe`. A Dockerfile therefore pins a container
-build, not a devkit version, and drifts only when the binary changed; setup-project fills a
-missing pin and never advances an existing one (that is a future command's job, see
-TODO.md). No Python runs in the image outside the app itself.
+build, not a devkit version, so a devkit release alone never changes what it builds
+against; setup-project fills a missing pin (the newest `container-v*` tag, or `1` with a
+note before the first container release exists) and never advances an existing one (that
+is a future command's job, see TODO.md). No Python runs in the image outside the app itself.
 
 - `app-extra` - prints `--extra app` when `[project.optional-dependencies].app` exists.
 - `readme` - prints `project.readme` (string or `{ file = … }` form).

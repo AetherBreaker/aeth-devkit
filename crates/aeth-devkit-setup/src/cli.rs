@@ -31,7 +31,8 @@ pub struct Args {
   #[arg(long)]
   pub no_commit: bool,
 
-  /// Answer `replace all` to every Docker prompt up front.
+  /// Answer `replace all` to every Docker replace prompt up front (adding a listed but
+  /// absent compose service is still asked).
   #[arg(long)]
   pub replace_docker: bool,
 }
@@ -89,8 +90,9 @@ pub fn run(args: &Args) -> Result<ExitCode> {
 
   // Apply the templates (plus tombi), putting the user's files back on any failure.
   let apply = |changes: &mut Option<crate::changes::Changes>| -> Result<()> {
-    // Prompts only make sense on a tty; a headless committing run only reaches here from
-    // library callers (see `run_reject_headless`), and then keeps every Docker file.
+    // Prompts only make sense on a tty. The binaries refuse a headless non-dry run (see
+    // `run_reject_headless`), so the non-tty arms below serve library callers only:
+    // `ReplaceAll` replaces shown diffs without asking, `KeepAll` keeps everything.
     let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
     let deps = crate::docker::Deps {
       runner: &aeth_devkit_core::process::SystemRunner,
@@ -132,19 +134,19 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   for problem in &changes.problems {
     println!("problem: {problem}");
   }
-  let check_code = if args.check && !changes.problems.is_empty() {
-    ExitCode::from(1)
-  } else {
-    ExitCode::SUCCESS
-  };
   if changes.is_empty() {
     // No file differs from its merge base; undo the staging so the user's uncommitted
     // edits to managed files are back in place.
     if let Some(bases) = &bases {
       aeth_devkit_core::commit::unstage_clean_base(&root, bases)?;
     }
-    println!("Nothing to do — project already matches the templates.");
-    return Ok(check_code);
+    if changes.problems.is_empty() {
+      println!("Nothing to do — project already matches the templates.");
+      return Ok(ExitCode::SUCCESS);
+    }
+    // A problem is a finding on the repo (exit 1 for `--check`), not something to write.
+    println!("Nothing to write; the problem(s) above need a hand edit.");
+    return Ok(if args.check { ExitCode::from(1) } else { ExitCode::SUCCESS });
   }
   let header = if dry_run { "Would change:" } else { "Changed:" };
   println!("{header}\n{}", changes.report(&root));
