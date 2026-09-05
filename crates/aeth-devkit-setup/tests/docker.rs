@@ -413,7 +413,7 @@ fn adding_a_missing_service_always_needs_a_human() {
 }
 
 #[test]
-fn a_compose_file_without_services_is_noted_and_the_run_goes_on() {
+fn a_compose_file_without_services_warns_and_the_run_goes_on() {
   let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
   let root = dir.path();
   let include_only = "include:
@@ -423,11 +423,14 @@ fn a_compose_file_without_services_is_noted_and_the_run_goes_on() {
   let (changes, _, _) = run(root, Mode::ReplaceAll, false, &[], false);
   assert_eq!(read(root, "docker/compose.yaml"), include_only, "left alone");
   assert!(root.join("docker/Dockerfile").is_file(), "the rest of the Docker step still ran");
+  // An `include:`-only aggregator is a supported layout, so it warns and `--check` still
+  // passes; only shapes the user could reformat are `problem:`s.
   assert!(
-    changes.problems.iter().any(|n| n.contains("no top-level `services:` key")),
+    changes.warnings.iter().any(|n| n.contains("no top-level `services:` key")),
     "{:?}",
-    changes.problems
+    changes.warnings
   );
+  assert!(changes.problems.is_empty(), "{:?}", changes.problems);
   // Inline `services:` and an inline service block: nothing can be spliced under them
   // (the top-level `networks` block is still added around an inline service).
   for (text, note) in [

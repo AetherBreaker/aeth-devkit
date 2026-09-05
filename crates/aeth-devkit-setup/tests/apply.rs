@@ -530,6 +530,13 @@ fn check_fails_on_a_compose_file_the_engine_cannot_edit() {
   };
   run(root, false).unwrap();
   assert_eq!(aeth_devkit_setup::cli::run(&args(true)).unwrap(), std::process::ExitCode::SUCCESS);
+  // An include-only aggregator is a supported layout: a warning, not a check failure.
+  write(root, "docker/compose.yaml", "include:\n  - path: other.yaml\n");
+  let changes = run(root, true).unwrap();
+  assert!(changes.problems.is_empty(), "{:?}", changes.problems);
+  assert_eq!(changes.warnings.len(), 1, "{:?}", changes.warnings);
+  assert_eq!(aeth_devkit_setup::cli::run(&args(true)).unwrap(), std::process::ExitCode::SUCCESS);
+  // A shape the user could reformat still fails.
   write(root, "docker/compose.yaml", "services: {imap-report-collector: {image: x}}\n");
   let changes = run(root, true).unwrap();
   assert!(changes.is_empty(), "no drift, only a problem: {changes:?}");

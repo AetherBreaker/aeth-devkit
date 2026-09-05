@@ -144,13 +144,18 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
     found => {
       // Still recorded as managed (the gitignore advisory in `lib` reads that list).
       changes.record_optional(&path, Some(&text), &text, vec![])?;
-      changes.problems.push(if found.is_some() {
-        format!("{rel} writes `services:` inline, which the compose step cannot edit; switch it to the block form.")
+      if found.is_some() {
+        changes.problems.push(format!(
+          "{rel} writes `services:` inline, which the compose step cannot edit; switch it to the block form."
+        ));
       } else {
-        format!(
-          "{rel} has no top-level `services:` key, so the compose step left it alone; add the app service there by hand, or remove the file to get a scaffold."
-        )
-      });
+        // An `include:`-only aggregator is a supported Compose layout: the services live
+        // in the included files, and defining one here would conflict with them rather
+        // than override. Nothing to fix, so this warns instead of failing `--check`.
+        changes.warnings.push(format!(
+          "{rel} has no top-level `services:` key, so the compose step left it alone. If it only `include:`s other files, devkit cannot manage the services they define; add the app service here by hand, or remove the file to get a scaffold."
+        ));
+      }
       return Ok(());
     }
   };

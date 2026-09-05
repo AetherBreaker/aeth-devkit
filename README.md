@@ -98,10 +98,12 @@ second run is a byte-for-byte no-op.
   offered as a scaffold block (`add`). Keys the standard does not name are never touched,
   and a shape the engine does not model (a flow-style `volumes: [...]` / `environment: {...}`,
   a list-form `build.args`) is judged on its text and reported as a `problem:` rather than
-  edited, so the file is never left unparseable; so is a compose file with no top-level
-  `services:` key, an inline `services:`, or an inline service block, which the step
-  leaves whole. `--check` exits 1 on any `problem:`, since a listed service declares the
-  file managed. A Dockerfile whose `container-v<N>` pin cannot be filled because devkit's
+  edited, so the file is never left unparseable; so is an inline `services:` or an inline
+  service block, which the step leaves whole. `--check` exits 1 on any `problem:`, since a
+  listed service declares the file managed. A compose file with no top-level `services:`
+  key is a `warning:` on stderr instead and does not fail `--check`: an `include:`-only
+  aggregator is a supported Compose layout whose services live in the included files, and
+  writing one here would conflict with them rather than override. A Dockerfile whose `container-v<N>` pin cannot be filled because devkit's
   releases could not be read (no `gh`, offline) is a `problem:` too and is left unwritten.
   `--replace-docker` answers `replace all` up front; adding a listed-but-absent service is
   always asked, never pre-answered. `--dry-run`/`--check` print everything and count Docker
