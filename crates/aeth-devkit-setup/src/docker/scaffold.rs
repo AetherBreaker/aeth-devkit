@@ -117,7 +117,7 @@ impl<'a> GitTag<'a> {
     // `RefCell`, so plain `Fn` (no `mut`) is enough.
     let fall_back = |why: String| {
       *self.note.borrow_mut() = Some(format!(
-        "GIT_TAG set to {fallback} from pyproject.toml ({why}); run `devkit docker-pin` after the next release."
+        "GIT_TAG resolved to {fallback} from pyproject.toml ({why}); run `devkit docker-pin` after the next release."
       ));
       fallback.clone()
     };

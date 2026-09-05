@@ -23,6 +23,15 @@ pub struct Node {
   pub end: usize,
 }
 
+impl Node {
+  /// The whole value sits on the key's line — a scalar or a flow collection (`[…]`,
+  /// `{…}`) — so nothing can be inserted beneath it. An anchored block (`volumes: &v`
+  /// followed by items) is not inline: its value is the anchor, its content the block.
+  pub fn is_inline(&self) -> bool {
+    !self.value.is_empty() && self.end == self.line + 1
+  }
+}
+
 /// One `- ` entry of a block sequence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListItem {
@@ -188,6 +197,36 @@ pub fn item_child(lines: &[String], item: &ListItem, key: &str) -> Option<Node> 
   children_in(lines, item.line + 1, item.end, item.indent + 2)
     .into_iter()
     .find(|n| n.key == key)
+}
+
+/// The entries of a flow collection: `[a, "b"]` → `a`, `b`; `{k: v, k2: {x: y}}` → `k: v`,
+/// `k2: {x: y}`. Split at top-level commas (quotes and nesting respected), each unquoted
+/// and trimmed, so a nested collection comes back as text this same function can parse.
+/// `None` when `value` is not a flow collection (a plain scalar, an anchor, an alias).
+pub fn flow_entries(value: &str) -> Option<Vec<String>> {
+  let v = value.trim();
+  let inner = v
+    .strip_prefix('[')
+    .and_then(|s| s.strip_suffix(']'))
+    .or_else(|| v.strip_prefix('{').and_then(|s| s.strip_suffix('}')))?;
+  let mut out = Vec::new();
+  let (mut depth, mut quote, mut start) = (0usize, None::<char>, 0usize);
+  for (i, c) in inner.char_indices() {
+    match (quote, c) {
+      (Some(q), c) if c == q => quote = None,
+      (Some(_), _) => {}
+      (None, '"' | '\'') => quote = Some(c),
+      (None, '[' | '{') => depth += 1,
+      (None, ']' | '}') => depth = depth.saturating_sub(1),
+      (None, ',') if depth == 0 => {
+        out.push(&inner[start..i]);
+        start = i + 1;
+      }
+      _ => {}
+    }
+  }
+  out.push(&inner[start..]);
+  Some(out.iter().map(|e| e.trim()).filter(|e| !e.is_empty()).map(unquote).collect())
 }
 
 /// Shift every non-blank line's indentation by `to - from` (either direction).
@@ -396,6 +435,24 @@ networks:
       apply_edits(text, &edits),
       "build:\n  args:\n    A: 1\n    B: 2\n  dockerfile: d\nnext: x\n"
     );
+  }
+
+  #[test]
+  fn flow_entries_split_at_top_level_commas_only() {
+    assert_eq!(
+      flow_entries("[\"/d:/app/x\", '/e:/app/y', {type: bind, target: /app/z}]").unwrap(),
+      ["/d:/app/x", "/e:/app/y", "{type: bind, target: /app/z}"]
+    );
+    assert_eq!(
+      flow_entries("{A: 1, B: \"x, y\", C: [1, 2]}").unwrap(),
+      ["A: 1", "B: \"x, y\"", "C: [1, 2]"]
+    );
+    assert_eq!(flow_entries("[]").unwrap(), Vec::<String>::new());
+    assert!(flow_entries("&shared").is_none() && flow_entries("*shared").is_none() && flow_entries("no").is_none());
+    let lines = split_lines("a: [1]\nb: &x\n  - 1\nc:\n  - 1\nd: no\n");
+    let node = |k| top_level(&lines, k).unwrap();
+    assert!(node("a").is_inline() && node("d").is_inline());
+    assert!(!node("b").is_inline() && !node("c").is_inline());
   }
 
   #[test]

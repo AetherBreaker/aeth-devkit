@@ -321,6 +321,28 @@ fn a_compose_file_without_services_is_noted_and_the_run_goes_on() {
     "{:?}",
     changes.notes
   );
+  // Inline `services:` and an inline service block: nothing can be spliced under them
+  // (the top-level `networks` block is still added around an inline service).
+  for (text, note) in [
+    (
+      "services: {demo-app: {image: x}}
+",
+      "writes `services:` inline",
+    ),
+    (
+      "services:
+  demo-app: {image: x}
+",
+      "service demo-app is written inline",
+    ),
+  ] {
+    write(root, "docker/compose.yaml", text);
+    let (changes, _, _) = run(root, Mode::ReplaceAll, false, &[], false);
+    let out = read(root, "docker/compose.yaml");
+    assert!(out.starts_with(text), "the inline part is untouched: {out}");
+    assert!(!out.contains("container_name"), "{out}");
+    assert!(changes.notes.iter().any(|n| n.contains(note)), "{text}: {:?}", changes.notes);
+  }
 }
 
 #[test]
