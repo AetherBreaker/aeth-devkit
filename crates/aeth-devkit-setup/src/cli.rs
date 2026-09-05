@@ -1,9 +1,9 @@
 //! Command-line surface of `devkit setup-project`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use clap::Parser;
 
 /// Standardize a project's configuration from the templates shipped with aeth-devkit.
@@ -37,6 +37,15 @@ pub struct Args {
   pub replace_docker: bool,
 }
 
+/// Whether the committed `pyproject.toml` already has a `[tool.docker]` table.
+fn head_has_tool_docker(root: &Path) -> Result<bool> {
+  let Some(bytes) = aeth_devkit_core::git::head_blob(root, "pyproject.toml")? else {
+    return Ok(false);
+  };
+  let doc: toml_edit::DocumentMut = String::from_utf8_lossy(&bytes).parse().context("parsing HEAD's pyproject.toml")?;
+  Ok(doc.get("tool").and_then(|t| t.get("docker")).is_some())
+}
+
 /// Exit codes: 0 ok, 1 `--check` found drift, 3 commit failed (the template changes were
 /// rolled back). Errors bubble up for the caller to print (exit 2).
 pub fn run(args: &Args) -> Result<ExitCode> {
@@ -44,14 +53,18 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   let templates = crate::templates::locate(args.templates_dir.as_deref())?;
   let root = crate::context::strip_verbatim(args.root.canonicalize().unwrap_or(args.root.clone()));
 
-  // Discovered before staging: staging resets `pyproject.toml` to HEAD, and the switches
-  // it carries (`[tool.docker].services`, dependencies) must reflect the user's working
-  // copy — the migration flow is "add `services`, run setup-project", not "commit first".
+  // Discovered before staging (see `run_with`).
   let ctx = crate::context::ProjectContext::discover(&root)?;
   // When committing, the committable managed files are merged against their `HEAD`
   // content, so the commit carries only this run's changes and the user's uncommitted
   // edits are replayed back on top afterwards (see `aeth_devkit_core::commit`).
-  let committing = !dry_run && !args.no_commit && crate::git::is_git_tracked(&root);
+  let mut committing = !dry_run && !args.no_commit && crate::git::is_git_tracked(&root);
+  // A `[tool.docker]` table that exists only in the working copy cannot take that route:
+  // the template would create the table in the HEAD copy and the replay of the user's
+  // edit would add it a second time (a conflict, or two tables). Such a run merges into
+  // the working copy and commits nothing.
+  let docker_table_uncommitted = committing && ctx.has_docker && !head_has_tool_docker(&root)?;
+  committing &= !docker_table_uncommitted;
   let mut bases = if committing { Some(crate::git::stage_bases(&root)?) } else { None };
 
   // Apply the templates (plus tombi), putting the user's files back on any failure.
@@ -94,6 +107,11 @@ pub fn run(args: &Args) -> Result<ExitCode> {
 
   for note in &changes.notes {
     println!("note: {note}");
+  }
+  if docker_table_uncommitted {
+    println!(
+      "note: pyproject.toml's [tool.docker] table is not committed yet, so this run did not commit; review the result and commit it yourself."
+    );
   }
   if changes.is_empty() {
     // No file differs from its merge base; undo the staging so the user's uncommitted

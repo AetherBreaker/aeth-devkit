@@ -266,11 +266,7 @@ fn plain_python_project_gets_no_rust_overlays() {
 fn commits_only_changed_trackable_files_in_a_git_repo() {
   let dir = make_project();
   let root = dir.path();
-  let git = |args: &[&str]| {
-    let out = std::process::Command::new("git").current_dir(root).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-  };
+  let git = |args: &[&str]| git(root, args);
   git(&["init", "-q"]);
   git(&["config", "user.email", "t@t"]);
   git(&["config", "user.name", "t"]);
@@ -319,11 +315,7 @@ fn commits_only_changed_trackable_files_in_a_git_repo() {
 fn uncommitted_edits_to_managed_files_stay_out_of_the_commit() {
   let dir = make_project();
   let root = dir.path();
-  let git = |args: &[&str]| {
-    let out = std::process::Command::new("git").current_dir(root).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-  };
+  let git = |args: &[&str]| git(root, args);
   git_init(root);
   git(&["add", "-A"]);
   git(&["commit", "-q", "-m", "init"]);
@@ -349,11 +341,7 @@ fn uncommitted_edits_to_managed_files_stay_out_of_the_commit() {
 fn an_uncommitted_services_switch_is_honoured_on_a_committing_run() {
   let dir = make_project();
   let root = dir.path();
-  let git = |args: &[&str]| {
-    let out = std::process::Command::new("git").current_dir(root).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-  };
+  let git = |args: &[&str]| git(root, args);
   // HEAD is a sister project before migration: a [tool.docker] with the legacy keys and no
   // `services`. The user adds `services` and runs setup-project without committing first —
   // the documented migration flow.
@@ -367,7 +355,7 @@ fn an_uncommitted_services_switch_is_honoured_on_a_committing_run() {
   git(&["commit", "-q", "-m", "init"]);
   write(root, "pyproject.toml", &with_services);
 
-  // The cli's order: discover, then stage (which resets pyproject.toml to HEAD), then run.
+  // The cli's order: discover, stage, run.
   let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
   assert!(ctx.has_docker, "discovery must see the working copy");
   let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
@@ -405,6 +393,51 @@ fn an_uncommitted_services_switch_is_honoured_on_a_committing_run() {
     "{:?}",
     changes.notes
   );
+}
+
+#[test]
+fn a_tool_docker_table_that_only_the_working_copy_has_runs_without_a_commit() {
+  // HEAD has no [tool.docker]; the user adds one (with `services`) uncommitted. Merging the
+  // template's table into HEAD and replaying the user's table on top would conflict or
+  // leave two tables, so the cli merges into the working copy and commits nothing.
+  for at_end in [true, false] {
+    let dir = make_project();
+    let root = dir.path();
+    let without = strip_tool_docker(&read(root, "pyproject.toml"));
+    write(root, "pyproject.toml", &without);
+    git_init(root);
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "init"]);
+    let table = "[tool.docker]\n  services = [\"imap-report-collector\"]\n";
+    let edited = if at_end {
+      format!("{without}\n{table}")
+    } else {
+      without.replacen("[tool.pytest", &format!("{table}\n[tool.pytest"), 1)
+    };
+    assert_ne!(edited, without, "at_end={at_end}");
+    write(root, "pyproject.toml", &edited);
+
+    let code = aeth_devkit_setup::cli::run(&aeth_devkit_setup::cli::Args {
+      root: root.to_path_buf(),
+      templates_dir: Some(templates()),
+      dry_run: false,
+      check: false,
+      no_commit: false,
+      replace_docker: false,
+    })
+    .unwrap();
+    assert_eq!(code, std::process::ExitCode::SUCCESS, "at_end={at_end}");
+    assert_eq!(
+      git(root, &["rev-list", "--count", "HEAD"]),
+      "1",
+      "nothing committed (at_end={at_end})"
+    );
+    let py = read(root, "pyproject.toml");
+    let doc: toml_edit::DocumentMut = py.parse().unwrap_or_else(|e| panic!("at_end={at_end}: {e}\n{py}"));
+    assert_eq!(doc["tool"]["docker"]["services"].as_array().unwrap().len(), 1, "{py}");
+    assert!(doc["tool"]["docker"].get("required_persisted_dirs").is_some(), "{py}");
+    assert!(root.join("docker/Dockerfile").is_file(), "the Docker step ran (at_end={at_end})");
+  }
 }
 
 #[test]
@@ -561,10 +594,15 @@ fn docker_less_project_gets_no_tool_docker_and_no_dockerignore() {
   assert!(!root.join(".dockerignore").exists());
 }
 
+fn git(root: &Path, args: &[&str]) -> String {
+  let out = std::process::Command::new("git").current_dir(root).args(args).output().unwrap();
+  assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+  String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
 fn git_init(root: &Path) {
   for args in [&["init", "-q"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"]] {
-    let out = std::process::Command::new("git").current_dir(root).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    git(root, args);
   }
 }
 
