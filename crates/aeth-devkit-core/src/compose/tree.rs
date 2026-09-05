@@ -7,7 +7,7 @@
 
 use std::cmp::Reverse;
 
-use super::{key_value, replace_value};
+use super::{indent_of, key_value, replace_value, unquote};
 
 /// A `key: value` mapping line and the extent of its subtree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,10 +51,6 @@ pub fn split_lines(text: &str) -> Vec<String> {
   text.lines().map(str::to_string).collect()
 }
 
-fn indent_of(line: &str) -> usize {
-  line.len() - line.trim_start().len()
-}
-
 fn is_blank_or_comment(line: &str) -> bool {
   let t = line.trim();
   t.is_empty() || t.starts_with('#')
@@ -63,14 +59,6 @@ fn is_blank_or_comment(line: &str) -> bool {
 fn is_list_item(line: &str) -> bool {
   let t = line.trim_start();
   t == "-" || t.starts_with("- ")
-}
-
-/// Surrounding matching quotes removed, trailing ` # comment` dropped.
-fn unquote(s: &str) -> String {
-  let v = s.split(" #").next().unwrap_or(s).trim();
-  let v = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(v);
-  let v = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')).unwrap_or(v);
-  v.to_string()
 }
 
 /// Exclusive end of the block starting at `line` with `indent`. A later content line at

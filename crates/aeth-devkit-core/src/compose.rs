@@ -67,22 +67,28 @@ pub struct ServiceBlock {
   pub package_version: Option<KeyLine>,
 }
 
-fn indent_of(line: &str) -> usize {
+pub(crate) fn indent_of(line: &str) -> usize {
   line.len() - line.trim_start().len()
 }
 
+/// A scalar as written, with surrounding matching quotes removed and a trailing
+/// ` # comment` dropped. The one definition of "what a value is" for mapping lines and
+/// list items alike.
+pub(crate) fn unquote(s: &str) -> String {
+  let v = s.split(" #").next().unwrap_or(s).trim();
+  let v = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(v);
+  let v = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')).unwrap_or(v);
+  v.to_string()
+}
+
 /// `("KEY", "value")` for a plain mapping line; `None` for blanks, comments, and list items.
-/// The value has any trailing ` # comment` stripped and surrounding quotes removed.
 fn key_value(line: &str) -> Option<(&str, String)> {
   let t = line.trim_start();
   if t.is_empty() || t.starts_with('#') || t.starts_with('-') {
     return None;
   }
   let (k, v) = t.split_once(':')?;
-  let v = v.split(" #").next().unwrap_or(v).trim();
-  let v = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(v);
-  let v = v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')).unwrap_or(v);
-  Some((k.trim(), v.to_string()))
+  Some((k.trim(), unquote(v)))
 }
 
 /// The service blocks under the top-level `services:` key. Only the four pin-relevant keys
@@ -239,20 +245,18 @@ pub fn replace_value(line: &str, new_value: &str) -> String {
   format!("{head}{space}{rendered}{gap}{comment}")
 }
 
-/// Apply `(line index, new value)` edits to `text`, returning the new content. Line
-/// endings and the presence of a trailing newline are preserved.
+/// Apply `(line index, new value)` edits to `text`, returning the new content: the
+/// `SetValue` subset of [`tree::apply_edits`], which owns the line-ending rule (CRLF and
+/// the trailing newline are preserved) so pin and setup-project cannot drift apart.
 pub fn apply_pins(text: &str, edits: &[(usize, String)]) -> String {
-  let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-  for (i, new_value) in edits {
-    if let Some(l) = lines.get_mut(*i) {
-      *l = replace_value(l, new_value);
-    }
-  }
-  let mut out = lines.join("\n");
-  if text.ends_with('\n') {
-    out.push('\n');
-  }
-  out
+  let edits: Vec<tree::Edit> = edits
+    .iter()
+    .map(|(line, value)| tree::Edit::SetValue {
+      line: *line,
+      value: value.clone(),
+    })
+    .collect();
+  tree::apply_edits(text, &edits)
 }
 
 #[cfg(test)]
@@ -369,5 +373,10 @@ volumes: {}
     assert!(out.contains("PACKAGE_VERSION: \"2.0.0\""));
     assert!(out.contains("PACKAGE_VERSION: 9.9.9"), "unmatched service untouched");
     assert!(out.ends_with('\n'));
+    // A CRLF checkout keeps its line endings, like every setup-project edit.
+    let crlf = COMPOSE.replace('\n', "\r\n");
+    let out = apply_pins(&crlf, &edits);
+    assert!(out.contains("GIT_TAG: v2.0.0  # pinned\r\n"), "{out:?}");
+    assert!(!out.contains("\n\n") && out.ends_with("\r\n"), "{out:?}");
   }
 }
