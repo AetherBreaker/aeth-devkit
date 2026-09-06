@@ -141,8 +141,9 @@ with no stdin there is no diff review, and `--check` never opens an editor.
    its `.vsix` into the devkit cache dir (the HTTP client core already uses for indexes),
    and run `code --install-extension <path> --force`. A fresh install is usable
    immediately. An upgrade over an already-loaded extension is not: the CLI prints
-   `reload the VS Code window, then run setup-project again` and exits without changing
-   anything. Any failure (offline, no tag yet, install error) → note, terminal flow.
+   `reload the VS Code window, then run setup-project again` as an error (exit 2) without
+   changing anything. Any failure (offline, no tag yet, install error) → note, terminal
+   flow.
 4. **Ensure the proposal grant**: `~/.vscode/argv.json` (JSON with comments; edited with
    the setup crate's comment-preserving JSON merge) gets `aeth.aeth-devkit` appended to
    `enable-proposed-api`. When the entry was added this run, print

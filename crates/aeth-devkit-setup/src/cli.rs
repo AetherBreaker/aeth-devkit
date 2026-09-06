@@ -105,8 +105,10 @@ pub fn run(args: &Args) -> Result<ExitCode> {
         None
       }
       crate::vscode::Prepared::ReloadNeeded => {
-        println!("The devkit VS Code extension was updated. Reload the VS Code window, then run setup-project again.");
-        return Ok(ExitCode::SUCCESS);
+        // A refusal like the headless one: nothing was done, so exit 2 says so to a wrapper.
+        bail!(
+          "the devkit VS Code extension was updated; reload the VS Code window, then run setup-project again (or pass --no-vscode)"
+        )
       }
       crate::vscode::Prepared::Ready(vs) => Some(vs),
     }
