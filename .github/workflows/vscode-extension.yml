@@ -18,8 +18,11 @@ env:
 
 jobs:
   release:
-    # Only devkit's own `v*` tags; a hand-made extension release must not recurse.
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
+    # Only devkit's own `v*` tags; the extension's `vscode-extension-v*` start with `v`
+    # too, and a hand-made one of those must not recurse.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (startsWith(github.event.release.tag_name, 'v') && !startsWith(github.event.release.tag_name, 'vscode-extension-'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -54,6 +57,9 @@ jobs:
 
       - if: steps.version.outputs.n
         run: npm ci
+
+      - if: steps.version.outputs.n
+        run: npm run typecheck
 
       - if: steps.version.outputs.n
         run: npm test

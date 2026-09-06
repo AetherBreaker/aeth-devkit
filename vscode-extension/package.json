@@ -11,7 +11,6 @@
   "main": "./dist/extension.js",
   "activationEvents": ["onUri"],
   "enabledApiProposals": ["contribEditorContentMenu"],
-  "aethDevkit": { "protocol": 1 },
   "contributes": {
     "commands": [
       { "command": "aeth-devkit.previousChange", "title": "Previous change", "category": "devkit", "icon": "$(arrow-up)" },
@@ -39,7 +38,7 @@
         { "command": "aeth-devkit.applyAccepted", "when": "resourceScheme == aeth-devkit-proposed" },
         { "command": "aeth-devkit.acceptAllHunks", "when": "resourceScheme == aeth-devkit-proposed" },
         { "command": "aeth-devkit.replaceFile", "when": "resourceScheme == aeth-devkit-proposed" },
-        { "command": "aeth-devkit.replaceAll", "when": "resourceScheme == aeth-devkit-proposed" },
+        { "command": "aeth-devkit.replaceAll", "when": "resourceScheme == aeth-devkit-proposed && aeth-devkit.offerReplaceAll" },
         { "command": "aeth-devkit.keepFile", "when": "resourceScheme == aeth-devkit-proposed" }
       ],
       "editor/context": [
