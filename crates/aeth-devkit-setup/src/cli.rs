@@ -116,10 +116,9 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   if !dry_run && let Err(e) = crate::interrupt::install() {
     println!("note: {e:#}; a Ctrl-C will not wait for a write in progress to finish.");
   }
-  let reviewer = vs
-    .as_ref()
-    .filter(|_| !dry_run)
-    .map(|v| crate::vscode::session::VsCodeReviewer::new(v, &runner));
+  // Handed in for a dry run too: never consulted there (`decide` answers first), but its
+  // presence is what makes the run keep previews for the review at the end.
+  let reviewer = vs.as_ref().map(|v| crate::vscode::session::VsCodeReviewer::new(v, &runner));
 
   // Discovered before staging (see `run_with`).
   let ctx = crate::context::ProjectContext::discover(&root)?;
