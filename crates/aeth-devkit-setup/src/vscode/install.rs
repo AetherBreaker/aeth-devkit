@@ -131,6 +131,29 @@ pub fn latest_tag_number(refs_json: &str) -> Result<Option<u32>> {
   )
 }
 
+/// `N` for the newest `aeth.aeth-devkit-N.0.0` folder in VS Code's extensions directory,
+/// skipping any `.obsolete` marks for deletion. Reading it costs nothing next to
+/// launching `code --list-extensions` (a third of a second or more), which stays the
+/// fallback for a custom extensions directory or a portable install.
+pub fn installed_on_disk(extensions_dir: &Path) -> Option<u32> {
+  let obsolete: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(extensions_dir.join(".obsolete"))
+    .ok()
+    .and_then(|s| serde_json::from_str(&s).ok())
+    .unwrap_or_default();
+  let prefix = format!("{EXTENSION_ID}-");
+  std::fs::read_dir(extensions_dir)
+    .ok()?
+    .flatten()
+    .filter_map(|e| {
+      let name = e.file_name().to_string_lossy().into_owned();
+      if obsolete.contains_key(&name) || !name.get(..prefix.len())?.eq_ignore_ascii_case(&prefix) {
+        return None;
+      }
+      name[prefix.len()..].split('.').next()?.parse().ok()
+    })
+    .max()
+}
+
 /// `N` from the `aeth.aeth-devkit@N.0.0` line of `code --list-extensions --show-versions`.
 pub fn installed_version(list_output: &str) -> Option<u32> {
   list_output.lines().find_map(|l| {
@@ -145,13 +168,25 @@ pub fn installed_version(list_output: &str) -> Option<u32> {
 /// Make sure a compatible extension is installed, installing the newest release when
 /// `install` is set. `Ok(true)` when the install went over a loaded extension, so VS Code
 /// must reload before it can answer; an error says why no compatible extension is there.
-pub fn ensure_extension(runner: &dyn Runner, fetch: &dyn Fetch, launcher: &Path, cache: &Path, install: bool) -> Result<bool> {
+pub fn ensure_extension(
+  runner: &dyn Runner,
+  fetch: &dyn Fetch,
+  launcher: &Path,
+  extensions_dir: &Path,
+  cache: &Path,
+  install: bool,
+) -> Result<bool> {
   let code = launcher.to_string_lossy();
-  let out = runner.run_capture(&code, &["--list-extensions".into(), "--show-versions".into()], Path::new("."))?;
-  if !out.success() {
-    bail!("`code --list-extensions` failed: {}", out.stderr.trim());
-  }
-  let installed = installed_version(&out.stdout);
+  let installed = match installed_on_disk(extensions_dir) {
+    Some(n) => Some(n),
+    None => {
+      let out = runner.run_capture(&code, &["--list-extensions".into(), "--show-versions".into()], Path::new("."))?;
+      if !out.success() {
+        bail!("`code --list-extensions` failed: {}", out.stderr.trim());
+      }
+      installed_version(&out.stdout)
+    }
+  };
   if installed.is_some_and(|n| n >= MIN_EXTENSION_VERSION) {
     return Ok(false);
   }
@@ -200,12 +235,37 @@ mod tests {
   }
 
   #[test]
+  fn the_extensions_folder_answers_without_launching_code() {
+    let ext = tempfile::tempdir().unwrap();
+    assert_eq!(installed_on_disk(ext.path()), None);
+    for d in [
+      "ms-python.python-2024.1.0",
+      "Aeth.aeth-devkit-2.0.0",
+      "aeth.aeth-devkit-3.0.0",
+      "aeth.aeth-devkit-x",
+    ] {
+      std::fs::create_dir(ext.path().join(d)).unwrap();
+    }
+    assert_eq!(installed_on_disk(ext.path()), Some(3));
+    std::fs::write(ext.path().join(".obsolete"), r#"{"aeth.aeth-devkit-3.0.0":true}"#).unwrap();
+    assert_eq!(
+      installed_on_disk(ext.path()),
+      Some(2),
+      "an uninstall pending deletion does not count"
+    );
+    let r = RecordingRunner::new(0);
+    let cache = tempfile::tempdir().unwrap();
+    assert!(!ensure_extension(&r, &StubFetch::default(), Path::new("code"), ext.path(), cache.path(), true).unwrap());
+    assert!(r.calls_for("code").is_empty(), "no `code --list-extensions`");
+  }
+
+  #[test]
   fn ready_when_a_compatible_extension_is_installed() {
     let r = RecordingRunner::new(0);
     r.script("code", LIST, 0, "aeth.aeth-devkit@1.0.0\n");
     let f = StubFetch::default();
     let cache = tempfile::tempdir().unwrap();
-    assert!(!ensure_extension(&r, &f, Path::new("code"), cache.path(), true).unwrap());
+    assert!(!ensure_extension(&r, &f, Path::new("code"), &cache.path().join("no-ext"), cache.path(), true).unwrap());
     assert_eq!(r.calls_for("code").len(), 1, "no install");
     assert!(f.downloads.borrow().is_empty());
   }
@@ -216,7 +276,7 @@ mod tests {
     r.script("code", LIST, 0, "ms-python.python@2024.1.0\n");
     let f = fetch_with_refs();
     let cache = tempfile::tempdir().unwrap();
-    assert!(!ensure_extension(&r, &f, Path::new("code"), cache.path(), true).unwrap());
+    assert!(!ensure_extension(&r, &f, Path::new("code"), &cache.path().join("no-ext"), cache.path(), true).unwrap());
     let vsix = cache.path().join("vsix").join("aeth-devkit-vscode-3.vsix");
     assert_eq!(f.downloads.borrow()[0], (vsix_url(3), vsix.clone()));
     assert!(vsix.is_file());
@@ -229,7 +289,17 @@ mod tests {
     let r = RecordingRunner::new(0);
     r.script("code", LIST, 0, "aeth.aeth-devkit@0.0.0\n");
     let cache = tempfile::tempdir().unwrap();
-    assert!(ensure_extension(&r, &fetch_with_refs(), Path::new("code"), cache.path(), true).unwrap());
+    assert!(
+      ensure_extension(
+        &r,
+        &fetch_with_refs(),
+        Path::new("code"),
+        &cache.path().join("no-ext"),
+        cache.path(),
+        true
+      )
+      .unwrap()
+    );
   }
 
   #[test]
@@ -239,19 +309,59 @@ mod tests {
     let f = fetch_with_refs();
     let cache = tempfile::tempdir().unwrap();
     let why = |r: Result<bool>| format!("{:#}", r.unwrap_err());
-    assert!(why(ensure_extension(&r, &f, Path::new("code"), cache.path(), false)).contains("not installed"));
+    assert!(
+      why(ensure_extension(
+        &r,
+        &f,
+        Path::new("code"),
+        &cache.path().join("no-ext"),
+        cache.path(),
+        false
+      ))
+      .contains("not installed")
+    );
     assert!(f.downloads.borrow().is_empty());
 
     let offline = StubFetch::default();
-    assert!(why(ensure_extension(&r, &offline, Path::new("code"), cache.path(), true)).contains("no body"));
+    assert!(
+      why(ensure_extension(
+        &r,
+        &offline,
+        Path::new("code"),
+        &cache.path().join("no-ext"),
+        cache.path(),
+        true
+      ))
+      .contains("no body")
+    );
 
     let mut old = StubFetch::default();
     old.bodies.insert(refs_url(), r#"[{"ref":"refs/tags/vscode-extension-v0"}]"#.into());
-    assert!(why(ensure_extension(&r, &old, Path::new("code"), cache.path(), true)).contains("no compatible"));
+    assert!(
+      why(ensure_extension(
+        &r,
+        &old,
+        Path::new("code"),
+        &cache.path().join("no-ext"),
+        cache.path(),
+        true
+      ))
+      .contains("no compatible")
+    );
 
     let failing = RecordingRunner::new(0);
     failing.script("code", LIST, 0, "");
     failing.script_err("code", &["--install-extension"], 1, "boom");
-    assert!(why(ensure_extension(&failing, &f, Path::new("code"), cache.path(), true)).contains("boom"));
+    assert!(
+      why(ensure_extension(
+        &failing,
+        &f,
+        Path::new("code"),
+        &cache.path().join("no-ext"),
+        cache.path(),
+        true
+      ))
+      .contains("boom")
+    );
   }
 }
