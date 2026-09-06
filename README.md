@@ -282,8 +282,8 @@ when a devkit release ships with changes under `vscode-extension/`.
 When `devkit setup-project` runs in a VS Code terminal (`TERM_PROGRAM=vscode`; force with
 `--vscode`, disable with `--no-vscode`) with stdin a terminal and neither `--check` nor
 `--replace-docker`, it installs the newest compatible extension if none is present (a
-one-off `code --install-extension`; an upgrade over a running one asks you to reload the
-window and run again), adds itself to `enable-proposed-api` in `~/.vscode/argv.json`
+one-off `code --install-extension`; an upgrade over a running one exits 2 asking you to
+reload the window and run again), adds itself to `enable-proposed-api` in `~/.vscode/argv.json`
 (restart VS Code once; this enables the floating Replace/Keep button), and then opens
 each Docker change as a native diff instead of the typed prompt. Per hunk: `Accept` and
 `Reject` CodeLens (the extension defaults `diffEditor.codeLens` to on; an explicit

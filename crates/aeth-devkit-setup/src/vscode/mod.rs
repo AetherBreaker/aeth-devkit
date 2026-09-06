@@ -193,7 +193,7 @@ pub enum Prepared {
   Inert,
   /// VS Code is here but cannot be used; the note says why.
   Unavailable(String),
-  /// A newer extension was just installed over a loaded one; stop and say so.
+  /// A newer extension was just installed over a loaded one; stop with an error.
   ReloadNeeded,
   Ready(VsCode),
 }
