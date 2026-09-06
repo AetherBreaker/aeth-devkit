@@ -211,9 +211,9 @@ pub fn prepare(opts: &Options, runner: &dyn aeth_devkit_core::process::Runner, f
     return Prepared::Unavailable("cannot locate the devkit cache or home directory".into());
   };
   match install::ensure_extension(runner, fetch, &launcher, cache, opts.install) {
-    install::Ensure::Ready => {}
-    install::Ensure::ReloadNeeded => return Prepared::ReloadNeeded,
-    install::Ensure::Unavailable(why) => return Prepared::Unavailable(why),
+    Ok(false) => {}
+    Ok(true) => return Prepared::ReloadNeeded,
+    Err(e) => return Prepared::Unavailable(format!("{e:#}")),
   }
   let argv_path = home.join(".vscode").join("argv.json");
   let argv = match std::fs::read_to_string(&argv_path) {
@@ -280,7 +280,7 @@ mod tests {
     }
   }
 
-  /// The launcher `options` planted, spelled as `ensure` passes it to the runner.
+  // The launcher `options` planted, spelled as `ensure_extension` passes it to the runner.
   fn code(dir: &Path) -> String {
     dir
       .join("bin")

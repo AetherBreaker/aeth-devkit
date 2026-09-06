@@ -128,7 +128,12 @@ impl<'a> Consent<'a> {
         Err(e) => self.retire_reviewer(&format!("{e:#}")),
       }
     }
-    Ok(match self.prompt.ask(&p.question)?.as_str() {
+    let keywords = if offer_replace_all {
+      "[replace / replace all / anything else keeps it]:"
+    } else {
+      "[replace / anything else keeps it]:"
+    };
+    Ok(match self.prompt.ask(&format!("{} {keywords}", p.question))?.as_str() {
       "replace" => Decision::Replace,
       "replace all" => {
         self.mode.set(Mode::ReplaceAll);
@@ -260,12 +265,11 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
       }
       Decision::Partial { text: t, accepted, total } => {
         *text = t;
-        details.push(format!("{what}: {accepted} of {total} hunks applied"));
+        details.push(format!("{what} ({accepted} of {total} hunks)"));
       }
     }
     Ok(())
   };
-  let keywords = "[replace / replace all / anything else keeps it]:";
   for name in &ctx.docker_services {
     let lines = tree::split_lines(&text);
     // Block-form above, and every accepted edit adds under it or beside it.
@@ -288,7 +292,7 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
         ask(
           &mut text,
           &format!("service {name}"),
-          format!("Apply the {name} edits to {rel}? {keywords}"),
+          format!("Apply the {name} edits to {rel}?"),
           &o.edits,
           o.details,
           true,
@@ -309,7 +313,7 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
         ask(
           &mut text,
           &format!("new service {name}"),
-          format!("Add service {name} to {rel}? [replace / anything else keeps it]:"),
+          format!("Add service {name} to {rel}?"),
           &[edit],
           vec![format!("added service {name}")],
           false,
@@ -323,7 +327,7 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
   ask(
     &mut text,
     "top level",
-    format!("Apply the top-level edits to {rel}? {keywords}"),
+    format!("Apply the top-level edits to {rel}?"),
     &o.edits,
     o.details,
     true,

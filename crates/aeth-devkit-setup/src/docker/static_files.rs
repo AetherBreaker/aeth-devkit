@@ -132,12 +132,7 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, co
     }
     let rendered = match_line_endings(&rendered, &original);
     println!("{}", unified_diff(&rel, &original, &rendered));
-    let proposal = Proposal::new(
-      &rel,
-      format!("Replace {rel}? [replace / replace all / anything else keeps it]:"),
-      &original,
-      &rendered,
-    );
+    let proposal = Proposal::new(&rel, format!("Replace {rel}?"), &original, &rendered);
     let decision = consent.decide(&proposal, true)?;
     let detail = decision.detail("replaced with the devkit template");
     match decision.text(&proposal) {

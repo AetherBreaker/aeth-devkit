@@ -124,11 +124,6 @@ impl<'a> VsCodeReviewer<'a> {
       next: Cell::new(0),
     }
   }
-
-  pub fn with_poll(mut self, poll: Duration) -> Self {
-    self.poll = poll;
-    self
-  }
 }
 
 impl Reviewer for VsCodeReviewer<'_> {
@@ -181,7 +176,8 @@ mod tests {
     let tmp = tempfile::tempdir().unwrap();
     let vs = vscode(tmp.path());
     let runner = RecordingRunner::new(0);
-    let reviewer = VsCodeReviewer::new(&vs, &runner).with_poll(Duration::from_millis(5));
+    let mut reviewer = VsCodeReviewer::new(&vs, &runner);
+    reviewer.poll = Duration::from_millis(5);
     let dir = vs.run_dir.clone();
     let responder = std::thread::spawn(move || {
       let request = loop {
@@ -244,7 +240,8 @@ mod tests {
     let tmp = tempfile::tempdir().unwrap();
     let vs = vscode(tmp.path());
     let runner = RecordingRunner::new(0);
-    let mut reviewer = VsCodeReviewer::new(&vs, &runner).with_poll(Duration::from_millis(5));
+    let mut reviewer = VsCodeReviewer::new(&vs, &runner);
+    reviewer.poll = Duration::from_millis(5);
     reviewer.ack_timeout = Duration::from_millis(30);
     let err = reviewer.review(&Proposal::new("t", "q", "a\n", "b\n"), true).unwrap_err();
     assert!(err.to_string().contains("did not pick up"), "{err:#}");
