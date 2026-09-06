@@ -256,7 +256,8 @@ No timeout: a review takes as long as it takes, and a closed VS Code window simp
 the CLI waiting. The first Ctrl-C while waiting cancels the request (the CLI writes
 `<id>.cancel`, which the extension honours by closing the tab without a response) and asks
 the terminal prompt for that file; a second Ctrl-C at the terminal prompt ends the
-process exactly as an unhandled Ctrl-C does today. Any protocol error (unparseable
+process as an unhandled Ctrl-C would, except that a file write in progress completes first
+(`interrupt.rs`), so no file is torn; edits held only in memory are lost by decision. Any protocol error (unparseable
 response, missing file) falls back to the terminal prompt.
 
 Each run owns `<cache>/consent/<pid>/` and removes it when it ends; the extension deletes

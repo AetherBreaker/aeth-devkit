@@ -223,6 +223,7 @@ pub fn prepare(opts: &Options, runner: &dyn aeth_devkit_core::process::Runner, f
   let content_menu = match grant_proposal(argv.as_deref()) {
     Ok(None) => true,
     Ok(Some(granted)) if opts.install => {
+      let _w = crate::interrupt::Writing::begin();
       if let Err(e) = std::fs::create_dir_all(argv_path.parent().unwrap()).and_then(|()| std::fs::write(&argv_path, granted)) {
         notes.push(format!(
           "could not edit {}: {e}; the in-editor buttons stay hidden",

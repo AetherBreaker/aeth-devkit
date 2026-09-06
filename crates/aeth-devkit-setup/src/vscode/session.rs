@@ -1,11 +1,10 @@
 //! The VS Code side of a run: request files in the devkit cache, a `vscode://` URL that
 //! opens the diff, and polling for the answer. Ctrl-C while waiting hands the question
-//! back to the terminal; a second Ctrl-C (anywhere else) ends the process as it always
-//! did, because installing a handler removes the default behaviour.
+//! back to the terminal (see `crate::interrupt` for every other moment).
 
 use std::cell::Cell;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
@@ -14,22 +13,7 @@ use aeth_devkit_core::process::Runner;
 
 use super::VsCode;
 use super::protocol::{EXTENSION_ID, PROTOCOL, Proposal, Request, Response, Reviewer};
-
-/// True only inside [`wait_for`]; the handler reads it to choose between "cancel the
-/// VS Code request" and "exit".
-static WAITING: AtomicBool = AtomicBool::new(false);
-static INTERRUPTED: AtomicBool = AtomicBool::new(false);
-
-pub fn install_ctrlc_handler() -> Result<()> {
-  ctrlc::set_handler(|| {
-    if WAITING.load(SeqCst) {
-      INTERRUPTED.store(true, SeqCst);
-    } else {
-      std::process::exit(130);
-    }
-  })
-  .context("installing Ctrl-C handler")
-}
+use crate::interrupt::{INTERRUPTED, WAITING};
 
 /// Write via a sibling temp file and rename, so a reader polling the path never sees a
 /// half-written file (the extension does the same for responses).
@@ -177,11 +161,8 @@ impl Reviewer for VsCodeReviewer<'_> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::interrupt::tests::SERIAL;
   use aeth_devkit_core::process::RecordingRunner;
-  use std::sync::Mutex;
-
-  // The two statics are process-wide; these tests must not overlap.
-  static SERIAL: Mutex<()> = Mutex::new(());
 
   fn vscode(dir: &Path) -> VsCode {
     VsCode {

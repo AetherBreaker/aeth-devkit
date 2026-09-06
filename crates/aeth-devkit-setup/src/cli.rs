@@ -115,9 +115,9 @@ pub fn run(args: &Args) -> Result<ExitCode> {
     for note in &vs.notes {
       println!("note: {note}");
     }
-    if !dry_run {
-      crate::vscode::session::install_ctrlc_handler()?;
-    }
+  }
+  if !dry_run && let Err(e) = crate::interrupt::install() {
+    println!("note: {e:#}; a Ctrl-C will not wait for a write in progress to finish.");
   }
   let reviewer = vs
     .as_ref()
@@ -133,7 +133,12 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   if committing {
     refuse_uncommitted_services(&root)?;
   }
-  let mut bases = if committing { Some(crate::git::stage_bases(&root)?) } else { None };
+  let mut bases = if committing {
+    let _w = crate::interrupt::Writing::begin();
+    Some(crate::git::stage_bases(&root)?)
+  } else {
+    None
+  };
 
   // Apply the templates (plus tombi), putting the user's files back on any failure.
   let apply = |changes: &mut Option<crate::changes::Changes>| -> Result<()> {
@@ -164,6 +169,7 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   let mut changes = None;
   if let Err(e) = apply(&mut changes) {
     if let Some(bases) = &bases {
+      let _w = crate::interrupt::Writing::begin();
       aeth_devkit_core::commit::restore_worktree(&root, bases)?;
     }
     return Err(e);
@@ -184,6 +190,7 @@ pub fn run(args: &Args) -> Result<ExitCode> {
     // No file differs from its merge base; undo the staging so the user's uncommitted
     // edits to managed files are back in place.
     if let Some(bases) = &bases {
+      let _w = crate::interrupt::Writing::begin();
       aeth_devkit_core::commit::unstage_clean_base(&root, bases)?;
     }
     if changes.problems.is_empty() {
@@ -206,6 +213,7 @@ pub fn run(args: &Args) -> Result<ExitCode> {
     return Ok(ExitCode::from(1));
   }
   if let Some(bases) = &mut bases {
+    let _w = crate::interrupt::Writing::begin();
     match crate::git::commit_changes(&root, &changes, bases) {
       Ok(Some(hash)) => println!("Committed as {hash}."),
       Ok(None) => println!("Nothing to commit (only gitignored or env files changed)."),
