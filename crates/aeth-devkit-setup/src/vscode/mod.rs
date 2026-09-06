@@ -210,7 +210,8 @@ pub fn prepare(opts: &Options, runner: &dyn aeth_devkit_core::process::Runner, f
   let (Some(cache), Some(home)) = (&opts.cache, &opts.home) else {
     return Prepared::Unavailable("cannot locate the devkit cache or home directory".into());
   };
-  match install::ensure_extension(runner, fetch, &launcher, cache, opts.install) {
+  let extensions_dir = home.join(".vscode").join("extensions");
+  match install::ensure_extension(runner, fetch, &launcher, &extensions_dir, cache, opts.install) {
     Ok(false) => {}
     Ok(true) => return Prepared::ReloadNeeded,
     Err(e) => return Prepared::Unavailable(format!("{e:#}")),

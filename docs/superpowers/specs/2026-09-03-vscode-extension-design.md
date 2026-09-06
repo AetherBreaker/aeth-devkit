@@ -134,8 +134,10 @@ with no stdin there is no diff review, and `--check` never opens an editor.
    and `std::process::Command` does not apply `PATHEXT`, so the lookup tries `code.cmd`
    explicitly. Not found → note, terminal flow. `code-insiders` and `cursor` (different
    URI schemes, `argv.json` locations and extension dirs) are a TODO.md entry.
-3. **Ensure the extension**: `code --list-extensions --show-versions`; parse
-   `aeth.aeth-devkit@N.0.0`. If absent or `N < MIN_EXTENSION_VERSION`: resolve the newest
+3. **Ensure the extension**: look for an `aeth.aeth-devkit-N.0.0` folder in
+   `~/.vscode/extensions` (skipping `.obsolete` entries); only when none is there, run
+   `code --list-extensions --show-versions` and parse `aeth.aeth-devkit@N.0.0`. If absent
+   or `N < MIN_EXTENSION_VERSION`: resolve the newest
    `vscode-extension-v*` tag through the GitHub API (`git/matching-refs/tags/`), download
    its `.vsix` into the devkit cache dir (the HTTP client core already uses for indexes),
    and run `code --install-extension <path> --force`. A fresh install is usable
