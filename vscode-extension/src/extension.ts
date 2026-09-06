@@ -80,13 +80,26 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
+/** The window is going away: hand every open question back to the terminal. */
 export function deactivate(): void {
-  for (const s of sessions.values()) clearInterval(s.cancelPoll);
+  for (const s of sessions.values()) {
+    clearInterval(s.cancelPoll);
+    if (!s.answered) respond(s.req.response_path, { decision: 'dismissed' });
+  }
 }
 
 function fail(message: string): void {
   log.appendLine(`error: ${message}`);
   void vscode.window.showErrorMessage(`aeth-devkit: ${message}`);
+}
+
+/** A failed write means the run's folder went with its CLI: reported, never thrown. */
+function respond(path: string, r: Response): void {
+  try {
+    writeResponse(path, r);
+  } catch (e) {
+    fail(`could not answer devkit: ${(e as Error).message}`);
+  }
 }
 
 /**
@@ -124,39 +137,51 @@ async function handleUri(uri: vscode.Uri): Promise<void> {
     return fail((e as Error).message);
   }
   if (req.protocol !== PROTOCOL) {
-    writeResponse(req.response_path, {
+    respond(req.response_path, {
       decision: 'error',
       message: `the extension speaks protocol ${PROTOCOL}, devkit sent ${req.protocol}; update one of them`,
     });
     return;
   }
-  await ensureDiffCodeLens();
-  await vscode.commands.executeCommand('setContext', 'aeth-devkit.contentMenu', contentMenuLive(req));
-  await vscode.commands.executeCommand('setContext', 'aeth-devkit.offerReplaceAll', req.offer_replace_all);
-  const currentText = fs.readFileSync(req.current_path, 'utf8');
-  const proposedText = fs.readFileSync(req.proposed_path, 'utf8');
-  fs.writeFileSync(ackPath(file), '');
-  const current = docs.register(req.id, 'current', req.title, currentText);
-  const proposed = docs.register(req.id, 'proposed', req.title, proposedText);
-  const s: OpenSession = {
-    req,
-    state: new HunkState(req.hunks.length),
-    answered: false,
-    current,
-    proposed,
-    currentText,
-    proposedText,
-    cancelPoll: setInterval(() => {
-      if (fs.existsSync(cancelPath(req))) {
-        log.appendLine(`${req.id}: cancelled by the CLI`);
-        s.answered = true;
-        void closeTab(s);
-      }
-    }, 250),
-  };
-  sessions.set(req.id, s);
-  await vscode.commands.executeCommand('vscode.diff', current, proposed, `devkit: ${req.title}`, { preview: false });
-  render(s);
+  // Anything that fails from here on is answered as an `error`, so the CLI retires this
+  // reviewer instead of waiting; the request names the response path already.
+  let s: OpenSession | undefined;
+  try {
+    await ensureDiffCodeLens();
+    await vscode.commands.executeCommand('setContext', 'aeth-devkit.contentMenu', contentMenuLive(req));
+    await vscode.commands.executeCommand('setContext', 'aeth-devkit.offerReplaceAll', req.offer_replace_all);
+    const currentText = fs.readFileSync(req.current_path, 'utf8');
+    const proposedText = fs.readFileSync(req.proposed_path, 'utf8');
+    fs.writeFileSync(ackPath(file), '');
+    const current = docs.register(req.id, 'current', req.title, currentText);
+    const proposed = docs.register(req.id, 'proposed', req.title, proposedText);
+    await vscode.commands.executeCommand('vscode.diff', current, proposed, `devkit: ${req.title}`, { preview: false });
+    // The poll starts only once the tab is open, so a failed open leaks no timer.
+    s = {
+      req,
+      state: new HunkState(req.hunks.length),
+      answered: false,
+      current,
+      proposed,
+      currentText,
+      proposedText,
+      cancelPoll: setInterval(() => {
+        if (s && fs.existsSync(cancelPath(req))) {
+          log.appendLine(`${req.id}: cancelled by the CLI`);
+          s.answered = true;
+          void closeTab(s);
+        }
+      }, 250),
+    };
+    sessions.set(req.id, s);
+    render(s);
+  } catch (e) {
+    const message = (e as Error).message;
+    fail(`${req.title}: ${message}`);
+    if (s) await closeTab(s);
+    else docs.forget(req.id);
+    respond(req.response_path, { decision: 'error', message });
+  }
 }
 
 /** `diffEditor.codeLens` is off by default; without it the per-hunk lenses never show. */
@@ -211,7 +236,7 @@ function withSession(arg: unknown, f: (s: OpenSession) => Promise<void>): void {
 async function decide(s: OpenSession, r: Response): Promise<void> {
   log.appendLine(`${s.req.id}: ${JSON.stringify(r)}`);
   s.answered = true;
-  writeResponse(s.req.response_path, r);
+  respond(s.req.response_path, r);
   await closeTab(s);
 }
 
@@ -236,11 +261,6 @@ function onTabsChanged(e: vscode.TabChangeEvent): void {
     if (!(tab.input instanceof vscode.TabInputTextDiff)) continue;
     const at = parseUri(tab.input.modified);
     const s = at ? sessions.get(at.id) : undefined;
-    if (s && !s.answered) {
-      log.appendLine(`${s.req.id}: dismissed`);
-      s.answered = true;
-      writeResponse(s.req.response_path, { decision: 'dismissed' });
-      void closeTab(s);
-    }
+    if (s && !s.answered) void decide(s, { decision: 'dismissed' });
   }
 }
