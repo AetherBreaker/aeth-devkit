@@ -205,11 +205,7 @@ function setHunk(id: string, i: number, d: HunkDecision): void {
   render(s);
 }
 
-/**
- * Show the decisions: a decided hunk gets the same lines in both panels, so its diff
- * collapses like an accepted change in the merge editor; only undecided hunks still
- * differ. Then the lenses and the status bar count.
- */
+/** Re-render both panels for the decisions (see `panels`), then the lenses and the count. */
 function render(s: OpenSession): void {
   const { left, right } = panels(s.currentText, s.proposedText, s.req.hunks, s.state);
   docs.update(s.current, left);

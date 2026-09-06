@@ -10,7 +10,6 @@ import {
   cancelPath,
   docPath,
   isInside,
-  merge,
   panels,
   parseRequest,
   requestPath,
@@ -123,10 +122,14 @@ describe('panels', () => {
   });
 
   it('mirrors the CLI assemble for rejected hunks', () => {
-    const ranges = hunks.map((h) => ({ base: h.proposed, other: h.current }));
-    expect(merge(prop, cur, ranges, () => false)).toBe(prop);
-    expect(merge(prop, cur, ranges, () => true)).toBe(cur);
-    expect(merge(prop, cur, ranges, (i) => i === 0)).toBe('a\nb\nc\nd\ne\nf\ng\nh\ni\nJ\nK\n');
+    const rejecting = (...idx: number[]) => {
+      const s = new HunkState(2);
+      for (const i of idx) s.decide(i, 'reject');
+      return panels(cur, prop, hunks, s).right;
+    };
+    expect(rejecting()).toBe(prop);
+    expect(rejecting(0, 1)).toBe(cur);
+    expect(rejecting(0)).toBe('a\nb\nc\nd\ne\nf\ng\nh\ni\nJ\nK\n');
   });
 
   it('collapses decided hunks on both sides and shifts later lens lines', () => {
