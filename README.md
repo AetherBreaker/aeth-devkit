@@ -286,7 +286,8 @@ one-off `code --install-extension`; an upgrade over a running one asks you to re
 window and run again), adds itself to `enable-proposed-api` in `~/.vscode/argv.json`
 (restart VS Code once; this enables the floating Replace/Keep button), and then opens
 each Docker change as a native diff instead of the typed prompt. Per hunk: `Accept` and
-`Reject` CodeLens (`diffEditor.codeLens` is switched on once if unset); rejected hunks
+`Reject` CodeLens (the extension defaults `diffEditor.codeLens` to on; an explicit
+`false` in your settings still wins); rejected hunks
 are dimmed and the status bar counts `n of m hunks accepted`. Whole file, as the floating
 editor buttons or the tab-bar icons until the proposal is live: `Apply accepted hunks`,
 `Accept all hunks`, `Replace file`, `Replace all` (rest of the run), `Keep file`.

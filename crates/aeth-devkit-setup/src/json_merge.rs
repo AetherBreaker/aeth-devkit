@@ -3,10 +3,13 @@
 use anyhow::{Context as _, Result};
 use serde_json::{Map, Value};
 
-/// Strip `//` and `/* */` comments (string-aware) and trailing commas.
-pub fn strip_jsonc(text: &str) -> String {
+/// `//` and `/* */` comments (string-aware) replaced by spaces, byte for byte, so an
+/// offset found in the result addresses the same place in `text`: a search that must
+/// not match inside a comment runs here and edits the original.
+pub fn blank_comments(text: &str) -> String {
   let mut out = String::with_capacity(text.len());
   let chars: Vec<char> = text.chars().collect();
+  let blank = |out: &mut String, c: char| out.extend(std::iter::repeat_n(' ', c.len_utf8()));
   let mut i = 0;
   let mut in_str = false;
   while i < chars.len() {
@@ -32,15 +35,20 @@ pub fn strip_jsonc(text: &str) -> String {
       }
       '/' if chars.get(i + 1) == Some(&'/') => {
         while i < chars.len() && chars[i] != '\n' {
+          blank(&mut out, chars[i]);
           i += 1;
         }
       }
       '/' if chars.get(i + 1) == Some(&'*') => {
+        let start = i;
         i += 2;
         while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
           i += 1;
         }
         i += 2;
+        for &c in &chars[start..i.min(chars.len())] {
+          if c == '\n' { out.push(c) } else { blank(&mut out, c) }
+        }
       }
       _ => {
         out.push(c);
@@ -48,9 +56,14 @@ pub fn strip_jsonc(text: &str) -> String {
       }
     }
   }
+  out
+}
+
+/// Strip comments and trailing commas: JSONC as `serde_json` can read it.
+pub fn strip_jsonc(text: &str) -> String {
   // Trailing commas: `,` followed only by whitespace and a closing bracket.
   let re = regex::Regex::new(r",(\s*[}\]])").unwrap();
-  re.replace_all(&out, "$1").into_owned()
+  re.replace_all(&blank_comments(text), "$1").into_owned()
 }
 
 /// `//` comment lines that appear before the first key (VS Code's boilerplate header).
