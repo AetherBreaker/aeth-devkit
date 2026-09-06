@@ -1,7 +1,8 @@
 //! Getting a compatible extension into VS Code: the newest `vscode-extension-vN` release
-//! is fetched from GitHub (no auth: the repo is public and this runs once per install)
-//! and handed to `code --install-extension`. A fresh install is live at once; an upgrade
-//! over a loaded extension needs a window reload, which the caller reports and stops on.
+//! is fetched from GitHub (the repo is public; a `GH_TOKEN`/`GITHUB_TOKEN` in the
+//! environment is sent only for the higher rate limit) and handed to
+//! `code --install-extension`. A fresh install is live at once; an upgrade over a loaded
+//! extension needs a window reload, which the caller reports and stops on.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -34,7 +35,11 @@ pub struct HttpFetch;
 
 impl HttpFetch {
   fn agent() -> ureq::Agent {
+    // Resolve and connect are the "are we online?" test, so they are tight: offline, the
+    // terminal fallback comes within ~3 s. The global budget is for the transfer itself.
     ureq::Agent::config_builder()
+      .timeout_resolve(Some(std::time::Duration::from_secs(1)))
+      .timeout_connect(Some(std::time::Duration::from_secs(2)))
       .timeout_global(Some(std::time::Duration::from_secs(60)))
       .http_status_as_error(false)
       .build()
@@ -45,12 +50,19 @@ impl HttpFetch {
 impl Fetch for HttpFetch {
   fn get_text(&self, url: &str) -> Result<String> {
     // GitHub's API rejects requests without a User-Agent.
-    let mut resp = Self::agent()
+    let req = Self::agent()
       .get(url)
       .header("User-Agent", "aeth-devkit")
-      .header("Accept", "application/vnd.github+json")
-      .call()
-      .with_context(|| format!("fetching {url}"))?;
+      .header("Accept", "application/vnd.github+json");
+    // `gh`'s own precedence; only the API call is authenticated, never the asset download.
+    let token = ["GH_TOKEN", "GITHUB_TOKEN"]
+      .iter()
+      .find_map(|k| std::env::var(k).ok().filter(|t| !t.is_empty()));
+    let req = match token {
+      Some(t) => req.header("Authorization", format!("Bearer {t}")),
+      None => req,
+    };
+    let mut resp = req.call().with_context(|| format!("fetching {url}"))?;
     if resp.status().as_u16() != 200 {
       bail!("HTTP {} from GET {url}", resp.status());
     }
