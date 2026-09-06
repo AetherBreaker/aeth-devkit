@@ -44,6 +44,9 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
 /// Returns the collected change log; nothing is written when `dry_run` is set.
 pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps: &docker::Deps) -> Result<Changes> {
   let mut changes = Changes::new(dry_run);
+  // Previews feed the VS Code review at the end of a dry run, and a reviewer present is
+  // the sign one will open; without it (`--check` in CI) nobody pays for the copies.
+  changes.keep_previews = deps.reviewer.is_some();
 
   // 1. pyproject.toml
   {

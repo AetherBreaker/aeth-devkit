@@ -23,7 +23,9 @@ pub struct Preview {
 pub struct Changes {
   dry_run: bool,
   pub files: Vec<FileChange>,
-  /// Every proposed text of a dry run, one per path; empty otherwise.
+  /// Whether a dry run keeps `previews`: set by the caller when a reviewer will show them.
+  pub keep_previews: bool,
+  /// Every proposed text of a dry run with `keep_previews`, one per path; empty otherwise.
   pub previews: Vec<Preview>,
   /// Every path devkit manages, whether or not this run changed it.
   ///
@@ -49,6 +51,7 @@ impl Changes {
     Self {
       dry_run,
       files: Vec::new(),
+      keep_previews: false,
       previews: Vec::new(),
       managed: Vec::new(),
       notes: Vec::new(),
@@ -81,7 +84,7 @@ impl Changes {
     } else {
       details
     };
-    if self.dry_run {
+    if self.dry_run && self.keep_previews {
       // Two steps can touch one file (`.gitignore`); the last proposal is the whole one.
       self.previews.retain(|p| p.path != path);
       self.previews.push(Preview {
@@ -182,12 +185,17 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("f");
     let mut c = Changes::new(true);
+    c.keep_previews = true;
     c.record_optional(&p, None, "one\n", vec![]).unwrap();
     c.record_optional(&p, None, "two\n", vec![]).unwrap();
     assert_eq!(c.previews.len(), 1);
     assert_eq!(c.previews[0].proposed, "two\n");
     assert!(!p.exists());
+    let mut quiet = Changes::new(true);
+    quiet.record_optional(&p, None, "one\n", vec![]).unwrap();
+    assert!(quiet.previews.is_empty() && quiet.files.len() == 1, "nobody to show them to");
     let mut wet = Changes::new(false);
+    wet.keep_previews = true;
     wet.record_optional(&p, None, "one\n", vec![]).unwrap();
     assert!(wet.previews.is_empty());
   }
