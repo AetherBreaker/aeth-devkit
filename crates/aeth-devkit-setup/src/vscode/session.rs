@@ -48,10 +48,14 @@ pub fn open_url(runner: &dyn Runner, launcher: &Path, url: &str) -> Result<()> {
 }
 
 /// Poll for the response. Ctrl-C writes the cancel marker (the extension closes the tab)
-/// and reports `Dismissed`, which the caller answers with the terminal prompt.
-pub fn wait_for(response: &Path, cancel: &Path, poll: Duration) -> Result<Response> {
+/// and reports `Dismissed`, which the caller answers with the terminal prompt. The ack
+/// (written once the extension holds the texts) is due within `ack_timeout`; without it
+/// nobody has the request, so the wait is an error rather than a hang. After it, the
+/// wait is unbounded: the user may take as long as they like.
+pub fn wait_for(response: &Path, cancel: &Path, ack: &Path, ack_timeout: Duration, poll: Duration) -> Result<Response> {
   INTERRUPTED.store(false, SeqCst);
   WAITING.store(true, SeqCst);
+  let ack_due = std::time::Instant::now() + ack_timeout;
   let result = loop {
     if INTERRUPTED.swap(false, SeqCst) {
       let _ = std::fs::write(cancel, "");
@@ -60,6 +64,12 @@ pub fn wait_for(response: &Path, cancel: &Path, poll: Duration) -> Result<Respon
     if response.is_file() {
       let text = std::fs::read_to_string(response).with_context(|| format!("reading {}", response.display()))?;
       break serde_json::from_str(&text).context("parsing the VS Code response");
+    }
+    if !ack.is_file() && std::time::Instant::now() >= ack_due {
+      break Err(anyhow::anyhow!(
+        "VS Code did not pick up the request within {}s: the extension may be disabled or not loaded yet, or the editor sees a different cache directory than this shell",
+        ack_timeout.as_secs_f32()
+      ));
     }
     std::thread::sleep(poll);
   };
@@ -115,6 +125,7 @@ pub struct VsCodeReviewer<'a> {
   vs: &'a VsCode,
   runner: &'a dyn Runner,
   poll: Duration,
+  ack_timeout: Duration,
   next: Cell<u32>,
 }
 
@@ -124,6 +135,7 @@ impl<'a> VsCodeReviewer<'a> {
       vs,
       runner,
       poll: Duration::from_millis(250),
+      ack_timeout: Duration::from_secs(5),
       next: Cell::new(0),
     }
   }
@@ -158,7 +170,7 @@ impl Reviewer for VsCodeReviewer<'_> {
     write_atomic(&file("request.json"), &serde_json::to_string_pretty(&request)?)?;
     open_url(self.runner, &self.vs.launcher, &format!("vscode://{EXTENSION_ID}/consent?id={id}"))?;
     println!("waiting for VS Code (Ctrl-C to answer here instead)…");
-    wait_for(&file("response.json"), &file("cancel"), self.poll)
+    wait_for(&file("response.json"), &file("cancel"), &file("ack"), self.ack_timeout, self.poll)
   }
 }
 
@@ -205,6 +217,7 @@ mod tests {
       assert_eq!(req.title, "docker/Dockerfile");
       assert!(req.content_menu && req.offer_replace_all);
       assert_eq!(std::fs::read_to_string(&req.proposed_path).unwrap(), "a\nc\n");
+      std::fs::write(request.with_extension("").with_extension("ack"), "").unwrap();
       write_atomic(&req.response_path, r#"{"decision":"partial","accepted":[0]}"#).unwrap();
       req
     });
@@ -234,9 +247,42 @@ mod tests {
       std::thread::sleep(Duration::from_millis(30));
       INTERRUPTED.store(true, SeqCst);
     });
-    assert_eq!(wait_for(&response, &cancel, Duration::from_millis(5)).unwrap(), Response::Dismissed);
+    let ack = tmp.path().join("r.ack");
+    assert_eq!(
+      wait_for(&response, &cancel, &ack, Duration::from_secs(5), Duration::from_millis(5)).unwrap(),
+      Response::Dismissed
+    );
     assert!(cancel.is_file());
     assert!(!WAITING.load(SeqCst));
+  }
+
+  #[test]
+  fn no_ack_in_time_is_an_error_but_an_acked_request_waits_indefinitely() {
+    let _g = SERIAL.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let vs = vscode(tmp.path());
+    let runner = RecordingRunner::new(0);
+    let mut reviewer = VsCodeReviewer::new(&vs, &runner).with_poll(Duration::from_millis(5));
+    reviewer.ack_timeout = Duration::from_millis(30);
+    let err = reviewer.review(&Proposal::new("t", "q", "a\n", "b\n"), true).unwrap_err();
+    assert!(err.to_string().contains("did not pick up"), "{err:#}");
+    // Acked: the answer may come long after the ack deadline.
+    let response = tmp.path().join("r.json");
+    let ack = tmp.path().join("r.ack");
+    std::fs::write(&ack, "").unwrap();
+    let late = response.clone();
+    std::thread::spawn(move || {
+      std::thread::sleep(Duration::from_millis(80));
+      write_atomic(&late, r#"{"decision":"keep"}"#).unwrap();
+    });
+    let got = wait_for(
+      &response,
+      &tmp.path().join("r.cancel"),
+      &ack,
+      Duration::from_millis(30),
+      Duration::from_millis(5),
+    );
+    assert_eq!(got.unwrap(), Response::Keep);
   }
 
   #[test]
@@ -292,6 +338,13 @@ mod tests {
     assert!(reviewer.review(&Proposal::new("t", "q", "a\n", "b\n"), true).is_err());
     let response = tmp.path().join("bad.json");
     std::fs::write(&response, "{").unwrap();
-    assert!(wait_for(&response, &tmp.path().join("bad.cancel"), Duration::from_millis(1)).is_err());
+    let bad = wait_for(
+      &response,
+      &tmp.path().join("bad.cancel"),
+      &tmp.path().join("bad.ack"),
+      Duration::from_secs(5),
+      Duration::from_millis(1),
+    );
+    assert!(bad.unwrap_err().to_string().contains("parsing"));
   }
 }
