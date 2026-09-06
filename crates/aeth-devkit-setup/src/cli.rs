@@ -198,7 +198,7 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   println!("{header}\n{}", changes.report(&root));
   if dry_run
     && let Some(vs) = &vs
-    && let Err(e) = crate::vscode::session::open_review(vs, &runner, &root, &changes.previews)
+    && let Err(e) = crate::vscode::session::open_review(vs, &runner, &root, &changes.previews, std::time::Duration::from_secs(5))
   {
     println!("note: could not open the review in VS Code: {e:#}");
   }

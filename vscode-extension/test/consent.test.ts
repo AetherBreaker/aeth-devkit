@@ -6,6 +6,7 @@ import {
   Hunk,
   HunkState,
   cacheDir,
+  ackPath,
   cancelPath,
   docPath,
   isInside,
@@ -46,9 +47,10 @@ describe('cacheDir', () => {
 
 describe('requestPath and isInside', () => {
   it('accepts only well-formed ids', () => {
-    expect(requestPath('/c', '12-0')).toBe(path.join('/c', 'consent', '12-0.request.json'));
-    expect(requestPath('/c', 'review-12')).toBe(path.join('/c', 'consent', 'review-12.request.json'));
+    expect(requestPath('/c', '12-0')).toBe(path.join('/c', 'consent', '12', '12-0.request.json'));
+    expect(requestPath('/c', 'review-12')).toBe(path.join('/c', 'consent', '12', 'review-12.request.json'));
     for (const bad of ['', '../x', '12-0/../../etc', 'review', 'a-b']) expect(() => requestPath('/c', bad)).toThrow();
+    expect(ackPath(requestPath('/c', '12-0'))).toBe(path.join('/c', 'consent', '12', '12-0.ack'));
   });
   it('rejects paths outside the cache', () => {
     const c = tmp();

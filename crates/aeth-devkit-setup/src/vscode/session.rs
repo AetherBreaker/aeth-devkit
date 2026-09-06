@@ -67,10 +67,18 @@ pub fn wait_for(response: &Path, cancel: &Path, poll: Duration) -> Result<Respon
   result
 }
 
-/// `--dry-run`: one request listing every file, opened as a multi-diff. Nothing awaited.
-pub fn open_review(vs: &VsCode, runner: &dyn Runner, root: &Path, previews: &[crate::changes::Preview]) -> Result<()> {
+/// `--dry-run`: one request listing every file, opened as a multi-diff. Waits (at most
+/// `ack_timeout`) for the extension's ack, written once it has read every text, because
+/// the run folder is removed when the run ends and VS Code reads it after `code` returns.
+pub fn open_review(
+  vs: &VsCode,
+  runner: &dyn Runner,
+  root: &Path,
+  previews: &[crate::changes::Preview],
+  ack_timeout: Duration,
+) -> Result<()> {
   let id = format!("review-{}", std::process::id());
-  let dir = &vs.consent_dir;
+  let dir = &vs.run_dir;
   std::fs::create_dir_all(dir)?;
   let mut files = Vec::new();
   for (i, p) in previews.iter().enumerate() {
@@ -91,7 +99,16 @@ pub fn open_review(vs: &VsCode, runner: &dyn Runner, root: &Path, previews: &[cr
   }
   let request = serde_json::json!({ "protocol": PROTOCOL, "id": id, "files": files });
   write_atomic(&dir.join(format!("{id}.request.json")), &serde_json::to_string_pretty(&request)?)?;
-  open_url(runner, &vs.launcher, &format!("vscode://{EXTENSION_ID}/review?id={id}"))
+  open_url(runner, &vs.launcher, &format!("vscode://{EXTENSION_ID}/review?id={id}"))?;
+  let ack = dir.join(format!("{id}.ack"));
+  let deadline = std::time::Instant::now() + ack_timeout;
+  while !ack.is_file() {
+    if std::time::Instant::now() >= deadline {
+      bail!("VS Code did not pick up the review within {}s", ack_timeout.as_secs_f32());
+    }
+    std::thread::sleep(Duration::from_millis(50));
+  }
+  Ok(())
 }
 
 pub struct VsCodeReviewer<'a> {
@@ -123,8 +140,8 @@ impl Reviewer for VsCodeReviewer<'_> {
     self.next.set(n + 1);
     // `<pid>-<n>`: unique across concurrent runs, and the only thing the URL carries.
     let id = format!("{}-{n}", std::process::id());
-    let file = |ext: &str| self.vs.consent_dir.join(format!("{id}.{ext}"));
-    std::fs::create_dir_all(&self.vs.consent_dir)?;
+    let file = |ext: &str| self.vs.run_dir.join(format!("{id}.{ext}"));
+    std::fs::create_dir_all(&self.vs.run_dir)?;
     std::fs::write(file("current"), &p.current)?;
     std::fs::write(file("proposed"), &p.proposed)?;
     let request = Request {
@@ -157,7 +174,8 @@ mod tests {
   fn vscode(dir: &Path) -> VsCode {
     VsCode {
       launcher: "code".into(),
-      consent_dir: dir.join("consent"),
+      run_dir: dir.join("consent").join("1"),
+      lock: None,
       content_menu: true,
       notes: vec![],
     }
@@ -170,7 +188,7 @@ mod tests {
     let vs = vscode(tmp.path());
     let runner = RecordingRunner::new(0);
     let reviewer = VsCodeReviewer::new(&vs, &runner).with_poll(Duration::from_millis(5));
-    let dir = vs.consent_dir.clone();
+    let dir = vs.run_dir.clone();
     let responder = std::thread::spawn(move || {
       let request = loop {
         if let Some(p) = std::fs::read_dir(&dir).ok().and_then(|d| {
@@ -200,7 +218,10 @@ mod tests {
     );
     assert!(req.id.starts_with(&format!("{}-0", std::process::id())));
     drop(vs);
-    assert!(!tmp.path().join("consent").exists(), "dropping VsCode empties the folder");
+    assert!(
+      !tmp.path().join("consent").join("1").exists(),
+      "dropping VsCode removes the run folder"
+    );
   }
 
   #[test]
@@ -237,10 +258,20 @@ mod tests {
         proposed: "n\n".into(),
       },
     ];
-    open_review(&vs, &runner, &root, &previews).unwrap();
     let id = format!("review-{}", std::process::id());
-    let req: serde_json::Value =
-      serde_json::from_str(&std::fs::read_to_string(vs.consent_dir.join(format!("{id}.request.json"))).unwrap()).unwrap();
+    // No ack: the review is reported as not picked up, and the files stay for the drop.
+    let err = open_review(&vs, &runner, &root, &previews, Duration::from_millis(20)).unwrap_err();
+    assert!(err.to_string().contains("did not pick up"), "{err:#}");
+    let request = vs.run_dir.join(format!("{id}.request.json"));
+    assert!(request.is_file());
+    let ack = vs.run_dir.join(format!("{id}.ack"));
+    let acker = std::thread::spawn(move || {
+      std::thread::sleep(Duration::from_millis(30));
+      std::fs::write(ack, "").unwrap();
+    });
+    open_review(&vs, &runner, &root, &previews, Duration::from_secs(5)).unwrap();
+    acker.join().unwrap();
+    let req: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&request).unwrap()).unwrap();
     assert_eq!(req["protocol"], PROTOCOL);
     assert_eq!(req["files"][0]["label"], "docker/Dockerfile");
     assert_eq!(req["files"][1]["current_path"], serde_json::Value::Null);
