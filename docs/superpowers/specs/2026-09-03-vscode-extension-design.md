@@ -56,8 +56,7 @@ vscode-extension/
 - `editor/title` entries for the same two commands, `when: resourceScheme ==
   aeth-devkit-proposed && !aeth-devkit.contentMenu` — the fallback when the proposal is
   not enabled on the machine;
-- a `uriHandler` activation event (`onUri`);
-- `aethDevkit.protocol`: the consent protocol version the build speaks (see Versioning).
+- a `uriHandler` activation event (`onUri`).
 
 The version in `package.json` stays `0.0.0` in the repo; the extension's own release
 workflow stamps it at package time.
@@ -98,7 +97,7 @@ integer `N` as its version, stamped into the manifest as `N.0.0` (vsce requires 
 Its git tag is `vscode-extension-vN` and its release asset is `aeth-devkit-vscode-N.vsix`.
 
 Compatibility is a separate number, the **protocol version**: an integer in every request
-(`"protocol": 1`) and in the manifest's `aethDevkit.protocol`. devkit carries a
+(`"protocol": 1`) and a `PROTOCOL` constant on each side. devkit carries a
 `MIN_EXTENSION_VERSION` constant (the first `N` that speaks its protocol). The extension
 answers a request whose protocol it does not speak with
 `{ "decision": "error", "message": "…" }`, and the CLI falls back to the terminal with
