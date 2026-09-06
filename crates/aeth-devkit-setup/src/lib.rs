@@ -7,6 +7,7 @@ pub mod context;
 pub mod docker;
 pub mod format;
 pub mod git;
+pub mod interrupt;
 pub mod json_merge;
 pub mod lines;
 pub mod md_block;

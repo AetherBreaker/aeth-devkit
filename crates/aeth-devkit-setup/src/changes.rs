@@ -91,6 +91,7 @@ impl Changes {
       });
     }
     if !self.dry_run {
+      let _w = crate::interrupt::Writing::begin();
       if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
       }

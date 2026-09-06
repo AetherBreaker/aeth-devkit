@@ -77,6 +77,7 @@ impl Fetch for HttpFetch {
     if let Some(parent) = dest.parent() {
       std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
+    let _w = crate::interrupt::Writing::begin();
     std::fs::write(dest, bytes).with_context(|| format!("writing {}", dest.display()))
   }
 }
