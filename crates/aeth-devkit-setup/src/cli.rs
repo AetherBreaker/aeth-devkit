@@ -113,11 +113,6 @@ pub fn run(args: &Args) -> Result<ExitCode> {
       crate::vscode::Prepared::Ready(vs) => Some(vs),
     }
   };
-  if let Some(vs) = &vs {
-    for note in &vs.notes {
-      println!("note: {note}");
-    }
-  }
   if !dry_run && let Err(e) = crate::interrupt::install() {
     println!("note: {e:#}; a Ctrl-C will not wait for a write in progress to finish.");
   }
@@ -156,6 +151,8 @@ pub fn run(args: &Args) -> Result<ExitCode> {
       },
     };
     let mut c = crate::run_with(&ctx, &templates, dry_run, &deps)?;
+    // Leftovers of the old extension: advisory, so they print with the run's other notes.
+    c.notes.extend(vs.iter().flat_map(|v| v.notes.iter().cloned()));
     if !dry_run {
       match crate::format::format_pyproject(&root, &crate::format::SystemRunner, &mut c)? {
         crate::format::Outcome::Formatted(_) => {}

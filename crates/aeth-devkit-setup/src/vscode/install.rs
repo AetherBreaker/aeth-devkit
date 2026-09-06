@@ -142,26 +142,10 @@ pub fn installed_version(list_output: &str) -> Option<u32> {
   })
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum Ensure {
-  /// A compatible extension is installed and loaded.
-  Ready,
-  /// A newer extension was just installed over a loaded one; VS Code must reload first.
-  ReloadNeeded,
-  /// No compatible extension and none could be installed; the note says why.
-  Unavailable(String),
-}
-
 /// Make sure a compatible extension is installed, installing the newest release when
-/// `install` is set. Never fails: every problem becomes `Unavailable`.
-pub fn ensure_extension(runner: &dyn Runner, fetch: &dyn Fetch, launcher: &Path, cache: &Path, install: bool) -> Ensure {
-  match ensure(runner, fetch, launcher, cache, install) {
-    Ok(e) => e,
-    Err(e) => Ensure::Unavailable(format!("{e:#}")),
-  }
-}
-
-fn ensure(runner: &dyn Runner, fetch: &dyn Fetch, launcher: &Path, cache: &Path, install: bool) -> Result<Ensure> {
+/// `install` is set. `Ok(true)` when the install went over a loaded extension, so VS Code
+/// must reload before it can answer; an error says why no compatible extension is there.
+pub fn ensure_extension(runner: &dyn Runner, fetch: &dyn Fetch, launcher: &Path, cache: &Path, install: bool) -> Result<bool> {
   let code = launcher.to_string_lossy();
   let out = runner.run_capture(&code, &["--list-extensions".into(), "--show-versions".into()], Path::new("."))?;
   if !out.success() {
@@ -169,12 +153,10 @@ fn ensure(runner: &dyn Runner, fetch: &dyn Fetch, launcher: &Path, cache: &Path,
   }
   let installed = installed_version(&out.stdout);
   if installed.is_some_and(|n| n >= MIN_EXTENSION_VERSION) {
-    return Ok(Ensure::Ready);
+    return Ok(false);
   }
   if !install {
-    return Ok(Ensure::Unavailable(
-      "the devkit VS Code extension is not installed (a run without --dry-run installs it)".into(),
-    ));
+    bail!("the devkit VS Code extension is not installed (a run without --dry-run installs it)");
   }
   let latest = latest_tag_number(&fetch.get_text(&refs_url())?)?;
   let Some(n) = latest.filter(|n| *n >= MIN_EXTENSION_VERSION) else {
@@ -187,7 +169,7 @@ fn ensure(runner: &dyn Runner, fetch: &dyn Fetch, launcher: &Path, cache: &Path,
   if !out.success() {
     bail!("`code --install-extension` failed: {}", out.stderr.trim());
   }
-  Ok(if installed.is_some() { Ensure::ReloadNeeded } else { Ensure::Ready })
+  Ok(installed.is_some())
 }
 
 #[cfg(test)]
@@ -223,7 +205,7 @@ mod tests {
     r.script("code", LIST, 0, "aeth.aeth-devkit@1.0.0\n");
     let f = StubFetch::default();
     let cache = tempfile::tempdir().unwrap();
-    assert_eq!(ensure_extension(&r, &f, Path::new("code"), cache.path(), true), Ensure::Ready);
+    assert!(!ensure_extension(&r, &f, Path::new("code"), cache.path(), true).unwrap());
     assert_eq!(r.calls_for("code").len(), 1, "no install");
     assert!(f.downloads.borrow().is_empty());
   }
@@ -234,7 +216,7 @@ mod tests {
     r.script("code", LIST, 0, "ms-python.python@2024.1.0\n");
     let f = fetch_with_refs();
     let cache = tempfile::tempdir().unwrap();
-    assert_eq!(ensure_extension(&r, &f, Path::new("code"), cache.path(), true), Ensure::Ready);
+    assert!(!ensure_extension(&r, &f, Path::new("code"), cache.path(), true).unwrap());
     let vsix = cache.path().join("vsix").join("aeth-devkit-vscode-3.vsix");
     assert_eq!(f.downloads.borrow()[0], (vsix_url(3), vsix.clone()));
     assert!(vsix.is_file());
@@ -247,10 +229,7 @@ mod tests {
     let r = RecordingRunner::new(0);
     r.script("code", LIST, 0, "aeth.aeth-devkit@0.0.0\n");
     let cache = tempfile::tempdir().unwrap();
-    assert_eq!(
-      ensure_extension(&r, &fetch_with_refs(), Path::new("code"), cache.path(), true),
-      Ensure::ReloadNeeded
-    );
+    assert!(ensure_extension(&r, &fetch_with_refs(), Path::new("code"), cache.path(), true).unwrap());
   }
 
   #[test]
@@ -259,31 +238,20 @@ mod tests {
     r.script("code", LIST, 0, "");
     let f = fetch_with_refs();
     let cache = tempfile::tempdir().unwrap();
-    assert!(matches!(
-      ensure_extension(&r, &f, Path::new("code"), cache.path(), false),
-      Ensure::Unavailable(m) if m.contains("not installed")
-    ));
+    let why = |r: Result<bool>| format!("{:#}", r.unwrap_err());
+    assert!(why(ensure_extension(&r, &f, Path::new("code"), cache.path(), false)).contains("not installed"));
     assert!(f.downloads.borrow().is_empty());
 
     let offline = StubFetch::default();
-    assert!(matches!(
-      ensure_extension(&r, &offline, Path::new("code"), cache.path(), true),
-      Ensure::Unavailable(m) if m.contains("no body")
-    ));
+    assert!(why(ensure_extension(&r, &offline, Path::new("code"), cache.path(), true)).contains("no body"));
 
     let mut old = StubFetch::default();
     old.bodies.insert(refs_url(), r#"[{"ref":"refs/tags/vscode-extension-v0"}]"#.into());
-    assert!(matches!(
-      ensure_extension(&r, &old, Path::new("code"), cache.path(), true),
-      Ensure::Unavailable(m) if m.contains("no compatible")
-    ));
+    assert!(why(ensure_extension(&r, &old, Path::new("code"), cache.path(), true)).contains("no compatible"));
 
     let failing = RecordingRunner::new(0);
     failing.script("code", LIST, 0, "");
     failing.script_err("code", &["--install-extension"], 1, "boom");
-    assert!(matches!(
-      ensure_extension(&failing, &f, Path::new("code"), cache.path(), true),
-      Ensure::Unavailable(m) if m.contains("boom")
-    ));
+    assert!(why(ensure_extension(&failing, &f, Path::new("code"), cache.path(), true)).contains("boom"));
   }
 }

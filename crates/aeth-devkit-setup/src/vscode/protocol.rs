@@ -29,7 +29,8 @@ pub const EXTENSION_ID: &str = "aeth.aeth-devkit";
 pub struct Proposal {
   /// Diff title: `docker/Dockerfile`, `docker/compose.yaml: service web`.
   pub title: String,
-  /// The terminal question, used when VS Code is absent or the diff was dismissed.
+  /// The terminal question, used when VS Code is absent or the diff was dismissed;
+  /// `Consent::decide` appends the answer keywords it accepts.
   pub question: String,
   pub current: String,
   pub proposed: String,
