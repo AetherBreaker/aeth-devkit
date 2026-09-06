@@ -44,11 +44,22 @@ fn newest_container_version(runner: &dyn Runner, root: &Path) -> Result<Option<u
   Ok(tags.iter().filter_map(|t| t.strip_prefix("container-v")?.parse::<u64>().ok()).max())
 }
 
-/// LF line endings and no byte-order mark: neither is drift (`.gitattributes` owns line
-/// endings, and Windows editors add a BOM the templates never carry), and a BOM would
-/// otherwise show as a phantom hunk on the first line.
+/// The text as diffed and as VS Code shows it: LF line endings, no byte-order mark. Neither
+/// is drift (`.gitattributes` owns line endings, and Windows editors add a BOM the
+/// templates never carry), and a BOM would otherwise show as a phantom hunk on the first
+/// line. What gets written keeps the file's own endings (see `Proposal`).
 pub fn normalize_newlines(s: &str) -> String {
-  s.trim_start_matches('\u{feff}').replace("\r\n", "\n")
+  s.trim_start_matches('\u{feff}').replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// `text` with every `\n` turned into `\r\n` when `like` uses CRLF, so a template
+/// rendered LF diffs and writes in the file's own convention.
+pub fn match_line_endings(text: &str, like: &str) -> String {
+  if like.contains("\r\n") && !text.contains("\r\n") {
+    text.replace('\n', "\r\n")
+  } else {
+    text.to_string()
+  }
 }
 
 /// Three lines of context, both sides labelled so the user can tell which is theirs. Line
@@ -119,6 +130,7 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, co
       changes.record_optional(&path, Some(&original), &original, vec![])?;
       continue;
     }
+    let rendered = match_line_endings(&rendered, &original);
     println!("{}", unified_diff(&rel, &original, &rendered));
     let proposal = Proposal::new(
       &rel,

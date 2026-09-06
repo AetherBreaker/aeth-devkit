@@ -1,7 +1,9 @@
 //! Hunk table for a proposed change and reassembly from the hunks the user accepted.
-//! Both texts must be LF-normalised (`static_files::normalize_newlines`): only then does
-//! `similar` split lines exactly like `split_inclusive('\n')`, and these ranges are the
-//! contract with the VS Code extension, which indexes the same two texts.
+//! `hunks` takes the LF-normalised texts (`static_files::normalize_newlines`), where
+//! `similar` splits lines exactly like `split_inclusive('\n')`; the ranges are the
+//! contract with the VS Code extension, which indexes those same texts. `assemble` may
+//! take the raw texts instead, since CRLF endings split into the same lines (`Proposal`
+//! removes the one exception, a bare `\r`).
 
 use serde::{Deserialize, Serialize};
 use similar::{DiffOp, TextDiff};

@@ -471,6 +471,64 @@ fn a_compose_file_without_services_warns_and_the_run_goes_on() {
 }
 
 #[test]
+fn a_crlf_file_keeps_its_line_endings_through_replace_replace_all_and_partial() {
+  use aeth_devkit_setup::vscode::protocol::{Response, ScriptedReviewer};
+  let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
+  let root = dir.path();
+  run(root, Mode::Ask, &[], false);
+  let crlf = |rel: &str| read(root, rel).replace("\r\n", "\n").replace('\n', "\r\n");
+  let all_crlf =
+    |text: &str| text.lines().all(|l| l.is_empty() || !l.contains('\r')) && text.matches("\r\n").count() == text.matches('\n').count();
+  // Compose: one drifted value, answered `replace`, then `replace all`.
+  for mode in [Mode::Ask, Mode::ReplaceAll] {
+    write(
+      root,
+      "docker/compose.yaml",
+      &crlf("docker/compose.yaml").replace("interval: 30s", "interval: 99s"),
+    );
+    let (changes, _, _) = run(root, mode, &["replace"], false);
+    let out = read(root, "docker/compose.yaml");
+    assert!(
+      out.contains("interval: 30s") && all_crlf(&out),
+      "{mode:?}: {}\n{out}",
+      changes.report(root)
+    );
+  }
+  // Dockerfile: the LF template is written in the file's own endings.
+  write(
+    root,
+    "docker/Dockerfile",
+    &crlf("docker/Dockerfile").replace("PYTHONOPTIMIZE=1", "PYTHONOPTIMIZE=2"),
+  );
+  run(root, Mode::Ask, &["replace"], false);
+  let out = read(root, "docker/Dockerfile");
+  assert!(out.contains("PYTHONOPTIMIZE=1") && all_crlf(&out), "{out}");
+  assert!(run(root, Mode::DryRun, &[], true).0.is_empty(), "CRLF alone is not drift");
+  // A partial answer reassembles from the raw texts, so it keeps CRLF too.
+  write(
+    root,
+    "docker/Dockerfile",
+    &(read(root, "docker/Dockerfile").replace("PYTHONOPTIMIZE=1", "PYTHONOPTIMIZE=2") + "# trailing\r\n"),
+  );
+  let prompt = ScriptedPrompt::new(&[]);
+  let runner = RecordingRunner::new(0);
+  let reviewer = ScriptedReviewer::new(vec![Response::Partial { accepted: vec![0] }]);
+  let deps = Deps {
+    runner: &runner,
+    prompt: &prompt,
+    reviewer: Some(&reviewer),
+    mode: Mode::Ask,
+  };
+  let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
+  aeth_devkit_setup::run_with(&ctx, &templates(), false, &deps).unwrap();
+  let out = read(root, "docker/Dockerfile");
+  assert!(
+    out.contains("PYTHONOPTIMIZE=1") && out.ends_with("# trailing\r\n") && all_crlf(&out),
+    "{out}"
+  );
+}
+
+#[test]
 fn a_partial_answer_from_the_reviewer_writes_the_assembled_text() {
   use aeth_devkit_setup::vscode::protocol::{Response, ScriptedReviewer};
   let dir = project(&["demo-app"], "https://github.com/O/Demo.git");

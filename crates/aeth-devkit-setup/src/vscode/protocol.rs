@@ -19,7 +19,12 @@ pub const PROTOCOL: u32 = 1;
 pub const MIN_EXTENSION_VERSION: u32 = 1;
 pub const EXTENSION_ID: &str = "aeth.aeth-devkit";
 
-/// One change the CLI wants consent for. Texts are LF-normalised (see `docker::hunks`).
+/// One change the CLI wants consent for. `current` and `proposed` are what gets written,
+/// so they keep the file's line endings; `hunks` come from their LF-normalised twins (the
+/// texts VS Code is shown). The two agree line for line because `split_inclusive('\n')`
+/// cuts a CRLF text exactly where it cuts the LF one — except at a bare `\r`, which
+/// `similar` ends a line at and `hunks::assemble` does not, so that one is rewritten as
+/// `\n` here rather than left to tear a slice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proposal {
   /// Diff title: `docker/Dockerfile`, `docker/compose.yaml: service web`.
@@ -33,9 +38,9 @@ pub struct Proposal {
 
 impl Proposal {
   pub fn new(title: impl Into<String>, question: impl Into<String>, current: &str, proposed: &str) -> Self {
-    let current = normalize_newlines(current);
-    let proposed = normalize_newlines(proposed);
-    let hunks = hunks::hunks(&current, &proposed);
+    let current = bare_cr_to_lf(current);
+    let proposed = bare_cr_to_lf(proposed);
+    let hunks = hunks::hunks(&normalize_newlines(&current), &normalize_newlines(&proposed));
     Self {
       title: title.into(),
       question: question.into(),
@@ -44,6 +49,15 @@ impl Proposal {
       hunks,
     }
   }
+}
+
+fn bare_cr_to_lf(s: &str) -> String {
+  let mut out = String::with_capacity(s.len());
+  let mut chars = s.chars().peekable();
+  while let Some(c) = chars.next() {
+    out.push(if c == '\r' && chars.peek() != Some(&'\n') { '\n' } else { c });
+  }
+  out
 }
 
 /// `<id>.request.json`, as the extension reads it.
@@ -153,9 +167,9 @@ mod tests {
   }
 
   #[test]
-  fn proposal_normalises_line_endings_and_computes_hunks() {
+  fn proposal_keeps_line_endings_and_computes_hunks_on_the_normalised_texts() {
     let p = Proposal::new("t", "q?", "a\r\nb\r\n", "a\nc\n");
-    assert_eq!(p.current, "a\nb\n");
+    assert_eq!(p.current, "a\r\nb\r\n", "written back as it was");
     assert_eq!(
       p.hunks,
       vec![Hunk {
@@ -163,6 +177,11 @@ mod tests {
         proposed: [1, 2]
       }]
     );
+    // A bare CR would put `similar` and `assemble` in different line spaces.
+    let p = Proposal::new("t", "q?", "a\rb\nc\n", "a\rb\nd\n");
+    assert_eq!(p.current, "a\nb\nc\n");
+    assert_eq!(p.hunks[0].current, [2, 3]);
+    assert_eq!(hunks::assemble(&p.current, &p.proposed, &p.hunks, &[0]).unwrap(), "a\nb\nd\n");
   }
 
   #[test]

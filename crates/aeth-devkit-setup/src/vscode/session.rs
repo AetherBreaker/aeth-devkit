@@ -13,6 +13,7 @@ use aeth_devkit_core::process::Runner;
 
 use super::VsCode;
 use super::protocol::{EXTENSION_ID, PROTOCOL, Proposal, Request, Response, Reviewer};
+use crate::docker::static_files::normalize_newlines;
 use crate::interrupt::{INTERRUPTED, WAITING};
 
 /// Write via a sibling temp file and rename, so a reader polling the path never sees a
@@ -138,8 +139,8 @@ impl Reviewer for VsCodeReviewer<'_> {
     let id = format!("{}-{n}", std::process::id());
     let file = |ext: &str| self.vs.run_dir.join(format!("{id}.{ext}"));
     std::fs::create_dir_all(&self.vs.run_dir)?;
-    std::fs::write(file("current"), &p.current)?;
-    std::fs::write(file("proposed"), &p.proposed)?;
+    std::fs::write(file("current"), normalize_newlines(&p.current))?;
+    std::fs::write(file("proposed"), normalize_newlines(&p.proposed))?;
     let request = Request {
       protocol: PROTOCOL,
       id: id.clone(),
