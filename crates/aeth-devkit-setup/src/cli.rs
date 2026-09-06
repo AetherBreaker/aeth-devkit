@@ -85,9 +85,9 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   let templates = crate::templates::locate(args.templates_dir.as_deref())?;
   let root = crate::context::strip_verbatim(args.root.canonicalize().unwrap_or(args.root.clone()));
   // `IsTerminal` is how std asks "is a human here?": prompts only make sense on a tty.
-  // The binaries refuse a headless non-dry run (see `run_reject_headless`), so the
-  // non-tty consent arms below serve library callers only: `ReplaceAll` replaces shown
-  // diffs without asking, `KeepAll` keeps everything.
+  // `run_reject_headless` has already refused a headless non-dry run, so the no-tty
+  // consent arm below is unreachable from the binaries; `KeepAll` is what a bare `run`
+  // (tests) falls to rather than a prompt nobody can answer.
   let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
   let runner = aeth_devkit_core::process::SystemRunner;
 

@@ -99,8 +99,8 @@ impl<'a> Consent<'a> {
   /// `offer_replace_all` is whether `replace all` (and so `--replace-docker`) is offered
   /// for and covers this proposal. Adding a listed-but-absent service is never
   /// pre-answered: a typo in pyproject must not grow the compose file without someone
-  /// reading the service name, so it is asked whatever the mode and, with nobody to ask,
-  /// skipped with the run's note.
+  /// reading the service name, so `--replace-docker` still asks for it. `KeepAll` (a run
+  /// with no terminal) keeps it with the run's note, like everything else.
   pub fn decide(&self, p: &Proposal, offer_replace_all: bool) -> Result<Decision> {
     match self.mode.get() {
       Mode::DryRun => return Ok(Decision::Replace), // an intended edit, shown like every other
