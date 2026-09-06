@@ -10,6 +10,10 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-03-vscode-extension-design.md`
 
+> **Superseded in part:** this plan says `replace all` / `--replace-docker` accept
+> new-service adds. The shipped code always asks for an add (see `Consent::decide`), and
+> decided hunks collapse in the diff rather than being dimmed. The spec is current.
+
 ## Global Constraints
 
 - Branch: `feat/vscode-extension`, based on `feat/docker-standardization` (not `main`). Already created; the spec is committed on it.
