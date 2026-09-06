@@ -86,7 +86,8 @@ second run is a byte-for-byte no-op.
   entry per devkit hook, updates it in place, and leaves user hooks alone. `.mcp.json`:
   adds missing servers, never edits ones the project already defines.
 - **Docker** - Runs whenever `[tool.docker].services` lists at least one compose service.
-  `docker/Dockerfile` is created when missing; when present and different — ignoring CRLF/LF — a unified diff is printed and
+  `docker/Dockerfile` is created when missing; when present and different — ignoring CRLF/LF, and
+  written back in the file's own line endings — a unified diff is printed and
   the file is replaced only on `replace` (`replace all` answers every remaining Docker
   question; anything else keeps it). The compose file (docker-pin's discovery; created as
   `docker/compose.yaml` when absent) is edited in place, format-preserving, one diff per
