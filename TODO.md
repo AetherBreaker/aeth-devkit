@@ -54,6 +54,9 @@ design exists. Check items off in place; delete them once released.
 - [ ] setup-project: when VS Code does not pick up a consent request (no ack within 5 s)
       the run falls back to the typed terminal prompt; a terminal diff viewer built on the
       shelved release-watch TUI could take that fallback instead (idea raised 2026-09-06).
+- [ ] setup-project: the VS Code diff (and the terminal consent behind it) covers only the
+      Docker files; every change setup-project proposes (pyproject, gitignore, launch/tasks,
+      ...) was meant to go through the same review (raised 2026-09-06).
 - [ ] VS Code extension: support `code-insiders` and `cursor` launchers (each has its own
       URI scheme, `argv.json` location and extensions dir); only `code` works today.
 - [ ] After the first `vscode-extension-v1` release: delete `.vscode/extension/` and
