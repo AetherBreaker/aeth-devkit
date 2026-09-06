@@ -105,8 +105,8 @@ export function cancelPath(req: Request): string {
 export type HunkDecision = 'accept' | 'reject' | undefined;
 
 /**
- * Per-hunk decisions. Undecided hunks stay highlighted in the diff and count as accepted
- * when applying, so the default answer is still "take the whole proposal".
+ * Per-hunk decisions. Undecided counts as accepted when applying, so the default answer
+ * is still "take the whole proposal".
  */
 export class HunkState {
   readonly decisions: HunkDecision[];
@@ -154,45 +154,29 @@ export function splitLines(text: string): string[] {
 }
 
 /**
- * `base` with every hunk where `takeOther(i)` replaced by the other text's lines. The
- * display-side twin of the CLI's `assemble`: with base = proposed and other = current it
- * reverts rejected hunks; with the sides swapped it applies accepted ones to the current
- * text, so a decided hunk shows the same lines in both panels and its diff collapses.
+ * The two panel texts for the current decisions. A decided hunk carries the same lines
+ * on both sides (the proposed lines when accepted, the current ones when rejected), so
+ * its diff collapses like an accepted change in the merge editor; only undecided hunks
+ * still differ. The right panel is the display-side twin of the CLI's `assemble`.
  */
-export function merge(
-  base: string,
-  other: string,
-  ranges: { base: [number, number]; other: [number, number] }[],
-  takeOther: (i: number) => boolean,
-): string {
-  const b = splitLines(base);
-  const o = splitLines(other);
-  let out = '';
-  let cursor = 0;
-  ranges.forEach((r, i) => {
-    out += b.slice(cursor, r.base[0]).join('');
-    out += (takeOther(i) ? o.slice(r.other[0], r.other[1]) : b.slice(r.base[0], r.base[1])).join('');
-    cursor = r.base[1];
-  });
-  return out + b.slice(cursor).join('');
-}
-
-/** The two panel texts for the current decisions: only undecided hunks still differ. */
 export function panels(current: string, proposed: string, hunks: Hunk[], state: HunkState): { left: string; right: string } {
-  return {
-    left: merge(
-      current,
-      proposed,
-      hunks.map((h) => ({ base: h.current, other: h.proposed })),
-      (i) => state.accepted(i),
-    ),
-    right: merge(
-      proposed,
-      current,
-      hunks.map((h) => ({ base: h.proposed, other: h.current })),
-      (i) => state.rejected(i),
-    ),
-  };
+  const cur = splitLines(current);
+  const pro = splitLines(proposed);
+  let left = '';
+  let right = '';
+  let c = 0;
+  let p = 0;
+  hunks.forEach((h, i) => {
+    left += cur.slice(c, h.current[0]).join('');
+    right += pro.slice(p, h.proposed[0]).join('');
+    const curLines = cur.slice(h.current[0], h.current[1]).join('');
+    const proLines = pro.slice(h.proposed[0], h.proposed[1]).join('');
+    left += state.accepted(i) ? proLines : curLines;
+    right += state.rejected(i) ? curLines : proLines;
+    c = h.current[1];
+    p = h.proposed[1];
+  });
+  return { left: left + cur.slice(c).join(''), right: right + pro.slice(p).join('') };
 }
 
 /** Where each hunk starts in the right panel once rejected hunks carry current lines. */
