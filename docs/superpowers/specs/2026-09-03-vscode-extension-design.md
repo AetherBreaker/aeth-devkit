@@ -215,10 +215,10 @@ one diff tab is open at a time.
    with an `error` response, registers both texts under
    `aeth-devkit-proposed:/<id>/…` and opens a diff of the two titled
    `devkit: <title>` via `vscode.diff`.
-2. CodeLens on the proposed document: above each hunk an `Accept` and a `Reject` lens,
-   both always present, the chosen one marked (accepted by default). Rejected hunks are
-   dimmed with an editor decoration and a status bar item shows `n of m hunks accepted`,
-   so the state never depends on a lens repaint.
+2. CodeLens on the proposed document: above each undecided hunk an `Accept` and a
+   `Reject` lens; once decided, the outcome as text plus `Undo`. A decided hunk is
+   re-rendered with the same lines in both panels, so its diff collapses, and a status
+   bar item shows `n of m hunks accepted` (undecided counts as accepted).
 3. Whole-file actions are editor buttons, never lenses: `Apply accepted hunks`,
    `Accept all hunks`, `Replace file`, `Replace all` (only when offered) and `Keep file`
    in the floating `editor/content` menu, or as title icons when that proposal is not
@@ -242,8 +242,9 @@ one diff tab is open at a time.
 - `partial` carries the accepted hunk indices; the CLI assembles the text itself from the
   hunk table (accepted hunks take the proposed side, rejected the current side) and
   records it as a replace. `Apply accepted` with no hunk accepted sends `keep`.
-- `replace_all` is the run-wide decision: every later Docker diff, including new-service
-  add hunks, is accepted without being shown, as `--replace-docker` does. The per-diff
+- `replace_all` is the run-wide decision: every later Docker diff is accepted without
+  being shown, as `--replace-docker` does, except a new-service add, which is always
+  asked (a typo in pyproject must not grow the compose file unread). The per-diff
   `Accept all hunks` affects only the open diff.
 - `dismissed` is not a decision: the CLI asks the terminal prompt for that file only; the
   next file opens in VS Code again.

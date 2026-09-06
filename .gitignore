@@ -252,6 +252,8 @@ rustc-ice-*.txt
 # ---- SFT additions ----
 .cache/
 *.env
+.env.*
+!.env.example
 persisted_data/
 
 # ---- project-specific ----
