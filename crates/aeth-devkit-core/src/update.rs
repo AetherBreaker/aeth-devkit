@@ -112,12 +112,15 @@ pub const CACHE_ENV: &str = "DEVKIT_UPDATE_CACHE";
 /// `$XDG_CACHE_HOME/aeth-devkit` (default `~/.cache/aeth-devkit`). The VS Code extension
 /// computes the same path, so the two find each other's files without configuration.
 pub fn cache_dir() -> Option<PathBuf> {
+  // An empty variable counts as unset (the VS Code extension's twin agrees), or the
+  // result would be a relative `aeth-devkit`.
+  let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
   let base = if cfg!(windows) {
-    std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?
+    var("LOCALAPPDATA")?
   } else {
-    match std::env::var_os("XDG_CACHE_HOME") {
-      Some(x) => PathBuf::from(x),
-      None => PathBuf::from(std::env::var_os("HOME")?).join(".cache"),
+    match var("XDG_CACHE_HOME") {
+      Some(x) => x,
+      None => var("HOME")?.join(".cache"),
     }
   };
   Some(base.join("aeth-devkit"))
