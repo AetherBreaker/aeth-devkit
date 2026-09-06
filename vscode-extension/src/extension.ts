@@ -147,7 +147,7 @@ async function handleUri(uri: vscode.Uri): Promise<void> {
   // reviewer instead of waiting; the request names the response path already.
   let s: OpenSession | undefined;
   try {
-    await ensureDiffCodeLens();
+    warnIfDiffCodeLensOff();
     await vscode.commands.executeCommand('setContext', 'aeth-devkit.contentMenu', contentMenuLive(req));
     await vscode.commands.executeCommand('setContext', 'aeth-devkit.offerReplaceAll', req.offer_replace_all);
     const currentText = fs.readFileSync(req.current_path, 'utf8');
@@ -184,15 +184,13 @@ async function handleUri(uri: vscode.Uri): Promise<void> {
   }
 }
 
-/** `diffEditor.codeLens` is off by default; without it the per-hunk lenses never show. */
-async function ensureDiffCodeLens(): Promise<void> {
-  const cfg = vscode.workspace.getConfiguration('diffEditor');
-  const info = cfg.inspect<boolean>('codeLens');
-  if (info?.globalValue === undefined && info?.workspaceValue === undefined) {
-    await cfg.update('codeLens', true, vscode.ConfigurationTarget.Global);
-    return;
-  }
-  if (cfg.get<boolean>('codeLens') === false) {
+/**
+ * The manifest's `configurationDefaults` turns `diffEditor.codeLens` on for this install
+ * (no user file is written, and it reverts on uninstall); only an explicit `false` from
+ * the user, which still wins, hides the per-hunk lenses.
+ */
+function warnIfDiffCodeLensOff(): void {
+  if (vscode.workspace.getConfiguration('diffEditor').get<boolean>('codeLens') === false) {
     void vscode.window.showWarningMessage(
       'aeth-devkit: diffEditor.codeLens is off, so per-hunk Accept/Reject is hidden; the whole-file buttons still work.',
     );

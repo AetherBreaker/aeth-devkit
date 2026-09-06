@@ -85,9 +85,9 @@ To verify during implementation:
   `--allow-proposed-apis` or falls back to zipping the folder with the same layout; a
   `.vsix` is a zip with a manifest.
 - CodeLens in the diff editor is governed by `diffEditor.codeLens`, which defaults to
-  `false`. The extension sets it at user level once if it is unset, with a note in the
-  README; a user who has set it to `false` deliberately is warned and gets the title /
-  content controls only.
+  `false`. The extension's `configurationDefaults` turns it on for the install without
+  writing any user file; a user who has set it to `false` deliberately is warned and
+  gets the title / content controls only.
 
 ## Versioning and distribution
 

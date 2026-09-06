@@ -91,23 +91,25 @@ pub fn home_dir() -> Option<PathBuf> {
 
 /// `argv.json` with the extension added to `enable-proposed-api`, or `None` when it is
 /// already listed. Text surgery rather than a parse-and-print round trip: the file is VS
-/// Code's, full of comments the JSON merge would drop. `rfind` for the key because a
-/// comment mentioning it sits above the real entry, never below.
+/// Code's, full of comments the JSON merge would drop. Positions are found in a view with
+/// the comments blanked (same byte offsets), so a commented-out copy of the key or a
+/// bracket inside a comment can never take the insertion.
 pub fn grant_proposal(argv: Option<&str>) -> Result<Option<String>> {
   let entry = format!("\"{EXTENSION_ID}\"");
   let Some(text) = argv else {
     return Ok(Some(format!("{{\n\t\"{ARGV_KEY}\": [{entry}]\n}}\n")));
   };
   let doc: serde_json::Value = serde_json::from_str(&crate::json_merge::strip_jsonc(text)).context("parsing argv.json")?;
+  let view = crate::json_merge::blank_comments(text);
   match doc.get(ARGV_KEY) {
     Some(serde_json::Value::Array(items)) => {
       if items.iter().any(|v| v.as_str() == Some(EXTENSION_ID)) {
         return Ok(None);
       }
-      let key_at = text
-        .rfind(&format!("\"{ARGV_KEY}\""))
+      let key_at = view
+        .find(&format!("\"{ARGV_KEY}\""))
         .context("argv.json: key not found in the text")?;
-      let open = key_at + text[key_at..].find('[').context("argv.json: array not found")? + 1;
+      let open = key_at + view[key_at..].find('[').context("argv.json: array not found")? + 1;
       let rest = &text[open..];
       let sep = if rest.trim_start().starts_with(']') {
         ""
@@ -120,7 +122,7 @@ pub fn grant_proposal(argv: Option<&str>) -> Result<Option<String>> {
     }
     Some(_) => bail!("argv.json: `{ARGV_KEY}` is not an array"),
     None => {
-      let brace = text.find('{').context("argv.json has no object")? + 1;
+      let brace = view.find('{').context("argv.json has no object")? + 1;
       let comma = if doc.as_object().is_some_and(|o| !o.is_empty()) { "," } else { "" };
       let indent = text
         .lines()
@@ -224,7 +226,11 @@ pub fn prepare(opts: &Options, runner: &dyn aeth_devkit_core::process::Runner, f
     Ok(None) => true,
     Ok(Some(granted)) if opts.install => {
       let _w = crate::interrupt::Writing::begin();
-      if let Err(e) = std::fs::create_dir_all(argv_path.parent().unwrap()).and_then(|()| std::fs::write(&argv_path, granted)) {
+      let write = || -> Result<()> {
+        std::fs::create_dir_all(argv_path.parent().unwrap())?;
+        session::write_atomic(&argv_path, &granted)
+      };
+      if let Err(e) = write() {
         notes.push(format!(
           "could not edit {}: {e}; the in-editor buttons stay hidden",
           argv_path.display()
@@ -421,6 +427,25 @@ mod tests {
       "{\n\t\"enable-proposed-api\": [\"aeth.aeth-devkit\"]}"
     );
     assert_eq!(grant_proposal(Some(&out)).unwrap(), None, "second run: already granted");
+  }
+
+  #[test]
+  fn grant_ignores_the_key_and_brackets_inside_comments() {
+    // A commented-out copy below the live entry, and a bracket in a header comment.
+    let argv = "// e.g. { \"enable-proposed-api\": [\"x\"] }\n{\n\t\"enable-proposed-api\": [\"other.ext\"],\n\t// \"enable-proposed-api\": [\"old.ext\"],\n\t\"enable-crash-reporter\": true\n}\n";
+    let out = grant_proposal(Some(argv)).unwrap().unwrap();
+    assert_eq!(
+      out,
+      "// e.g. { \"enable-proposed-api\": [\"x\"] }\n{\n\t\"enable-proposed-api\": [\"aeth.aeth-devkit\", \"other.ext\"],\n\t// \"enable-proposed-api\": [\"old.ext\"],\n\t\"enable-crash-reporter\": true\n}\n"
+    );
+    assert_eq!(grant_proposal(Some(&out)).unwrap(), None, "granted for real");
+    let no_key = "// e.g. { \"enable-proposed-api\": [\"x\"] }\n{\n\t\"enable-crash-reporter\": true\n}\n";
+    let out = grant_proposal(Some(no_key)).unwrap().unwrap();
+    assert!(
+      out.starts_with("// e.g. { \"enable-proposed-api\": [\"x\"] }\n{\n\t\"enable-proposed-api\": [\"aeth.aeth-devkit\"],\n"),
+      "{out}"
+    );
+    assert_eq!(grant_proposal(Some(&out)).unwrap(), None);
   }
 
   #[test]
