@@ -16,11 +16,14 @@ use protocol::EXTENSION_ID;
 /// The `argv.json` key that grants proposed API contributions to a listed extension.
 pub const ARGV_KEY: &str = "enable-proposed-api";
 
-/// A usable VS Code: the launcher to call and the consent folder both sides share.
-/// Dropping it empties the folder, so a run leaves nothing behind however it ends.
+/// A usable VS Code: the launcher to call and this run's own folder under
+/// `<cache>/consent/`, named by pid so concurrent runs never share files. The folder is
+/// removed on drop; `lock` is held for the run so a later [`prepare`] can tell a killed
+/// run's leftovers (lock free) from a live run's files (lock held).
 pub struct VsCode {
   pub launcher: PathBuf,
-  pub consent_dir: PathBuf,
+  pub run_dir: PathBuf,
+  pub lock: Option<std::fs::File>,
   /// Whether the `editor/content` proposal is believed granted (see the spec).
   pub content_menu: bool,
   pub notes: Vec<String>,
@@ -28,8 +31,43 @@ pub struct VsCode {
 
 impl Drop for VsCode {
   fn drop(&mut self) {
-    let _ = std::fs::remove_dir_all(&self.consent_dir);
+    // Windows refuses to delete an open file, so the lock goes first.
+    drop(self.lock.take());
+    let _ = std::fs::remove_dir_all(&self.run_dir);
   }
+}
+
+/// Create this run's folder under `consent`, first sweeping siblings whose owner is gone.
+/// The `.sweep` lock serialises sweepers and claimers, so a folder without a `lock` file
+/// belongs to a run that died mid-claim, never to one still claiming. Dead is decided by
+/// the OS lock alone: pids are reused, file ages lie, but a lock dies with its process.
+fn claim_run_dir(consent: &Path) -> Result<(PathBuf, std::fs::File)> {
+  use std::fs::File;
+  std::fs::create_dir_all(consent).with_context(|| format!("creating {}", consent.display()))?;
+  let sweep = File::options()
+    .create(true)
+    .write(true)
+    .truncate(false)
+    .open(consent.join(".sweep"))?;
+  sweep.lock().context("locking the consent folder")?;
+  for entry in std::fs::read_dir(consent)?.flatten() {
+    let dir = entry.path();
+    if !dir.is_dir() {
+      continue;
+    }
+    let alive = match File::open(dir.join("lock")) {
+      Ok(f) => !matches!(f.try_lock(), Ok(())),
+      Err(_) => false,
+    };
+    if !alive {
+      let _ = std::fs::remove_dir_all(&dir);
+    }
+  }
+  let run_dir = consent.join(std::process::id().to_string());
+  std::fs::create_dir_all(&run_dir).with_context(|| format!("creating {}", run_dir.display()))?;
+  let lock = File::create(run_dir.join("lock"))?;
+  lock.lock().context("locking the run folder")?;
+  Ok((run_dir, lock))
 }
 
 /// `code` on `PATH`. On Windows the launcher is a `.cmd` shim and `Command` does not
@@ -201,16 +239,14 @@ pub fn prepare(opts: &Options, runner: &dyn aeth_devkit_core::process::Runner, f
       false
     }
   };
-  let consent_dir = cache.join("consent");
-  // Start clean: a run killed mid-review leaves files here that the extension must not
-  // mistake for live requests.
-  let _ = std::fs::remove_dir_all(&consent_dir);
-  if let Err(e) = std::fs::create_dir_all(&consent_dir) {
-    return Prepared::Unavailable(format!("creating {}: {e}", consent_dir.display()));
-  }
+  let (run_dir, lock) = match claim_run_dir(&cache.join("consent")) {
+    Ok(claimed) => claimed,
+    Err(e) => return Prepared::Unavailable(format!("{e:#}")),
+  };
   Prepared::Ready(VsCode {
     launcher,
-    consent_dir,
+    run_dir,
+    lock: Some(lock),
     content_menu,
     notes,
   })
@@ -281,12 +317,14 @@ mod tests {
     };
     assert!(!vs.content_menu);
     assert!(vs.notes.iter().any(|n| n.contains("restart VS Code once")), "{:?}", vs.notes);
-    assert!(vs.consent_dir.is_dir() && vs.consent_dir.starts_with(tmp.path().join("cache")));
+    let consent = tmp.path().join("cache").join("consent");
+    assert_eq!(vs.run_dir, consent.join(std::process::id().to_string()));
+    assert!(vs.run_dir.join("lock").is_file());
     let argv = std::fs::read_to_string(tmp.path().join("home/.vscode/argv.json")).unwrap();
     assert!(argv.contains("\"enable-proposed-api\": [\"aeth.aeth-devkit\"]"), "{argv}");
-    let dir = vs.consent_dir.clone();
+    let dir = vs.run_dir.clone();
     drop(vs);
-    assert!(!dir.exists());
+    assert!(!dir.exists() && consent.is_dir(), "only the run's own folder goes");
 
     let Prepared::Ready(vs) = prepare(&o, &installed_runner(tmp.path()), &StubFetch::default()) else {
       panic!()
@@ -308,6 +346,29 @@ mod tests {
     absent.script(&code(tmp.path()), &["--list-extensions"], 0, "");
     assert!(matches!(prepare(&o, &absent, &StubFetch::default()), Prepared::Unavailable(_)));
     assert_eq!(absent.calls_for(&code(tmp.path())).len(), 1);
+  }
+
+  #[test]
+  fn prepare_sweeps_dead_runs_and_leaves_live_ones() {
+    let tmp = tempfile::tempdir().unwrap();
+    let o = options(tmp.path(), false);
+    let consent = tmp.path().join("cache").join("consent");
+    // Dead: a lock nobody holds, and a folder that died before locking.
+    std::fs::create_dir_all(consent.join("11")).unwrap();
+    std::fs::write(consent.join("11").join("lock"), "").unwrap();
+    std::fs::write(consent.join("11").join("11-0.request.json"), "{}").unwrap();
+    std::fs::create_dir_all(consent.join("12")).unwrap();
+    // Live: held through a separate handle, as another process would.
+    std::fs::create_dir_all(consent.join("13")).unwrap();
+    let held = std::fs::File::create(consent.join("13").join("lock")).unwrap();
+    held.lock().unwrap();
+    let Prepared::Ready(vs) = prepare(&o, &installed_runner(tmp.path()), &StubFetch::default()) else {
+      panic!()
+    };
+    assert!(!consent.join("11").exists() && !consent.join("12").exists());
+    assert!(consent.join("13").join("lock").is_file(), "a live run is left alone");
+    assert!(vs.run_dir.is_dir());
+    drop(held);
   }
 
   #[test]

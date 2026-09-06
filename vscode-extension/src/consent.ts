@@ -46,11 +46,21 @@ export function cacheDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform, home
 }
 
 /** Consent ids are `<pid>-<n>`, review ids `review-<pid>`; nothing else reaches the disk. */
-export const ID_PATTERN = /^(\d+-\d+|review-\d+)$/;
+export const ID_PATTERN = /^(?:(\d+)-\d+|review-(\d+))$/;
 
+/**
+ * `<cache>/consent/<pid>/<id>.request.json`: each run owns the folder named by its pid and
+ * removes it when it ends, so this side only ever reads there and writes its answers.
+ */
 export function requestPath(cache: string, id: string): string {
-  if (!ID_PATTERN.test(id)) throw new Error(`malformed request id: ${JSON.stringify(id)}`);
-  return path.join(cache, 'consent', `${id}.request.json`);
+  const m = ID_PATTERN.exec(id);
+  if (!m) throw new Error(`malformed request id: ${JSON.stringify(id)}`);
+  return path.join(cache, 'consent', m[1] ?? m[2], `${id}.request.json`);
+}
+
+/** Written once every text of a request is in memory; the CLI may delete the files after. */
+export function ackPath(requestFile: string): string {
+  return requestFile.replace(/\.request\.json$/, '.ack');
 }
 
 /** Whether `file` is strictly inside `dir` (any `vscode://` link can name a request). */

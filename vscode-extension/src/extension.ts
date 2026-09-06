@@ -10,6 +10,7 @@ import {
   Response,
   SCHEME,
   Session,
+  ackPath,
   cacheDir,
   cancelPath,
   panels,
@@ -134,6 +135,7 @@ async function handleUri(uri: vscode.Uri): Promise<void> {
   await vscode.commands.executeCommand('setContext', 'aeth-devkit.offerReplaceAll', req.offer_replace_all);
   const currentText = fs.readFileSync(req.current_path, 'utf8');
   const proposedText = fs.readFileSync(req.proposed_path, 'utf8');
+  fs.writeFileSync(ackPath(file), '');
   const current = docs.register(req.id, 'current', req.title, currentText);
   const proposed = docs.register(req.id, 'proposed', req.title, proposedText);
   const s: OpenSession = {

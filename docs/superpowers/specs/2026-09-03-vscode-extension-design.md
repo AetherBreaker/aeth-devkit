@@ -186,18 +186,18 @@ buffer for the same file can never shift the hunk numbering.
 
 ### Request
 
-`<cache>/consent/<id>.request.json`:
+`<cache>/consent/<pid>/<id>.request.json`, in the folder this run owns:
 
 ```json
 {
   "protocol": 1, "id": "…",
   "title": "docker/Dockerfile" | "docker/compose.yaml: service web",
-  "current_path": "<cache>/consent/<id>.current",
-  "proposed_path": "<cache>/consent/<id>.proposed",
+  "current_path": "<cache>/consent/<pid>/<id>.current",
+  "proposed_path": "<cache>/consent/<pid>/<id>.proposed",
   "hunks": [{ "current": [start, end], "proposed": [start, end] }],
   "offer_replace_all": true,
   "content_menu": true,
-  "response_path": "<cache>/consent/<id>.response.json"
+  "response_path": "<cache>/consent/<pid>/<id>.response.json"
 }
 ```
 
@@ -209,8 +209,9 @@ one diff tab is open at a time.
 ### Extension behaviour
 
 1. The URI handler accepts only a well-formed id (`<pid>-<n>` or `review-<pid>`) and
-   reads `<cache>/consent/<id>.request.json`, so a link from any web page can name
-   nothing outside the cache; it refuses a protocol it does not speak
+   reads `<cache>/consent/<pid>/<id>.request.json`, so a link from any web page can name
+   nothing outside the cache; it writes `<id>.ack` once every text is in memory (the CLI
+   may delete the files after that); it refuses a protocol it does not speak
    with an `error` response, registers both texts under
    `aeth-devkit-proposed:/<id>/…` and opens a diff of the two titled
    `devkit: <title>` via `vscode.diff`.
@@ -258,8 +259,10 @@ the terminal prompt for that file; a second Ctrl-C at the terminal prompt ends t
 process exactly as an unhandled Ctrl-C does today. Any protocol error (unparseable
 response, missing file) falls back to the terminal prompt.
 
-The CLI empties `<cache>/consent/` when a run starts and when it ends, so a killed run
-leaves nothing behind for longer than the next run.
+Each run owns `<cache>/consent/<pid>/` and removes it when it ends; the extension deletes
+nothing. The CLI holds an OS lock on `<pid>/lock` for the run, and the next run removes any
+sibling folder whose lock is free (its owner was killed) before claiming its own, under a
+short `.sweep` lock so a sweep never overlaps a claim.
 
 ## Review mode
 
@@ -268,7 +271,8 @@ Under `--dry-run` with a compatible extension installed, the CLI writes one requ
 `path`, `label`, `current_path` (null for a created file) and `proposed_path` — opened via
 `vscode://aeth.aeth-devkit/review?id=review-<pid>`, and the extension shows the multi-diff
 editor with `vscode.changes("devkit setup-project (dry run)", [[path, current, proposed],
-…])`. Read-only; no response is awaited. The printed report is unchanged.
+…])`. Read-only; no response is awaited, only the `.ack` (at most 5 s) before the run's
+folder is removed. The printed report is unchanged.
 
 ## Ported command
 

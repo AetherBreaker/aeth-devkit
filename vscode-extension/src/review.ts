@@ -1,9 +1,12 @@
 import * as fs from 'node:fs';
 import * as vscode from 'vscode';
-import { ReviewRequest, isInside } from './consent';
+import { ReviewRequest, ackPath, isInside } from './consent';
 import { ProposedDocs } from './proposedDocs';
 
-/** `--dry-run`: every change in one multi-diff editor, read-only, nothing awaited. */
+/**
+ * `--dry-run`: every change in one multi-diff editor, read-only. The CLI waits only for
+ * the ack, written once every text is held here, then removes its run folder.
+ */
 export async function openReview(file: string, cache: string, docs: ProposedDocs): Promise<void> {
   let req: ReviewRequest;
   try {
@@ -25,5 +28,6 @@ export async function openReview(file: string, cache: string, docs: ProposedDocs
     docs.register(req.id, 'current', `${i}/${f.label}`, f.current_path ? fs.readFileSync(f.current_path, 'utf8') : ''),
     docs.register(req.id, 'proposed', `${i}/${f.label}`, fs.readFileSync(f.proposed_path, 'utf8')),
   ]);
+  fs.writeFileSync(ackPath(file), '');
   await vscode.commands.executeCommand('vscode.changes', 'devkit setup-project (dry run)', resources);
 }
