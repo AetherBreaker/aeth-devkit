@@ -91,6 +91,10 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
   let runner = aeth_devkit_core::process::SystemRunner;
 
+  // First, so the guards inside `prepare` (the extension download, argv.json) count.
+  if !dry_run && let Err(e) = crate::interrupt::install() {
+    println!("note: {e:#}; a Ctrl-C will not wait for a write in progress to finish.");
+  }
   // VS Code is consulted only where a human could answer in the terminal anyway: never
   // for --check (hooks and CI), never without a tty, never when --replace-docker has
   // already answered. It runs before staging so a "reload and rerun" stop touches nothing.
@@ -105,7 +109,8 @@ pub fn run(args: &Args) -> Result<ExitCode> {
         None
       }
       crate::vscode::Prepared::ReloadNeeded => {
-        // A refusal like the headless one: nothing was done, so exit 2 says so to a wrapper.
+        // A refusal like the headless one: no project file was touched (the extension
+        // itself was installed), so exit 2 says so to a wrapper.
         bail!(
           "the devkit VS Code extension was updated; reload the VS Code window, then run setup-project again (or pass --no-vscode)"
         )
@@ -113,8 +118,10 @@ pub fn run(args: &Args) -> Result<ExitCode> {
       crate::vscode::Prepared::Ready(vs) => Some(vs),
     }
   };
-  if !dry_run && let Err(e) = crate::interrupt::install() {
-    println!("note: {e:#}; a Ctrl-C will not wait for a write in progress to finish.");
+  // Printed now, not with the run's notes: one of them ("restart VS Code once") is
+  // emitted only on the run that grants argv.json, and a failure later would lose it.
+  for note in vs.iter().flat_map(|v| &v.notes) {
+    println!("note: {note}");
   }
   // Handed in for a dry run too: never consulted there (`decide` answers first), but its
   // presence is what makes the run keep previews for the review at the end.
@@ -150,8 +157,6 @@ pub fn run(args: &Args) -> Result<ExitCode> {
       },
     };
     let mut c = crate::run_with(&ctx, &templates, dry_run, &deps)?;
-    // Leftovers of the old extension: advisory, so they print with the run's other notes.
-    c.notes.extend(vs.iter().flat_map(|v| v.notes.iter().cloned()));
     if !dry_run {
       match crate::format::format_pyproject(&root, &crate::format::SystemRunner, &mut c)? {
         crate::format::Outcome::Formatted(_) => {}
@@ -203,7 +208,7 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   println!("{header}\n{}", changes.report(&root));
   if dry_run
     && let Some(vs) = &vs
-    && let Err(e) = crate::vscode::session::open_review(vs, &runner, &root, &changes.previews, std::time::Duration::from_secs(5))
+    && let Err(e) = crate::vscode::session::open_review(vs, &runner, &root, &changes.previews, crate::vscode::session::ACK_TIMEOUT)
   {
     println!("note: could not open the review in VS Code: {e:#}");
   }

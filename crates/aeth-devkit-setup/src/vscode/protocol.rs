@@ -52,13 +52,12 @@ impl Proposal {
   }
 }
 
+/// A `\r` not followed by `\n` becomes `\n`; CRLF pairs survive.
 fn bare_cr_to_lf(s: &str) -> String {
-  let mut out = String::with_capacity(s.len());
-  let mut chars = s.chars().peekable();
-  while let Some(c) = chars.next() {
-    out.push(if c == '\r' && chars.peek() != Some(&'\n') { '\n' } else { c });
+  if !s.contains('\r') {
+    return s.to_owned();
   }
-  out
+  s.split("\r\n").map(|seg| seg.replace('\r', "\n")).collect::<Vec<_>>().join("\r\n")
 }
 
 /// `<id>.request.json`, as the extension reads it.

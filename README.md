@@ -292,8 +292,8 @@ so its diff collapses, and the status bar counts `n of m hunks accepted`. Whole 
 editor buttons or the tab-bar icons until the proposal is live: `Apply accepted hunks`,
 `Accept all hunks`, `Replace file`, `Replace all` (rest of the run), `Keep file`.
 Closing the diff without deciding falls back to the terminal prompt for that file; Ctrl-C
-in the terminal does the same, and a second Ctrl-C aborts (after any file write in
-progress completes, so nothing is left half-written; uncommitted edits to managed files
+in the terminal does the same, and a second Ctrl-C aborts (after any file write of its
+own in progress completes, so nothing is left half-written; uncommitted edits to managed files
 that a committing run was holding are lost, and a rerun re-standardises). Partial answers are
 reassembled by the CLI from the accepted hunk indices; the extension never writes project
 files. `--dry-run` opens every proposed change in one multi-diff review instead.

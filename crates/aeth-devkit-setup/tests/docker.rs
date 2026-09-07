@@ -26,7 +26,7 @@ fn read(root: &Path, rel: &str) -> String {
   fs::read_to_string(root.join(rel)).unwrap()
 }
 
-/// A git-tracked project with an origin, `services`, and an aeth-ext dependency.
+// A git-tracked project with an origin, `services`, and an aeth-ext dependency.
 fn project(services: &[&str], origin: &str) -> tempfile::TempDir {
   let dir = tempfile::tempdir().unwrap();
   let root = dir.path();

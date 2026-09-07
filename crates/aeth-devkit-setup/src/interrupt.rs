@@ -5,8 +5,11 @@
 //! as an unhandled Ctrl-C would. State held only in memory (the user's edits to managed
 //! files while HEAD content sits on disk, see `commit::stage_clean_base`) is lost then, by
 //! decision: a rerun re-standardises, but a half-written file needs a hand.
+//!
+//! A guard covers only devkit's own writes: the console delivers the Ctrl-C to every
+//! child too, so git's lockfile-and-rename atomicity is what protects a git phase, and
+//! `tombi` rewriting pyproject.toml (see `format`) is on its own.
 
-use std::sync::Once;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 
 use anyhow::{Context as _, Result};
@@ -16,7 +19,6 @@ pub(crate) static WAITING: AtomicBool = AtomicBool::new(false);
 pub(crate) static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 static WRITES: AtomicUsize = AtomicUsize::new(0);
 static EXIT_PENDING: AtomicBool = AtomicBool::new(false);
-static INSTALL: Once = Once::new();
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Action {
@@ -25,31 +27,39 @@ pub(crate) enum Action {
   Exit,
 }
 
-/// The handler's choice. `EXIT_PENDING` is set before `WRITES` is read, and
-/// [`Writing::begin`] increments before it reads the flag, so whichever side comes
-/// second sees the other: a write that starts as the exit is decided never begins.
+/// The handler's choice for a given state; pure, so the test never touches the flags.
+pub(crate) fn action(waiting: bool, writes: usize) -> Action {
+  if waiting {
+    Action::Flag
+  } else if writes > 0 {
+    Action::Defer
+  } else {
+    Action::Exit
+  }
+}
+
+/// `EXIT_PENDING` is set before `WRITES` is read, and [`Writing::begin`] increments
+/// before it reads the flag, so whichever side comes second sees the other: a write that
+/// starts as the exit is decided never begins.
 pub(crate) fn on_ctrl_c() -> Action {
   if WAITING.load(SeqCst) {
     INTERRUPTED.store(true, SeqCst);
     return Action::Flag;
   }
   EXIT_PENDING.store(true, SeqCst);
-  if WRITES.load(SeqCst) > 0 { Action::Defer } else { Action::Exit }
+  action(false, WRITES.load(SeqCst))
 }
 
-/// Once per process; `ctrlc` refuses a second handler, and library callers may run
-/// `cli::run` more than once.
+/// Install the handler; an earlier call having done so already is fine.
 pub fn install() -> Result<()> {
-  let mut outcome = Ok(());
-  INSTALL.call_once(|| {
-    outcome = ctrlc::set_handler(|| {
-      if on_ctrl_c() == Action::Exit {
-        std::process::exit(130);
-      }
-    })
-    .context("installing Ctrl-C handler");
-  });
-  outcome
+  match ctrlc::set_handler(|| {
+    if on_ctrl_c() == Action::Exit {
+      std::process::exit(130);
+    }
+  }) {
+    Err(ctrlc::Error::MultipleHandlers) => Ok(()),
+    r => r.context("installing Ctrl-C handler"),
+  }
 }
 
 /// Held for the duration of a write (one file, or one git phase that rewrites several).
@@ -58,8 +68,9 @@ pub struct Writing(());
 
 impl Writing {
   pub fn begin() -> Self {
-    WRITES.fetch_add(1, SeqCst);
-    if EXIT_PENDING.load(SeqCst) {
+    // Only the outermost guard refuses to start: an inner one is part of a write that
+    // is already under way and must finish.
+    if WRITES.fetch_add(1, SeqCst) == 0 && EXIT_PENDING.load(SeqCst) {
       std::process::exit(130);
     }
     Writing(())
@@ -95,14 +106,11 @@ pub(crate) mod tests {
     WAITING.store(true, SeqCst);
     assert_eq!(on_ctrl_c(), Action::Flag);
     assert!(INTERRUPTED.swap(false, SeqCst) && !EXIT_PENDING.load(SeqCst));
-    WAITING.store(false, SeqCst);
-    // `Writing` cannot be dropped here (it would exit), so count by hand.
-    WRITES.fetch_add(1, SeqCst);
-    assert_eq!(on_ctrl_c(), Action::Defer);
-    WRITES.fetch_sub(1, SeqCst);
-    assert!(EXIT_PENDING.swap(false, SeqCst));
-    assert_eq!(on_ctrl_c(), Action::Exit);
     reset();
+    // Never through `on_ctrl_c`: a set `EXIT_PENDING` makes any guard in another test
+    // thread exit the whole test binary.
+    assert_eq!(action(false, 1), Action::Defer);
+    assert_eq!(action(false, 0), Action::Exit);
   }
 
   #[test]
