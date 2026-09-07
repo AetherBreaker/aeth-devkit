@@ -278,6 +278,19 @@ pub fn run_outcome(args: &Args, deps: &Deps) -> Result<Outcome> {
 /// Ctrl-C handler (a `'static` closure) needs to reference.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
+#[derive(Debug, PartialEq, Eq)]
+enum CtrlC {
+  Flag,
+  Exit,
+}
+
+/// A Ctrl-C at a question means "no, stop": nothing is journaled at either prompt, and
+/// flagging alone would leave the process blocked on stdin (see `prompt::waiting`).
+/// Pure, so the test never exits the test binary.
+fn ctrl_c_action(waiting: bool) -> CtrlC {
+  if waiting { CtrlC::Exit } else { CtrlC::Flag }
+}
+
 /// [`run`] with the real collaborators.
 pub fn run_real(args: &Args) -> Result<ExitCode> {
   Ok(run_outcome_real(args)?.exit_code())
@@ -289,7 +302,13 @@ pub fn run_outcome_real(args: &Args) -> Result<Outcome> {
   // console interrupt and exit non-zero, which surfaces as an ordinary step error and
   // triggers rollback; the flag covers interrupts that land between steps. The handler stays
   // installed, so a second Ctrl-C during rollback does not kill us mid-unwind.
-  ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst)).context("installing Ctrl-C handler")?;
+  ctrlc::set_handler(|| {
+    if ctrl_c_action(prompt::waiting()) == CtrlC::Exit {
+      std::process::exit(130);
+    }
+    INTERRUPTED.store(true, Ordering::SeqCst);
+  })
+  .context("installing Ctrl-C handler")?;
   let env = |key: &str| std::env::var(key).ok();
   let index = aeth_devkit_core::index::HttpIndexClient::with_timeout(std::time::Duration::from_secs(30));
   run_outcome(
@@ -309,6 +328,12 @@ pub fn run_outcome_real(args: &Args) -> Result<Outcome> {
 #[cfg(test)]
 mod cli_tests {
   use super::*;
+
+  #[test]
+  fn ctrl_c_exits_at_a_prompt_and_flags_elsewhere() {
+    assert_eq!(ctrl_c_action(true), CtrlC::Exit);
+    assert_eq!(ctrl_c_action(false), CtrlC::Flag);
+  }
 
   #[test]
   fn flags_parse_anywhere_on_the_line() {

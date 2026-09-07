@@ -4,7 +4,7 @@
 use anyhow::Result;
 
 // Re-exported so every `crate::prompt::…` path in this crate and its tests keeps working.
-pub use aeth_devkit_core::prompt::{Prompt, ScriptedPrompt, StdinPrompt};
+pub use aeth_devkit_core::prompt::{Prompt, ScriptedPrompt, StdinPrompt, waiting};
 
 /// `true` when `force` is already set (the `--force` flag) or the user types exactly
 /// `force`. Anything else — including `y`, `yes`, an empty line — is a refusal.

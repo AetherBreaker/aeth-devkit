@@ -10,12 +10,42 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 // Traits for `read_line` (BufRead) and `flush` (Write); imported anonymously for methods.
 use std::io::{BufRead as _, Write as _};
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
 use anyhow::{Context as _, Result, bail};
 
 /// Something that can ask a question and return the user's (trimmed) answer.
 pub trait Prompt {
   fn ask(&self, question: &str) -> Result<String>;
+}
+
+/// True while [`StdinPrompt`] is blocked on a line. A Ctrl-C handler that only flags the
+/// interrupt (release's, so a second Ctrl-C cannot kill a rollback) must consult this and
+/// exit instead: on Windows, std retries a console read that Ctrl-C aborted, so the
+/// process would otherwise stay alive waiting for Enter, sharing the console's input with
+/// the shell that has already redrawn its prompt.
+static WAITING: AtomicBool = AtomicBool::new(false);
+
+pub fn waiting() -> bool {
+  WAITING.load(SeqCst)
+}
+
+/// Holds [`waiting`] true for as long as the value lives. `Drop` runs on every exit
+/// path — normal return, `?`, panic unwind — so the flag cannot be left set. The private
+/// `()` field means only `begin` can construct one.
+pub struct Waiting(());
+
+impl Waiting {
+  pub fn begin() -> Self {
+    WAITING.store(true, SeqCst);
+    Waiting(())
+  }
+}
+
+impl Drop for Waiting {
+  fn drop(&mut self) {
+    WAITING.store(false, SeqCst);
+  }
 }
 
 /// Reads answers from standard input.
@@ -29,6 +59,7 @@ impl Prompt for StdinPrompt {
     eprint!("{question} ");
     std::io::stderr().flush().ok();
     let mut line = String::new();
+    let _w = Waiting::begin();
     // `lock()` takes the stdin handle once for the whole read instead of per byte.
     std::io::stdin().lock().read_line(&mut line).context("reading answer from stdin")?;
     Ok(line.trim().to_string())
@@ -73,5 +104,15 @@ mod tests {
     assert_eq!(p.ask("b?").unwrap(), "no");
     assert!(p.ask("c?").is_err());
     assert_eq!(*p.asked.borrow(), vec!["a?", "b?", "c?"]);
+  }
+
+  #[test]
+  fn waiting_is_set_only_while_a_guard_lives() {
+    assert!(!waiting());
+    {
+      let _w = Waiting::begin();
+      assert!(waiting());
+    }
+    assert!(!waiting());
   }
 }
