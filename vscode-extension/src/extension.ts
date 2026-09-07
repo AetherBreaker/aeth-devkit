@@ -5,16 +5,16 @@ import {
   EXTENSION_ID,
   HunkDecision,
   HunkState,
-  PROTOCOL,
   Request,
   Response,
   SCHEME,
   Session,
-  ackPath,
   cacheDir,
   cancelPath,
+  markerPath,
   panels,
   parseRequest,
+  protocolMismatch,
   requestPath,
   writeResponse,
 } from './consent';
@@ -98,7 +98,14 @@ function respond(path: string, r: Response): void {
   try {
     writeResponse(path, r);
   } catch (e) {
-    fail(`could not answer devkit: ${(e as Error).message}`);
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      log.appendLine(`${path}: gone; the run ended or gave up on this diff`);
+      void vscode.window.showWarningMessage(
+        'aeth-devkit: devkit is no longer waiting for this diff (the run ended or gave up on it); rerun setup-project.',
+      );
+    } else {
+      fail(`could not answer devkit: ${(e as Error).message}`);
+    }
   }
 }
 
@@ -136,28 +143,34 @@ async function handleUri(uri: vscode.Uri): Promise<void> {
   } catch (e) {
     return fail((e as Error).message);
   }
-  if (req.protocol !== PROTOCOL) {
-    respond(req.response_path, {
-      decision: 'error',
-      message: `the extension speaks protocol ${PROTOCOL}, devkit sent ${req.protocol}; update one of them`,
-    });
-    return;
-  }
+  const mismatch = protocolMismatch(req.protocol);
+  if (mismatch) return respond(req.response_path, { decision: 'error', message: mismatch });
+  // The CLI stopped waiting (its ack deadline passed): nothing to show any more.
+  if (fs.existsSync(cancelPath(req))) return log.appendLine(`${req.id}: already cancelled`);
+  // Ids carry the pid, and pids come round again: a tab a dead run left under this id
+  // would be revealed with its old texts, so it goes first.
+  const stale = sessions.get(req.id);
+  if (stale) await closeTab(stale);
   // Anything that fails from here on is answered as an `error`, so the CLI retires this
   // reviewer instead of waiting; the request names the response path already.
-  let s: OpenSession | undefined;
   try {
-    warnIfDiffCodeLensOff();
+    // The manifest's `configurationDefaults` turns `diffEditor.codeLens` on for this
+    // install; only an explicit `false` from the user, which still wins, hides the lenses.
+    if (vscode.workspace.getConfiguration('diffEditor').get<boolean>('codeLens') === false) {
+      void vscode.window.showWarningMessage(
+        'aeth-devkit: diffEditor.codeLens is off, so per-hunk Accept/Reject is hidden; the whole-file buttons still work.',
+      );
+    }
     await vscode.commands.executeCommand('setContext', 'aeth-devkit.contentMenu', contentMenuLive(req));
     await vscode.commands.executeCommand('setContext', 'aeth-devkit.offerReplaceAll', req.offer_replace_all);
     const currentText = fs.readFileSync(req.current_path, 'utf8');
     const proposedText = fs.readFileSync(req.proposed_path, 'utf8');
-    fs.writeFileSync(ackPath(file), '');
+    fs.writeFileSync(markerPath(file, 'ack'), '');
     const current = docs.register(req.id, 'current', req.title, currentText);
     const proposed = docs.register(req.id, 'proposed', req.title, proposedText);
     await vscode.commands.executeCommand('vscode.diff', current, proposed, `devkit: ${req.title}`, { preview: false });
     // The poll starts only once the tab is open, so a failed open leaks no timer.
-    s = {
+    const s: OpenSession = {
       req,
       state: new HunkState(req.hunks.length),
       answered: false,
@@ -166,7 +179,7 @@ async function handleUri(uri: vscode.Uri): Promise<void> {
       currentText,
       proposedText,
       cancelPoll: setInterval(() => {
-        if (s && fs.existsSync(cancelPath(req))) {
+        if (fs.existsSync(cancelPath(req))) {
           log.appendLine(`${req.id}: cancelled by the CLI`);
           s.answered = true;
           void closeTab(s);
@@ -176,24 +189,13 @@ async function handleUri(uri: vscode.Uri): Promise<void> {
     sessions.set(req.id, s);
     render(s);
   } catch (e) {
+    // Answer first: the ack is out, so the CLI waits on nothing else.
     const message = (e as Error).message;
     fail(`${req.title}: ${message}`);
-    if (s) await closeTab(s);
-    else docs.forget(req.id);
     respond(req.response_path, { decision: 'error', message });
-  }
-}
-
-/**
- * The manifest's `configurationDefaults` turns `diffEditor.codeLens` on for this install
- * (no user file is written, and it reverts on uninstall); only an explicit `false` from
- * the user, which still wins, hides the per-hunk lenses.
- */
-function warnIfDiffCodeLensOff(): void {
-  if (vscode.workspace.getConfiguration('diffEditor').get<boolean>('codeLens') === false) {
-    void vscode.window.showWarningMessage(
-      'aeth-devkit: diffEditor.codeLens is off, so per-hunk Accept/Reject is hidden; the whole-file buttons still work.',
-    );
+    const open = sessions.get(req.id);
+    if (open) await closeTab(open);
+    else docs.forget(req.id);
   }
 }
 

@@ -58,9 +58,18 @@ export function requestPath(cache: string, id: string): string {
   return path.join(cache, 'consent', m[1] ?? m[2], `${id}.request.json`);
 }
 
-/** Written once every text of a request is in memory; the CLI may delete the files after. */
-export function ackPath(requestFile: string): string {
-  return requestFile.replace(/\.request\.json$/, '.ack');
+/**
+ * `<id>.ack` is written once every text of a request is in memory (the CLI may delete the
+ * files after); `<id>.cancel` is the CLI's, written when it stops waiting.
+ */
+export function markerPath(requestFile: string, kind: 'ack' | 'cancel'): string {
+  return requestFile.replace(/\.request\.json$/, `.${kind}`);
+}
+
+/** The message for a request this build cannot answer, or undefined when it can. */
+export function protocolMismatch(sent: number): string | undefined {
+  if (sent === PROTOCOL) return undefined;
+  return `the extension speaks protocol ${PROTOCOL}, devkit sent ${sent}; update one of them`;
 }
 
 /** Whether `file` is strictly inside `dir` (any `vscode://` link can name a request). */
@@ -156,8 +165,8 @@ export function splitLines(text: string): string[] {
 /**
  * The two panel texts for the current decisions. A decided hunk carries the same lines
  * on both sides (the proposed lines when accepted, the current ones when rejected), so
- * its diff collapses like an accepted change in the merge editor; only undecided hunks
- * still differ. The right panel is the display-side twin of the CLI's `assemble`.
+ * its diff collapses like an accepted change in the merge editor. The right panel is the
+ * display-side twin of the CLI's `assemble`.
  */
 export function panels(current: string, proposed: string, hunks: Hunk[], state: HunkState): { left: string; right: string } {
   const cur = splitLines(current);

@@ -6,12 +6,13 @@ import {
   Hunk,
   HunkState,
   cacheDir,
-  ackPath,
   cancelPath,
   docPath,
   isInside,
+  markerPath,
   panels,
   parseRequest,
+  protocolMismatch,
   requestPath,
   rightPanelLines,
   splitLines,
@@ -49,7 +50,10 @@ describe('requestPath and isInside', () => {
     expect(requestPath('/c', '12-0')).toBe(path.join('/c', 'consent', '12', '12-0.request.json'));
     expect(requestPath('/c', 'review-12')).toBe(path.join('/c', 'consent', '12', 'review-12.request.json'));
     for (const bad of ['', '../x', '12-0/../../etc', 'review', 'a-b']) expect(() => requestPath('/c', bad)).toThrow();
-    expect(ackPath(requestPath('/c', '12-0'))).toBe(path.join('/c', 'consent', '12', '12-0.ack'));
+    expect(markerPath(requestPath('/c', '12-0'), 'ack')).toBe(path.join('/c', 'consent', '12', '12-0.ack'));
+    expect(markerPath(requestPath('/c', 'review-7'), 'cancel')).toBe(path.join('/c', 'consent', '7', 'review-7.cancel'));
+    expect(protocolMismatch(1)).toBeUndefined();
+    expect(protocolMismatch(2)).toContain('devkit sent 2');
   });
   it('rejects paths outside the cache', () => {
     const c = tmp();
