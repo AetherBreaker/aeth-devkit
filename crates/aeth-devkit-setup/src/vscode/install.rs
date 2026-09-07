@@ -139,26 +139,22 @@ pub fn latest_tag_number(refs_json: &str) -> Result<Option<u32>> {
   )
 }
 
-/// `N` for the newest `aeth.aeth-devkit-N.0.0` folder in VS Code's extensions directory,
-/// skipping any `.obsolete` marks for deletion. Reading it costs nothing next to
-/// launching `code --list-extensions` (a third of a second or more), which stays the
-/// fallback for a custom extensions directory or a portable install.
+/// `N` for the newest `aeth.aeth-devkit` entry in `extensions.json`, VS Code's own
+/// registry of installed extensions (an array of `{identifier: {id}, version, ...}`; an
+/// uninstall drops the entry, and a folder without one is not installed). Reading it
+/// costs nothing next to launching `code --list-extensions` (a third of a second or
+/// more), which stays the fallback when the file is absent or unreadable.
 pub fn installed_on_disk(extensions_dir: &Path) -> Option<u32> {
-  let obsolete: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(extensions_dir.join(".obsolete"))
-    .ok()
-    .and_then(|s| serde_json::from_str(&s).ok())
-    .unwrap_or_default();
-  let prefix = format!("{EXTENSION_ID}-");
-  std::fs::read_dir(extensions_dir)
-    .ok()?
-    .flatten()
-    .filter_map(|e| {
-      let name = e.file_name().to_string_lossy().into_owned();
-      if obsolete.contains_key(&name) || !name.get(..prefix.len())?.eq_ignore_ascii_case(&prefix) {
-        return None;
-      }
-      name[prefix.len()..].split('.').next()?.parse().ok()
+  let text = std::fs::read_to_string(extensions_dir.join("extensions.json")).ok()?;
+  let entries: Vec<serde_json::Value> = serde_json::from_str(&text).ok()?;
+  entries
+    .iter()
+    .filter(|e| {
+      e["identifier"]["id"]
+        .as_str()
+        .is_some_and(|id| id.eq_ignore_ascii_case(EXTENSION_ID))
     })
+    .filter_map(|e| e["version"].as_str()?.split('.').next()?.parse().ok())
     .max()
 }
 
@@ -248,24 +244,24 @@ mod tests {
   }
 
   #[test]
-  fn the_extensions_folder_answers_without_launching_code() {
+  fn the_extensions_registry_answers_without_launching_code() {
     let ext = tempfile::tempdir().unwrap();
     assert_eq!(installed_on_disk(ext.path()), None);
-    for d in [
-      "ms-python.python-2024.1.0",
-      "Aeth.aeth-devkit-2.0.0",
-      "aeth.aeth-devkit-3.0.0",
-      "aeth.aeth-devkit-x",
-    ] {
-      std::fs::create_dir(ext.path().join(d)).unwrap();
-    }
+    // A folder alone (an interrupted install) is not an entry.
+    std::fs::create_dir(ext.path().join("aeth.aeth-devkit-9.0.0")).unwrap();
+    assert_eq!(installed_on_disk(ext.path()), None);
+    let registry = ext.path().join("extensions.json");
+    std::fs::write(&registry, "not json").unwrap();
+    assert_eq!(installed_on_disk(ext.path()), None, "unreadable: the launcher decides");
+    std::fs::write(
+      &registry,
+      r#"[{"identifier":{"id":"ms-python.python","uuid":"u"},"version":"2024.1.0"},
+          {"identifier":{"id":"Aeth.aeth-devkit"},"version":"2.0.0","relativeLocation":"aeth.aeth-devkit-2.0.0"},
+          {"identifier":{"id":"aeth.aeth-devkit"},"version":"3.0.0"},
+          {"identifier":{"id":"aeth.aeth-devkit"},"version":"x"}]"#,
+    )
+    .unwrap();
     assert_eq!(installed_on_disk(ext.path()), Some(3));
-    std::fs::write(ext.path().join(".obsolete"), r#"{"aeth.aeth-devkit-3.0.0":true}"#).unwrap();
-    assert_eq!(
-      installed_on_disk(ext.path()),
-      Some(2),
-      "an uninstall pending deletion does not count"
-    );
     let r = RecordingRunner::new(0);
     let cache = tempfile::tempdir().unwrap();
     assert!(!ensure_extension(&r, &StubFetch::default(), Path::new("code"), ext.path(), cache.path(), true).unwrap());
