@@ -45,6 +45,7 @@ dependencies = [
  "anyhow",
  "clap",
  "nix",
+ "serde_json",
  "tempfile",
  "toml_edit",
 ]
