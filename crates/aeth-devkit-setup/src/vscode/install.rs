@@ -1,6 +1,6 @@
 //! Getting a compatible extension into VS Code: the newest `vscode-extension-vN` release
 //! is fetched from GitHub (the repo is public; a `GH_TOKEN`/`GITHUB_TOKEN` in the
-//! environment is sent only for the higher rate limit) and handed to
+//! environment is sent only for the higher rate limit, and dropped if rejected) and handed to
 //! `code --install-extension`. A fresh install is live at once; an upgrade over a loaded
 //! extension needs a window reload, which the caller reports and stops on.
 
@@ -49,20 +49,28 @@ impl HttpFetch {
 
 impl Fetch for HttpFetch {
   fn get_text(&self, url: &str) -> Result<String> {
-    // GitHub's API rejects requests without a User-Agent.
-    let req = Self::agent()
-      .get(url)
-      .header("User-Agent", "aeth-devkit")
-      .header("Accept", "application/vnd.github+json");
     // `gh`'s own precedence; only the API call is authenticated, never the asset download.
+    // A token GitHub rejects (expired, revoked) is dropped for a second, anonymous try:
+    // the repo is public, so the token only ever bought a higher rate limit.
     let token = ["GH_TOKEN", "GITHUB_TOKEN"]
       .iter()
       .find_map(|k| std::env::var(k).ok().filter(|t| !t.is_empty()));
-    let req = match token {
-      Some(t) => req.header("Authorization", format!("Bearer {t}")),
-      None => req,
+    let get = |token: Option<&str>| -> Result<ureq::http::Response<ureq::Body>> {
+      // GitHub's API rejects requests without a User-Agent.
+      let req = Self::agent()
+        .get(url)
+        .header("User-Agent", "aeth-devkit")
+        .header("Accept", "application/vnd.github+json");
+      let req = match token {
+        Some(t) => req.header("Authorization", format!("Bearer {t}")),
+        None => req,
+      };
+      req.call().with_context(|| format!("fetching {url}"))
     };
-    let mut resp = req.call().with_context(|| format!("fetching {url}"))?;
+    let mut resp = get(token.as_deref())?;
+    if token.is_some() && matches!(resp.status().as_u16(), 401 | 403) {
+      resp = get(None)?;
+    }
     if resp.status().as_u16() != 200 {
       bail!("HTTP {} from GET {url}", resp.status());
     }
