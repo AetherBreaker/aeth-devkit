@@ -15,6 +15,9 @@ export class ProposedDocs implements vscode.TextDocumentContentProvider {
   register(id: string, side: 'current' | 'proposed', title: string, text: string): vscode.Uri {
     const uri = vscode.Uri.from({ scheme: SCHEME, path: docPath(id, side, title) });
     this.texts.set(uri.path, text);
+    // Ids come round again (they carry the pid): a tab still open under this URI keeps
+    // its model, and only the event makes VS Code ask for the new text.
+    this.emitter.fire(uri);
     return uri;
   }
 
@@ -26,6 +29,11 @@ export class ProposedDocs implements vscode.TextDocumentContentProvider {
 
   forget(id: string): void {
     for (const key of [...this.texts.keys()]) if (key.startsWith(`/${id}/`)) this.texts.delete(key);
+  }
+
+  /** Reviews have no session to end them; the next review drops every earlier one. */
+  forgetReviews(): void {
+    for (const key of [...this.texts.keys()]) if (key.startsWith('/review-')) this.texts.delete(key);
   }
 
   provideTextDocumentContent(uri: vscode.Uri): string {
