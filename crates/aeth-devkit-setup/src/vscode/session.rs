@@ -16,6 +16,9 @@ use super::protocol::{EXTENSION_ID, PROTOCOL, Proposal, Request, Response, Revie
 use crate::docker::static_files::normalize_newlines;
 use crate::interrupt::{INTERRUPTED, WAITING};
 
+/// How long the extension has to write `<id>.ack` after `code --open-url` returns.
+pub const ACK_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Write via a sibling temp file and rename, so a reader polling the path never sees a
 /// half-written file (the extension does the same for responses).
 pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
@@ -35,8 +38,12 @@ pub fn open_url(runner: &dyn Runner, launcher: &Path, url: &str) -> Result<()> {
 /// Poll for the response. Ctrl-C writes the cancel marker (the extension closes the tab)
 /// and reports `Dismissed`, which the caller answers with the terminal prompt. The ack
 /// (written once the extension holds the texts) is due within `ack_timeout`; without it
-/// nobody has the request, so the wait is an error rather than a hang. After it, the
+/// nobody has the request, so the wait is an error rather than a hang, and the cancel
+/// marker tells a late extension not to open the diff after all. After the ack, the
 /// wait is unbounded: the user may take as long as they like.
+///
+/// Every exit goes through the `break` (never `?`): `WAITING` must be cleared, or every
+/// later Ctrl-C would be taken as "answer here instead" with nobody waiting.
 pub fn wait_for(response: &Path, cancel: &Path, ack: &Path, ack_timeout: Duration, poll: Duration) -> Result<Response> {
   INTERRUPTED.store(false, SeqCst);
   WAITING.store(true, SeqCst);
@@ -47,10 +54,12 @@ pub fn wait_for(response: &Path, cancel: &Path, ack: &Path, ack_timeout: Duratio
       break Ok(Response::Dismissed);
     }
     if response.is_file() {
-      let text = std::fs::read_to_string(response).with_context(|| format!("reading {}", response.display()))?;
-      break serde_json::from_str(&text).context("parsing the VS Code response");
+      break std::fs::read_to_string(response)
+        .with_context(|| format!("reading {}", response.display()))
+        .and_then(|text| serde_json::from_str(&text).context("parsing the VS Code response"));
     }
     if !ack.is_file() && std::time::Instant::now() >= ack_due {
+      let _ = std::fs::write(cancel, "");
       break Err(anyhow::anyhow!(
         "VS Code did not pick up the request within {}s: the extension may be disabled or not loaded yet, or the editor sees a different cache directory than this shell",
         ack_timeout.as_secs_f32()
@@ -63,8 +72,8 @@ pub fn wait_for(response: &Path, cancel: &Path, ack: &Path, ack_timeout: Duratio
 }
 
 /// `--dry-run`: one request listing every file, opened as a multi-diff. Waits (at most
-/// `ack_timeout`) for the extension's ack, written once it has read every text, because
-/// the run folder is removed when the run ends and VS Code reads it after `code` returns.
+/// `ack_timeout`) for the ack, because the run folder is removed when the run ends and
+/// VS Code reads it after `code` returns; a miss leaves the cancel marker, as above.
 pub fn open_review(
   vs: &VsCode,
   runner: &dyn Runner,
@@ -99,7 +108,11 @@ pub fn open_review(
   let deadline = std::time::Instant::now() + ack_timeout;
   while !ack.is_file() {
     if std::time::Instant::now() >= deadline {
-      bail!("VS Code did not pick up the review within {}s", ack_timeout.as_secs_f32());
+      let _ = std::fs::write(dir.join(format!("{id}.cancel")), "");
+      bail!(
+        "VS Code did not pick up the review within {}s (or refused it: a VS Code notification says why)",
+        ack_timeout.as_secs_f32()
+      );
     }
     std::thread::sleep(Duration::from_millis(50));
   }
@@ -120,7 +133,7 @@ impl<'a> VsCodeReviewer<'a> {
       vs,
       runner,
       poll: Duration::from_millis(250),
-      ack_timeout: Duration::from_secs(5),
+      ack_timeout: ACK_TIMEOUT,
       next: Cell::new(0),
     }
   }
@@ -245,6 +258,24 @@ mod tests {
     reviewer.ack_timeout = Duration::from_millis(30);
     let err = reviewer.review(&Proposal::new("t", "q", "a\n", "b\n"), true).unwrap_err();
     assert!(err.to_string().contains("did not pick up"), "{err:#}");
+    let pid = std::process::id();
+    assert!(
+      vs.run_dir.join(format!("{pid}-0.cancel")).is_file(),
+      "a late extension must not open it"
+    );
+    // An unreadable response is an error that still clears WAITING (a `?` would not).
+    let bad = tmp.path().join("bad.json");
+    std::fs::write(&bad, [0xff, 0xfe]).unwrap();
+    let err = wait_for(
+      &bad,
+      &tmp.path().join("bad.cancel"),
+      &tmp.path().join("bad.ack"),
+      Duration::from_secs(1),
+      Duration::from_millis(5),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("reading"), "{err:#}");
+    assert!(!WAITING.load(SeqCst), "Ctrl-C would be swallowed for the rest of the run");
     // Acked: the answer may come long after the ack deadline.
     let response = tmp.path().join("r.json");
     let ack = tmp.path().join("r.ack");

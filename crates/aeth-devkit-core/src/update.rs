@@ -129,7 +129,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// Where the update-check cache lives: [`CACHE_ENV`] if set, else
 /// `update-check.json` under [`cache_dir`].
 pub fn cache_path() -> Option<PathBuf> {
-  if let Some(p) = std::env::var_os(CACHE_ENV) {
+  if let Some(p) = std::env::var_os(CACHE_ENV).filter(|v| !v.is_empty()) {
     return Some(PathBuf::from(p));
   }
   Some(cache_dir()?.join("update-check.json"))

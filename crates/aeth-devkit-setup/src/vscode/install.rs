@@ -221,6 +221,11 @@ mod tests {
     f
   }
 
+  // The launcher and an absent extensions folder, the same in every case.
+  fn ensure(r: &dyn Runner, f: &dyn Fetch, cache: &Path, install: bool) -> Result<bool> {
+    ensure_extension(r, f, Path::new("code"), &cache.join("no-ext"), cache, install)
+  }
+
   #[test]
   fn parses_installed_version_and_tag_numbers() {
     assert_eq!(installed_version("ms-python.python@2024.1.0\nAeth.aeth-devkit@3.0.0\n"), Some(3));
@@ -265,7 +270,7 @@ mod tests {
     r.script("code", LIST, 0, "aeth.aeth-devkit@1.0.0\n");
     let f = StubFetch::default();
     let cache = tempfile::tempdir().unwrap();
-    assert!(!ensure_extension(&r, &f, Path::new("code"), &cache.path().join("no-ext"), cache.path(), true).unwrap());
+    assert!(!ensure(&r, &f, cache.path(), true).unwrap());
     assert_eq!(r.calls_for("code").len(), 1, "no install");
     assert!(f.downloads.borrow().is_empty());
   }
@@ -276,7 +281,7 @@ mod tests {
     r.script("code", LIST, 0, "ms-python.python@2024.1.0\n");
     let f = fetch_with_refs();
     let cache = tempfile::tempdir().unwrap();
-    assert!(!ensure_extension(&r, &f, Path::new("code"), &cache.path().join("no-ext"), cache.path(), true).unwrap());
+    assert!(!ensure(&r, &f, cache.path(), true).unwrap());
     let vsix = cache.path().join("vsix").join("aeth-devkit-vscode-3.vsix");
     assert_eq!(f.downloads.borrow()[0], (vsix_url(3), vsix.clone()));
     assert!(vsix.is_file());
@@ -289,17 +294,7 @@ mod tests {
     let r = RecordingRunner::new(0);
     r.script("code", LIST, 0, "aeth.aeth-devkit@0.0.0\n");
     let cache = tempfile::tempdir().unwrap();
-    assert!(
-      ensure_extension(
-        &r,
-        &fetch_with_refs(),
-        Path::new("code"),
-        &cache.path().join("no-ext"),
-        cache.path(),
-        true
-      )
-      .unwrap()
-    );
+    assert!(ensure(&r, &fetch_with_refs(), cache.path(), true).unwrap());
   }
 
   #[test]
@@ -309,59 +304,19 @@ mod tests {
     let f = fetch_with_refs();
     let cache = tempfile::tempdir().unwrap();
     let why = |r: Result<bool>| format!("{:#}", r.unwrap_err());
-    assert!(
-      why(ensure_extension(
-        &r,
-        &f,
-        Path::new("code"),
-        &cache.path().join("no-ext"),
-        cache.path(),
-        false
-      ))
-      .contains("not installed")
-    );
+    assert!(why(ensure(&r, &f, cache.path(), false)).contains("not installed"));
     assert!(f.downloads.borrow().is_empty());
 
     let offline = StubFetch::default();
-    assert!(
-      why(ensure_extension(
-        &r,
-        &offline,
-        Path::new("code"),
-        &cache.path().join("no-ext"),
-        cache.path(),
-        true
-      ))
-      .contains("no body")
-    );
+    assert!(why(ensure(&r, &offline, cache.path(), true)).contains("no body"));
 
     let mut old = StubFetch::default();
     old.bodies.insert(refs_url(), r#"[{"ref":"refs/tags/vscode-extension-v0"}]"#.into());
-    assert!(
-      why(ensure_extension(
-        &r,
-        &old,
-        Path::new("code"),
-        &cache.path().join("no-ext"),
-        cache.path(),
-        true
-      ))
-      .contains("no compatible")
-    );
+    assert!(why(ensure(&r, &old, cache.path(), true)).contains("no compatible"));
 
     let failing = RecordingRunner::new(0);
     failing.script("code", LIST, 0, "");
     failing.script_err("code", &["--install-extension"], 1, "boom");
-    assert!(
-      why(ensure_extension(
-        &failing,
-        &f,
-        Path::new("code"),
-        &cache.path().join("no-ext"),
-        cache.path(),
-        true
-      ))
-      .contains("boom")
-    );
+    assert!(why(ensure(&failing, &f, cache.path(), true)).contains("boom"));
   }
 }

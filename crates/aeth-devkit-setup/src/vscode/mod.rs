@@ -24,7 +24,9 @@ pub struct VsCode {
   pub launcher: PathBuf,
   pub run_dir: PathBuf,
   pub lock: Option<std::fs::File>,
-  /// Whether the `editor/content` proposal is believed granted (see the spec).
+  /// Whether `~/.vscode/argv.json` lists the extension under `enable-proposed-api`, which
+  /// is what lets VS Code load its `editor/content` (floating button) contribution. A
+  /// grant made this run needs a restart first; the extension checks its loaded manifest.
   pub content_menu: bool,
   pub notes: Vec<String>,
 }
@@ -55,16 +57,15 @@ fn claim_run_dir(consent: &Path) -> Result<(PathBuf, std::fs::File)> {
     if !dir.is_dir() {
       continue;
     }
-    let alive = match File::open(dir.join("lock")) {
-      Ok(f) => !matches!(f.try_lock(), Ok(())),
-      Err(_) => false,
-    };
-    if !alive {
+    if !File::open(dir.join("lock")).is_ok_and(|f| f.try_lock().is_err()) {
       let _ = std::fs::remove_dir_all(&dir);
     }
   }
+  // `create_dir`, not `create_dir_all`: a folder for this pid that survived the sweep is
+  // either live or undeletable, and a stale `<pid>-0.response.json` in it would answer
+  // this run's first question unseen; the claim fails instead (terminal prompt).
   let run_dir = consent.join(std::process::id().to_string());
-  std::fs::create_dir_all(&run_dir).with_context(|| format!("creating {}", run_dir.display()))?;
+  std::fs::create_dir(&run_dir).with_context(|| format!("creating {}", run_dir.display()))?;
   let lock = File::create(run_dir.join("lock"))?;
   lock.lock().context("locking the run folder")?;
   Ok((run_dir, lock))
@@ -100,18 +101,20 @@ pub fn grant_proposal(argv: Option<&str>) -> Result<Option<String>> {
     return Ok(Some(format!("{{\n\t\"{ARGV_KEY}\": [{entry}]\n}}\n")));
   };
   let doc: serde_json::Value = serde_json::from_str(&crate::json_merge::strip_jsonc(text)).context("parsing argv.json")?;
+  let listed = doc.get(ARGV_KEY).and_then(serde_json::Value::as_array);
+  if listed.is_some_and(|items| items.iter().any(|v| v.as_str() == Some(EXTENSION_ID))) {
+    return Ok(None);
+  }
   let view = crate::json_merge::blank_comments(text);
   match doc.get(ARGV_KEY) {
-    Some(serde_json::Value::Array(items)) => {
-      if items.iter().any(|v| v.as_str() == Some(EXTENSION_ID)) {
-        return Ok(None);
-      }
+    Some(serde_json::Value::Array(_)) => {
+      // The last occurrence: a duplicated key resolves to its last value in every parser.
       let key_at = view
-        .find(&format!("\"{ARGV_KEY}\""))
+        .rfind(&format!("\"{ARGV_KEY}\""))
         .context("argv.json: key not found in the text")?;
       let open = key_at + view[key_at..].find('[').context("argv.json: array not found")? + 1;
       let rest = &text[open..];
-      let sep = if rest.trim_start().starts_with(']') {
+      let sep = if view[open..].trim_start().starts_with(']') {
         ""
       } else if rest.starts_with(char::is_whitespace) {
         ","
@@ -124,7 +127,7 @@ pub fn grant_proposal(argv: Option<&str>) -> Result<Option<String>> {
     None => {
       let brace = view.find('{').context("argv.json has no object")? + 1;
       let comma = if doc.as_object().is_some_and(|o| !o.is_empty()) { "," } else { "" };
-      let indent = text
+      let indent = view
         .lines()
         .find(|l| l.trim_start().starts_with('"'))
         .map(|l| l[..l.len() - l.trim_start().len()].to_string())
@@ -140,10 +143,9 @@ pub fn grant_proposal(argv: Option<&str>) -> Result<Option<String>> {
 
 /// Leftovers of the Drekker extension this one replaces. Reported, never removed: the
 /// extensions-dir entry is a junction into a sister project's working tree.
-pub fn stray_notes(home: &Path, project_root: &Path) -> Vec<String> {
+pub fn stray_notes(ext_dir: &Path, project_root: &Path) -> Vec<String> {
   let mut notes = Vec::new();
-  let ext_dir = home.join(".vscode").join("extensions");
-  if let Ok(entries) = std::fs::read_dir(&ext_dir) {
+  if let Ok(entries) = std::fs::read_dir(ext_dir) {
     for e in entries.flatten() {
       let name = e.file_name().to_string_lossy().into_owned();
       if name.starts_with("local.drekker-add-to-runtime-base") {
@@ -198,8 +200,9 @@ pub enum Prepared {
   Ready(VsCode),
 }
 
-/// Steps 1–5 of the spec's `setup-project` section. Runs once, before any consent
-/// prompt, and touches nothing when `install` is false.
+/// Once per run, before any consent prompt: find `code`, make sure a compatible extension
+/// is installed, grant the proposed API in `argv.json`, and claim this run's folder.
+/// Touches nothing when `install` is false.
 pub fn prepare(opts: &Options, runner: &dyn aeth_devkit_core::process::Runner, fetch: &dyn install::Fetch) -> Prepared {
   if !opts.force && opts.term_program.as_deref() != Some("vscode") {
     return Prepared::Inert;
@@ -222,7 +225,7 @@ pub fn prepare(opts: &Options, runner: &dyn aeth_devkit_core::process::Runner, f
     Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
     Err(e) => return Prepared::Unavailable(format!("reading {}: {e}", argv_path.display())),
   };
-  let mut notes = stray_notes(home, &opts.project_root);
+  let mut notes = stray_notes(&extensions_dir, &opts.project_root);
   let content_menu = match grant_proposal(argv.as_deref()) {
     Ok(None) => true,
     Ok(Some(granted)) if opts.install => {
@@ -376,6 +379,12 @@ mod tests {
     assert!(!consent.join("11").exists() && !consent.join("12").exists());
     assert!(consent.join("13").join("lock").is_file(), "a live run is left alone");
     assert!(vs.run_dir.is_dir());
+    // This pid's folder is live (held by `vs`): a second claim must fail, never block or
+    // share it, since a stale response in it would answer the newcomer's first question.
+    assert!(
+      matches!(prepare(&o, &installed_runner(tmp.path()), &StubFetch::default()), Prepared::Unavailable(m) if m.contains("creating"))
+    );
+    assert!(vs.run_dir.join("lock").is_file(), "the live run is untouched");
     drop(held);
   }
 
@@ -440,6 +449,25 @@ mod tests {
       "// e.g. { \"enable-proposed-api\": [\"x\"] }\n{\n\t\"enable-proposed-api\": [\"aeth.aeth-devkit\", \"other.ext\"],\n\t// \"enable-proposed-api\": [\"old.ext\"],\n\t\"enable-crash-reporter\": true\n}\n"
     );
     assert_eq!(grant_proposal(Some(&out)).unwrap(), None, "granted for real");
+    // Emptiness and indentation are judged on the blanked view too; a duplicated key
+    // resolves to its last copy, as the parsers do.
+    let out = grant_proposal(Some("{\n\t\"enable-proposed-api\": [ /* none yet */ ]\n}\n"))
+      .unwrap()
+      .unwrap();
+    assert_eq!(out, "{\n\t\"enable-proposed-api\": [\"aeth.aeth-devkit\" /* none yet */ ]\n}\n");
+    let out = grant_proposal(Some("{\n  /*\n\t\"old\": 1\n  */\n  \"enable-crash-reporter\": true\n}\n"))
+      .unwrap()
+      .unwrap();
+    assert!(
+      out.starts_with("{\n  \"enable-proposed-api\": [\"aeth.aeth-devkit\"],\n  /*"),
+      "{out}"
+    );
+    let dup = "{\"enable-proposed-api\": [\"first\"], \"enable-proposed-api\": [\"last\"]}";
+    let out = grant_proposal(Some(dup)).unwrap().unwrap();
+    assert_eq!(
+      out,
+      "{\"enable-proposed-api\": [\"first\"], \"enable-proposed-api\": [\"aeth.aeth-devkit\", \"last\"]}"
+    );
     let no_key = "// e.g. { \"enable-proposed-api\": [\"x\"] }\n{\n\t\"enable-crash-reporter\": true\n}\n";
     let out = grant_proposal(Some(no_key)).unwrap().unwrap();
     assert!(
@@ -472,11 +500,12 @@ mod tests {
   #[test]
   fn stray_notes_report_the_junction_and_the_project_folder() {
     let home = tempfile::tempdir().unwrap();
+    let ext = home.path().join(".vscode/extensions");
     let root = tempfile::tempdir().unwrap();
-    assert!(stray_notes(home.path(), root.path()).is_empty());
-    std::fs::create_dir_all(home.path().join(".vscode/extensions/local.drekker-add-to-runtime-base-0.0.1")).unwrap();
+    assert!(stray_notes(&ext, root.path()).is_empty());
+    std::fs::create_dir_all(ext.join("local.drekker-add-to-runtime-base-0.0.1")).unwrap();
     std::fs::create_dir_all(root.path().join(".vscode/extension")).unwrap();
-    let notes = stray_notes(home.path(), root.path());
+    let notes = stray_notes(&ext, root.path());
     assert_eq!(notes.len(), 2, "{notes:?}");
     assert!(notes[0].contains("local.drekker-add-to-runtime-base-0.0.1") && notes[0].contains("junction"));
     assert!(notes[1].starts_with(".vscode/extension/"));
