@@ -61,7 +61,7 @@ design exists. Check items off in place; delete them once released.
       URI scheme, `argv.json` location and extensions dir); only `code` works today.
 - [ ] After the first `vscode-extension-v1` release: delete `.vscode/extension/` and
       `install.ps1` from aeth_ext and aeth_ext-2, and the
-      `~/.vscode/extensions/local.drekker-add-to-runtime-base-*` junction (setup-project
+      `~/.vscode/extensions/local.[drekker-]add-to-runtime-base-*` junction (setup-project
       prints a note while they exist).
 - [ ] Fix system-level `init.defaultBranch = master` in
       `C:\Program Files\Git\etc\gitconfig` (needs an elevated shell; user config already

@@ -148,7 +148,8 @@ pub fn stray_notes(ext_dir: &Path, project_root: &Path) -> Vec<String> {
   if let Ok(entries) = std::fs::read_dir(ext_dir) {
     for e in entries.flatten() {
       let name = e.file_name().to_string_lossy().into_owned();
-      if name.starts_with("local.drekker-add-to-runtime-base") {
+      // Both names the old extension went by before and after its rename.
+      if name.starts_with("local.drekker-add-to-runtime-base") || name.starts_with("local.add-to-runtime-base") {
         notes.push(format!(
           "{} is the old Drekker extension junction; the devkit extension replaces it, so delete the junction (not its target).",
           ext_dir.join(&name).display()
@@ -504,10 +505,17 @@ mod tests {
     let root = tempfile::tempdir().unwrap();
     assert!(stray_notes(&ext, root.path()).is_empty());
     std::fs::create_dir_all(ext.join("local.drekker-add-to-runtime-base-0.0.1")).unwrap();
+    std::fs::create_dir_all(ext.join("local.add-to-runtime-base-0.0.1")).unwrap();
     std::fs::create_dir_all(root.path().join(".vscode/extension")).unwrap();
     let notes = stray_notes(&ext, root.path());
-    assert_eq!(notes.len(), 2, "{notes:?}");
-    assert!(notes[0].contains("local.drekker-add-to-runtime-base-0.0.1") && notes[0].contains("junction"));
-    assert!(notes[1].starts_with(".vscode/extension/"));
+    assert_eq!(notes.len(), 3, "{notes:?}");
+    assert!(
+      notes
+        .iter()
+        .filter(|n| n.contains("add-to-runtime-base-0.0.1") && n.contains("junction"))
+        .count()
+        == 2
+    );
+    assert!(notes[2].starts_with(".vscode/extension/"));
   }
 }
