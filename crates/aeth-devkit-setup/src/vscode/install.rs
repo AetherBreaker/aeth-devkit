@@ -36,9 +36,9 @@ pub struct HttpFetch;
 impl HttpFetch {
   fn agent() -> ureq::Agent {
     // Resolve and connect are the "are we online?" test, so they are tight: offline, the
-    // terminal fallback comes within ~3 s. The global budget is for the transfer itself.
+    // terminal fallback comes within ~5 s. The global budget is for the transfer itself.
     ureq::Agent::config_builder()
-      .timeout_resolve(Some(std::time::Duration::from_secs(1)))
+      .timeout_resolve(Some(std::time::Duration::from_secs(3)))
       .timeout_connect(Some(std::time::Duration::from_secs(2)))
       .timeout_global(Some(std::time::Duration::from_secs(60)))
       .http_status_as_error(false)
