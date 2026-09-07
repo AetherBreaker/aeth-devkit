@@ -89,6 +89,25 @@ jobs:
 
       - run: npm run build
 
+  # The only place the container entrypoint runs for real: the shipped Dockerfile template
+  # built around a scratch app (crates/aeth-devkit-container/tests/docker_smoke.rs).
+  container-smoke:
+    name: Container smoke (docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build the image from the template and start the app through the entrypoint
+        run: cargo test -p aeth-devkit-container --test docker_smoke -- --ignored --nocapture
+
   wheel:
     name: Wheel build
     runs-on: windows-latest

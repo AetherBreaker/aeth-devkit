@@ -272,6 +272,13 @@ is a future command's job, see TODO.md). No Python runs in the image outside the
   `chown_paths`/`mkdirs` (with or without `required_persisted_dirs`) is refused with the
   migration hint. Flags `--pyproject`, `--app-root`, `--mountinfo` exist for tests.
 
+The smoke test (`cargo test -p aeth-devkit-container --test docker_smoke -- --ignored`;
+CI runs it on Linux) builds the template Dockerfile around a scratch app with the
+entrypoint cross-built from the checkout (`rustup target add x86_64-unknown-linux-musl`),
+starts it on a named volume and checks the app's own report: PID 1, uid/gid 999, `/app`
+read-only, the persisted dirs created, owned and writable, the venv, the `app` extra and
+the wheel install; a run without the volume or as non-root is refused first.
+
 ### VS Code extension
 
 `aeth.aeth-devkit`, in `vscode-extension/`. Never published to the marketplace: each build
