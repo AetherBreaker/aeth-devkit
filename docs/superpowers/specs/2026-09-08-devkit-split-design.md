@@ -2,7 +2,7 @@
 
 Date: 2026-09-08, revised the same day after review against the code. Status: design approved in
 discussion; each numbered step in section 7 gets its own implementation plan, written in a separate
-session. Items marked `[open]` are decisions still to be made; nothing else is provisional.
+session. Nothing in it is provisional.
 
 The wireguard mode for `devkit-container` has its own spec,
 `2026-09-08-container-wireguard-mode-design.md`, which lands after step 1 of this one. The
@@ -35,7 +35,7 @@ project consumes; the pin for each is the consuming project's `uv.lock`.
 | `aeth-devkit` (slimmed) | `devkit` binary; crates `core`, `setup`, `release`, `pin`, `lock`; Python package (poe task table, two scripts); no templates | maturin `bindings = "bin"` wheel on SFTPyPI via `devkit release`; workflows `ci`, `release`, `claude` | dev dependency, `uv sync` |
 | `devkit-container` | the crate, plus a `devkit_container` package holding the Dockerfile template as package data; `[tool.docker]` schema doc; smoke test | maturin bin wheel on SFTPyPI via `devkit release`, standard Rust release workflow | runtime dependency of Docker projects, added by `setup-project`; installed into the image by `uv sync` |
 | `devkit-templates` | every template except the Dockerfile, as package data of a `devkit_templates` package; no code | pure-Python wheel on SFTPyPI via `devkit release`; CI renders through the latest released devkit | dev dependency, added by `setup-project` |
-| `devkit-vscode` | the extension; a stub `pyproject.toml` | own tags; workflow moved from `vscode-extension.yml` | installed by `setup-project` from releases, as today |
+| `devkit-vscode` | the extension; a stub `pyproject.toml` | `vN` tags cut by a tag push; hand-written workflow moved from `vscode-extension.yml` | installed by `setup-project` from releases, as today |
 | `devkit-claude-hooks` | Rust crate; binary `devkit-hook` | maturin bin wheel on SFTPyPI via `devkit release` | dev dependency; `.claude/settings.local.json` command lines |
 | `devkit-poe-complete` | Rust crate; binary `devkit-complete` | same shape as hooks | dev dependency; the shell shims it installs |
 
@@ -123,6 +123,11 @@ particular no templates version is recorded anywhere but `uv.lock`.
 **Self-dependency.** `setup-project` never adds a package whose name is the project's own, so the
 templates, hooks and completion repos are devkit-managed without depending on themselves.
 
+**Sources.** Every project's index is `explicit = true`, so each devkit package also gets a
+`[tool.uv.sources]` entry, naming the `SFTPyPI` index the way every project's existing
+`aeth-devkit` entry does. Standardising index names is out of scope; the new repos copy
+`aeth-devkit`'s `[[tool.uv.index]]` block as it is.
+
 ### 4.1 `devkit-container`
 
 - The crate moves verbatim: `app-extra`, `readme`, `run` all stay. It already depends on no
@@ -140,9 +145,7 @@ templates, hooks and completion repos are devkit-managed without depending on th
   where only the query subcommands run (`run` refuses off Linux, as today).
 - **In consuming projects** it is a runtime dependency. The pyproject template unions
   `devkit-container>={latest}` into `[project].dependencies` under an `if-docker` gate, with the
-  matching `[tool.uv.sources]` entry: the index is `explicit = true` in every project, so a package
-  without a source line would be looked up on PyPI. The pin is `uv.lock`; 4.0 governs how it
-  advances.
+  `[tool.uv.sources]` entry from 4.0. The pin is `uv.lock`; 4.0 governs how it advances.
 - **The Dockerfile template** has no `ADD`, no `chmod`, no `COPY` of a binary. The builder stage
   runs `uv sync --frozen --no-dev --no-install-project` once without extras, which installs the
   package; asks `/app/.venv/bin/devkit-container app-extra`; then syncs again with the extras and
@@ -206,17 +209,21 @@ templates, hooks and completion repos are devkit-managed without depending on th
 
 ### 4.3 `devkit-vscode`
 
-- `vscode-extension/` and its workflow move; the workflow triggers on this repo's own tags. A
-  stub `pyproject.toml` (name, version, dev group with `aeth-devkit`, the poe include) makes the
-  repo devkit-managed; the Python tooling tables the pyproject template merges in are inert there.
+- `vscode-extension/` and its workflow move. A stub `pyproject.toml` (name, version, dev group
+  with `aeth-devkit`, the poe include) makes the repo devkit-managed; the Python tooling tables the
+  pyproject template merges in are inert there.
 - The consent protocol already carries a version: every request has `protocol: 1`
   (`setup/src/vscode/protocol.rs`), the extension checks it (`consent.ts`, `protocolMismatch`),
   and its error response retires the reviewer for the run. Nothing new is needed there.
-- `install.rs` `REPO` and `TAG_PREFIX` point at the new repo; `package.json`'s `repository` URL
-  changes with them. `[open]` Tag scheme: the install path compares an integer build number
-  against `MIN_EXTENSION_VERSION`, so either the new repo continues the count at 2 under its own
-  prefix, or the comparison is redesigned for semver. `[open]` Anonymous vsix download needs the
-  repo public, as `aeth-devkit` is today, or a token in `install.rs`.
+- **Versioning and release.** Integer build numbers continue: the new repo's tags are `vN`,
+  starting at `v2`, and the vsix is stamped `N.0.0` and named `aeth-devkit-vscode-N.vsix` as
+  today, so `install.rs` changes only `REPO` and `TAG_PREFIX`, and the `MIN_EXTENSION_VERSION`
+  comparison is untouched. `devkit release` does not fit a vsix (it bumps a Python version and
+  verifies the result on a package index), so the hand-written workflow stays and fires on a tag
+  push: build, typecheck, test, package, create the GitHub release with the asset. The repo is
+  public, as `aeth-devkit` is, which is what keeps the anonymous vsix download working. A stronger
+  release workflow for it is deferred; `TODO.md` records that.
+- `package.json`'s `repository` URL changes with the move.
 
 ### 4.4 `devkit-claude-hooks` and `devkit-poe-complete`
 
@@ -256,7 +263,12 @@ templates, hooks and completion repos are devkit-managed without depending on th
 - Its own `pyproject.toml` gains the three dev-group packages through its own `setup-project`
   run, like every project.
 - `TODO.md`: drop the entries the split makes moot, including the stale migration entry; add the
-  Dockerfile opt-out entry from 4.1.
+  Dockerfile opt-out entry from 4.1 and the extension release-workflow entry from 4.3.
+- **`WORKSPACE.md`** at the repo root: how to mirror the whole set on another machine. It lists
+  every repo with its clone command into `D:\SFT Software Projects\<name>`, says which repos need
+  the publishing `.env` copied in (the four wheel repos and `aeth-devkit`), and ends with
+  `uv sync` and `poe setup-project` in each. Created in step 1 with the first new repo; each later
+  step adds its own.
 - Optional, decided separately: stop baking the poe task table in `build.rs`. The generated file
   is a plain dict; authoring it directly removes a build-time Python dependency, the
   `poethepoet-tasks` build requirement, and the regeneration test.
@@ -305,9 +317,18 @@ is last. The wireguard spec follows step 1 and is independent of 2 to 5.
 
 Publication order inside any step that introduces a package: the wheel exists on SFTPyPI before
 any template or devkit release references it, or `uv sync` fails in every project that picks the
-reference up. New-repository checklist: create and push; add the SFTPyPI publish secrets
-(`UV_INDEX_SFTPYPI_USERNAME`, `UV_INDEX_SFTPYPI_PASSWORD`) for the four wheel repos and the Claude
-Code OAuth token for all six; run `setup-project`; release once.
+reference up.
+
+**Repository creation** is done by the plan, not by hand. Each new repo is created with
+`gh repo create AetherBreaker/<name> --public` (default branch `main`) and cloned to
+`D:\SFT Software Projects\<name>`. History comes along: `git filter-repo` on a throwaway clone
+keeps the commits that touched the moved paths, renamed into their new places; if that does not
+come out clean, the repo starts from one initial commit instead. Each `pyproject.toml` copies
+`aeth-devkit`'s `[[tool.uv.index]]` block and starts at version 1.0.0. The SFTPyPI publish
+secrets (`UV_INDEX_SFTPYPI_USERNAME`, `UV_INDEX_SFTPYPI_PASSWORD`) are piped from `aeth-devkit`'s
+`.env` into each wheel repo with `gh secret set`, never printed. The Claude Code OAuth token is
+set by hand later; the Claude workflow is installed regardless. Then `setup-project`, and one
+release.
 
 ## 8. Rejected alternatives
 
