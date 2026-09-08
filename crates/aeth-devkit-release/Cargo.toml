@@ -16,7 +16,10 @@
   anyhow           = { workspace = true }
   clap             = { workspace = true }
   ctrlc            = { workspace = true }
+  serde            = { workspace = true, features = ["derive"] }
+  serde_json       = { workspace = true }
   tempfile         = { workspace = true }
+  terminal_size    = { workspace = true }
   toml_edit        = { workspace = true }
 
 [dev-dependencies]

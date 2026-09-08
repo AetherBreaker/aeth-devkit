@@ -12,6 +12,8 @@ use aeth_devkit_core::{git, github};
 use crate::Deps;
 use crate::config::Config;
 use crate::preflight::target_has_version;
+use crate::repaint;
+use crate::watch;
 
 /// The workflow setup-project installs; the release requires it at `HEAD`.
 pub const WORKFLOW_FILE: &str = ".github/workflows/release.yml";
@@ -246,23 +248,23 @@ fn find_run(deps: &Deps, root: &Path, tag: &str, known: &[String]) -> Result<Str
   }
 }
 
-/// Find the release's run (see [`find_run`]), then `gh run watch` it to completion with
-/// inherited stdio so the user sees the job progress. A Ctrl-C that arrived since the
-/// release was created — during `gh release create` itself, or while the run was being
-/// found — cancels the run and waits for it to stop instead of watching it; `settle`
-/// still lets a run that had already succeeded count as a success. Returns the run URL.
+/// Find the release's run (see [`find_run`]), then show [`watch`](crate::watch)'s live view
+/// of it until it completes. A Ctrl-C that arrived since the release was created — during
+/// `gh release create` itself, or while the run was being found — cancels the run and waits
+/// for it to stop instead of watching it; `settle` still lets a run that had already
+/// succeeded count as a success. Returns the run URL.
 pub fn wait_for_run(deps: &Deps, root: &Path, tag: &str, known: &[String]) -> Result<String> {
   let id = find_run(deps, root, tag, known)?;
   if deps.check_interrupt().is_err() {
     settle(deps, root, &id, "interrupted")?;
   } else {
     println!("  run {id} started; watching...");
-    // A watcher that could not even be started leaves the run just as live as one that died.
-    match deps.runner.run_inherit("gh", &s(&["run", "watch", &id, "--exit-status"]), root) {
-      Ok(Some(0)) => {}
-      Ok(Some(code)) => settle(deps, root, &id, &format!("gh run watch exited with {code}"))?,
-      Ok(None) => settle(deps, root, &id, "gh run watch was terminated by a signal")?,
-      Err(e) => settle(deps, root, &id, &format!("gh run watch could not be run: {e:#}"))?,
+    // A watch that ends before the run does — Ctrl-C, or an API that stayed unreadable —
+    // leaves the run just as live as one that never started, so it goes through `settle`.
+    match watch::watch(deps, root, &id, &mut std::io::stdout(), repaint::stdout_size) {
+      Ok(conclusion) if conclusion == "success" => {}
+      Ok(conclusion) => bail!("release workflow run {id} failed: {conclusion}"),
+      Err(e) => settle(deps, root, &id, &format!("the run could not be watched: {e:#}"))?,
     }
   }
   // The URL is informational: the run already succeeded, so a failed lookup (auth or API
@@ -410,6 +412,20 @@ mod tests {
     }
   }
 
+  /// A `gh run view --json status,conclusion,jobs` payload: one job, one step, all in the
+  /// same state. Enough for the watch loop; `watch`'s own tests cover the rendering.
+  fn run_json(status: &str, conclusion: &str) -> String {
+    format!(
+      r#"{{"status":"{status}","conclusion":"{conclusion}","jobs":[{{"name":"build","status":"{status}","conclusion":"{conclusion}","steps":[{{"name":"Set up job","status":"{status}","conclusion":"{conclusion}"}}]}}]}}"#
+    )
+  }
+
+  /// Whether the run was watched at all. Reading the jobs is the watch's only call, and the
+  /// field list is what tells it apart from the URL lookup that follows a green run.
+  fn watched(r: &RecordingRunner) -> bool {
+    r.calls_for("gh").iter().any(|c| c.contains(&"status,conclusion,jobs".to_string()))
+  }
+
   fn scripted() -> RecordingRunner {
     let r = RecordingRunner::new(0);
     r.script("gh", &["run", "list"], 0, "123456 completed\n");
@@ -419,6 +435,12 @@ mod tests {
       &["run", "view", "123456", "--json", "status,conclusion"],
       0,
       "completed failure\n",
+    );
+    r.script(
+      "gh",
+      &["run", "view", "123456", "--json", "status,conclusion,jobs"],
+      0,
+      &run_json("completed", "success"),
     );
     r.script("gh", &["release", "view"], 0, "url\n");
     r
@@ -541,20 +563,26 @@ mod tests {
     let r = RecordingRunner::new(0);
     r.script("gh", &["run", "list"], 0, "777 completed\n123456 completed\n");
     r.script("gh", &["run", "view"], 0, "https://github.com/o/r/actions/runs/777\n");
+    r.script(
+      "gh",
+      &["run", "view", "777", "--json", "status,conclusion,jobs"],
+      0,
+      &run_json("completed", "success"),
+    );
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
     let d = deps(&r, &index, &flag, NO_SLEEP);
     let known = vec!["123456".to_string()];
     let url = wait_for_run(&d, Path::new("."), "v1.2.3", &known).unwrap();
     assert!(url.ends_with("/777"), "{url}");
-    assert!(r.calls_for("gh").iter().any(|c| c == &["run", "watch", "777", "--exit-status"]));
+    assert!(watched(&r));
     // Only the old run exists: keep waiting rather than watch it.
     let stale = RecordingRunner::new(0);
     stale.script("gh", &["run", "list"], 0, "123456 completed\n");
     let d = deps(&stale, &index, &flag, NO_SLEEP);
     let err = wait_for_run(&d, Path::new("."), "v1.2.3", &known).unwrap_err();
     assert!(err.to_string().contains("no release workflow run"), "{err}");
-    assert!(stale.calls_for("gh").iter().all(|c| c[1] != "watch"));
+    assert!(!watched(&stale));
   }
 
   #[test]
@@ -573,14 +601,13 @@ mod tests {
     let url = wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap();
     assert_eq!(url, "https://github.com/o/r/actions/runs/123456");
     assert_eq!(*slept.borrow(), vec![POLL_INTERVAL, POLL_INTERVAL]);
-    let gh = late.inner.calls_for("gh");
-    assert!(gh.iter().any(|c| c == &["run", "watch", "123456", "--exit-status"]), "{gh:?}");
+    assert!(watched(&late.inner));
   }
 
   #[test]
   fn a_failed_url_lookup_does_not_fail_a_green_run() {
     let r = scripted();
-    r.script_err("gh", &["run", "view"], 1, "HTTP 502");
+    r.script_err("gh", &["run", "view", "123456", "--json", "url"], 1, "HTTP 502");
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
     let d = deps(&r, &index, &flag, NO_SLEEP);
@@ -629,7 +656,7 @@ mod tests {
     assert!(err.to_string().contains("cancelled (interrupted)"), "{err}");
     let gh = r.inner.calls_for("gh");
     assert!(gh.iter().any(|c| c[..] == ["run", "cancel", "123456"]), "{gh:?}");
-    assert!(gh.iter().all(|c| c[1] != "watch"), "{gh:?}");
+    assert!(!watched(&r.inner));
   }
 
   #[test]
@@ -657,13 +684,18 @@ mod tests {
     let err = wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap_err();
     assert!(err.to_string().contains("no release workflow run for v1.2.3"), "{err}");
     assert!(total.get() >= RUN_START_TIMEOUT, "{:?}", total.get());
-    assert!(r.calls_for("gh").iter().all(|c| c[1] != "watch"));
+    assert!(!watched(&r));
   }
 
   #[test]
   fn a_failed_run_is_an_error() {
     let r = scripted();
-    r.script("gh", &["run", "watch"], 1, "");
+    r.script(
+      "gh",
+      &["run", "view", "123456", "--json", "status,conclusion,jobs"],
+      0,
+      &run_json("completed", "failure"),
+    );
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
     let d = deps(&r, &index, &flag, NO_SLEEP);
@@ -681,7 +713,10 @@ mod tests {
       conclusion: "cancelled",
       queries: Cell::new(0),
     };
-    r.inner.script("gh", &["run", "watch"], 130, ""); // as after Ctrl-C
+    // The jobs read never works: the run is live and unwatched, the same position a dead
+    // `gh run watch` used to leave us in.
+    r.inner
+      .script_err("gh", &["run", "view", "123456", "--json", "status,conclusion,jobs"], 1, "HTTP 502");
     let index = StubIndexClient { versions: vec![] };
     let flag = AtomicBool::new(false);
     let slept = RefCell::new(Vec::new());
@@ -691,8 +726,10 @@ mod tests {
     assert!(err.to_string().contains("run 123456 failed: cancelled"), "{err}");
     let gh = r.inner.calls_for("gh");
     assert_eq!(gh.iter().filter(|c| c[..] == ["run", "cancel", "123456"]).count(), 1, "{gh:?}");
-    // Three live polls, each followed by a wait; the fourth reads "completed".
-    assert_eq!(slept.borrow().len(), 3);
+    // The watch spent its whole window retrying before giving up, then three live polls of
+    // the settling run, each followed by a wait; the fourth reads "completed".
+    let gave_up_after = (SETTLE_TIMEOUT.as_secs() / POLL_INTERVAL.as_secs()) as usize;
+    assert_eq!(slept.borrow().len(), gave_up_after + 3);
     assert_eq!(r.queries.get(), 4);
 
     // A run that never settles is still an error, with the window spent.
@@ -702,7 +739,9 @@ mod tests {
       conclusion: "cancelled",
       queries: Cell::new(0),
     };
-    stuck.inner.script("gh", &["run", "watch"], 1, "");
+    stuck
+      .inner
+      .script_err("gh", &["run", "view", "123456", "--json", "status,conclusion,jobs"], 1, "HTTP 502");
     let total = Cell::new(Duration::ZERO);
     let sleep = |d| total.set(total.get() + d);
     let d = deps(&stuck, &index, &flag, &sleep);
@@ -718,7 +757,9 @@ mod tests {
       conclusion: "success",
       queries: Cell::new(0),
     };
-    won.inner.script("gh", &["run", "watch"], 1, "");
+    won
+      .inner
+      .script_err("gh", &["run", "view", "123456", "--json", "status,conclusion,jobs"], 1, "HTTP 502");
     let d = deps(&won, &index, &flag, NO_SLEEP);
     wait_for_run(&d, Path::new("."), "v1.2.3", &[]).unwrap();
     assert!(won.inner.calls_for("gh").iter().any(|c| c[..] == ["run", "cancel", "123456"]));
