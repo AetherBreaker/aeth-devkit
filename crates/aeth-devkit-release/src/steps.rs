@@ -12,6 +12,7 @@ use anyhow::{Context as _, Result, bail};
 use toml_edit::DocumentMut;
 
 use aeth_devkit_core::commit::{self, TrackedBase};
+use aeth_devkit_core::process::Pending;
 use aeth_devkit_core::{cargo_toml, git};
 
 use crate::Deps;
@@ -42,6 +43,19 @@ impl Plan<'_> {
 
   fn bumping(&self) -> bool {
     !self.bumps.is_empty()
+  }
+
+  /// A Rust-backed project is what the local venv must rebuild to pick up the new
+  /// version; a pure-Python editable install already reads the source in place.
+  fn resyncs_venv(&self) -> bool {
+    self.root.join("Cargo.toml").is_file()
+  }
+
+  fn sync_args(&self) -> Vec<String> {
+    ["sync", "--inexact", "--reinstall-package", &self.cfg.package]
+      .iter()
+      .map(|s| s.to_string())
+      .collect()
   }
 }
 
@@ -81,7 +95,43 @@ pub fn describe(plan: &Plan) -> String {
       plan.cfg.target.label()
     );
   }
+  if plan.resyncs_venv() {
+    s += &format!("     meanwhile: uv {} (the local venv)\n", plan.sync_args().join(" "));
+  }
   s
+}
+
+/// Start the local venv rebuild so it overlaps the workflow wait. `None` for a project
+/// that needs none. The source is final by now (the bump is committed and pushed), and a
+/// rollback after this point leaves the venv one version ahead at worst: the editable
+/// install's version then disagrees with pyproject.toml, which the next `uv run` repairs.
+fn start_venv_sync(plan: &Plan, deps: &Deps) -> Option<Box<dyn Pending>> {
+  if !plan.resyncs_venv() {
+    return None;
+  }
+  match deps.runner.spawn_capture("uv", &plan.sync_args(), plan.root) {
+    Ok(p) => Some(p),
+    Err(e) => {
+      eprintln!("  warning: could not start the local venv rebuild: {e:#}");
+      None
+    }
+  }
+}
+
+/// Collect the rebuild. Never an error: the release is published by now, and a local
+/// build problem is the user's venv to fix, not a reason to unwind a release.
+fn finish_venv_sync(pending: Option<Box<dyn Pending>>, plan: &Plan) {
+  let Some(p) = pending else { return };
+  match p.finish() {
+    Ok(out) if out.success() => println!("  local venv rebuilt at {}", plan.target.new),
+    Ok(out) => eprintln!(
+      "  warning: the local venv rebuild failed (uv {}):\n{}{}",
+      plan.sync_args().join(" "),
+      out.stdout,
+      out.stderr
+    ),
+    Err(e) => eprintln!("  warning: the local venv rebuild failed: {e:#}"),
+  }
 }
 
 /// Abort between steps if Ctrl-C was pressed (see [`Deps::check_interrupt`]).
@@ -310,11 +360,13 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   // No interrupt check here: the release exists, so its workflow may already be running,
   // and a Ctrl-C is honoured by step 8 finding and cancelling that run. `--no-wait` asked
   // for exactly this point, so it returns regardless.
+  let venv = start_venv_sync(plan, deps);
   if plan.no_wait {
     println!(
       "[8/8] Not waiting for the release workflow (--no-wait): {}",
       crate::ci::actions_url(root).unwrap_or_else(|| "see the repository's Actions tab".into())
     );
+    finish_venv_sync(venv, plan);
     return Ok(release_url);
   }
   // A failed or missing run is a failed release: the journal is unwound like any other
@@ -325,5 +377,45 @@ pub fn execute(plan: &Plan, deps: &Deps, journal: &mut Vec<Undo>) -> Result<Stri
   let run_url = crate::ci::wait_for_run(deps, root, &tag, &known)?;
   crate::ci::verify_published(deps, root, plan.cfg, new)?;
   println!("  workflow succeeded: {run_url}");
+  finish_venv_sync(venv, plan);
   Ok(release_url)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::config::PublishTarget;
+  use crate::preflight::Target;
+
+  #[test]
+  fn plan_names_the_local_resync_only_with_a_cargo_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = Config {
+      package: "demo".into(),
+      target: PublishTarget::Pypi,
+    };
+    let target = Target {
+      current: "1.0.0".into(),
+      new: "1.0.1".into(),
+    };
+    let bumps = vec!["patch".to_string()];
+    let plan = Plan {
+      root: dir.path(),
+      cfg: &cfg,
+      target: &target,
+      bumps: &bumps,
+      notes: None,
+      branch: "main",
+      no_wait: false,
+    };
+    assert!(!describe(&plan).contains("uv sync"));
+    std::fs::write(
+      dir.path().join("Cargo.toml"),
+      "[workspace]
+",
+    )
+    .unwrap();
+    let text = describe(&plan);
+    assert!(text.contains("uv sync --inexact --reinstall-package demo"), "{text}");
+  }
 }

@@ -205,6 +205,11 @@ on the line.
   place with the manual undo commands printed, never rolled back under) and verify the version is on
   the publish target (polling up to 120 s for index propagation) and the release still
   exists. `--no-wait` skips the last step and prints the workflow's Actions URL.
+- **Local venv** - For a project with a `Cargo.toml`, `uv sync --inexact
+  --reinstall-package <name>` runs alongside the workflow wait (in the foreground with
+  `--no-wait`) so the venv's binary is the released version by the time the command
+  returns; a pure-Python editable install needs no rebuild. Its failure is a warning,
+  never a rollback.
 - **Rollback** - On any failure or Ctrl-C — a failed or missing workflow run included —
   the journal is walked backwards (restore files, soft-reset the commit, delete tag /
   remote tag / the GitHub release, by the id it was created with), with force-with-lease

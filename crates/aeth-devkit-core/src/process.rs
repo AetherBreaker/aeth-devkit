@@ -18,8 +18,9 @@ use std::cell::{Cell, RefCell};
 // `Path` is the borrowed, unsized view of a filesystem path (like `str`); `PathBuf` is the
 // owned, growable version (like `String`). Functions take `&Path`, structs store `PathBuf`.
 use std::path::{Path, PathBuf};
-// The standard library's process spawner.
-use std::process::Command;
+// The standard library's process spawner; `Stdio` configures a child's streams (here:
+// piped, so its output is captured instead of printed).
+use std::process::{Command, Stdio};
 
 // `anyhow::Result<T>` is shorthand for `Result<T, anyhow::Error>`: a convenient catch-all
 // error type for applications. `Context` is a trait that adds `.context("…")` /
@@ -88,6 +89,49 @@ pub trait Runner {
   /// Run `program args` in `cwd` and capture stdout/stderr instead of showing them. Use
   /// this when we need to *parse* the output (e.g. `uv version`, `git rev-parse`).
   fn run_capture(&self, program: &str, args: &[String], cwd: &Path) -> Result<CapturedOutput>;
+
+  /// Start `program args` in `cwd` with captured output and return at once; the result is
+  /// collected later through [`Pending::finish`]. For work that overlaps something slow
+  /// (the release's local rebuild during the workflow wait). The default runs the command
+  /// to completion right here, which is all a test double needs: the call is recorded at
+  /// the point it was started, and the scripted answer is handed back when finished.
+  fn spawn_capture(&self, program: &str, args: &[String], cwd: &Path) -> Result<Box<dyn Pending>> {
+    Ok(Box::new(self.run_capture(program, args, cwd)?))
+  }
+}
+
+/// A started command whose output is still owed.
+pub trait Pending {
+  /// Wait for the command and hand back what it printed. `self: Box<Self>` consumes the
+  /// box: a pending command can be finished exactly once.
+  fn finish(self: Box<Self>) -> Result<CapturedOutput>;
+}
+
+/// An already-finished command (the default [`Runner::spawn_capture`]).
+impl Pending for CapturedOutput {
+  fn finish(self: Box<Self>) -> Result<CapturedOutput> {
+    Ok(*self)
+  }
+}
+
+/// A live child with piped output. Its `finish` reads both pipes to the end, then waits.
+/// Until then a child that prints more than the pipe buffer holds (64 KiB on Windows) just
+/// stalls on its next write, so a chatty child finishes later, never deadlocks.
+struct Spawned {
+  program: String,
+  child: std::process::Child,
+}
+
+impl Pending for Spawned {
+  fn finish(self: Box<Self>) -> Result<CapturedOutput> {
+    // `wait_with_output` drains stdout and stderr, then reaps the child.
+    let out = self.child.wait_with_output().with_context(|| format!("running {}", self.program))?;
+    Ok(CapturedOutput {
+      code: out.status.code(),
+      stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+      stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
+  }
 }
 
 /// Executes commands for real.
@@ -132,6 +176,23 @@ impl Runner for SystemRunner {
       stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
       stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     })
+  }
+
+  fn spawn_capture(&self, program: &str, args: &[String], cwd: &Path) -> Result<Box<dyn Pending>> {
+    // stdin is closed (`null`) so a child that asks a question fails fast instead of
+    // competing with the terminal for the user's keystrokes.
+    let child = Command::new(program)
+      .args(args)
+      .current_dir(cwd)
+      .stdin(Stdio::null())
+      .stdout(Stdio::piped())
+      .stderr(Stdio::piped())
+      .spawn()
+      .with_context(|| format!("starting {program}"))?;
+    Ok(Box::new(Spawned {
+      program: program.to_string(),
+      child,
+    }))
   }
 }
 

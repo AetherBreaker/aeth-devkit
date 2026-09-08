@@ -489,6 +489,55 @@ fn published_version_missing_after_a_green_run_rolls_back() {
   assert!(w.runner.calls_for("gh").iter().any(|c| deletes_release(c)));
 }
 
+const SYNC: &[&str] = &["sync", "--inexact", "--reinstall-package", "demo"];
+
+#[test]
+fn local_venv_is_resynced_while_the_workflow_runs() {
+  let w = World::new(&[]);
+  assert!(ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+  let calls = w.runner.calls.borrow();
+  let sync_at = calls.iter().position(|c| c.program == "uv" && starts(&c.args, SYNC)).unwrap();
+  let watch_at = calls
+    .iter()
+    .position(|c| c.program == "gh" && starts(&c.args, &["run", "watch"]))
+    .unwrap();
+  // Started before the wait, so the two overlap.
+  assert!(sync_at < watch_at, "{calls:?}");
+  assert_eq!(calls[sync_at].cwd, w.root());
+}
+
+#[test]
+fn local_resync_is_skipped_without_a_cargo_toml() {
+  let w = World::new(&[]);
+  std::fs::remove_file(w.root().join("Cargo.toml")).unwrap();
+  git_out(w.root(), &["commit", "-qam", "pure python"]);
+  git_out(w.root(), &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  assert!(ok(run(&w.args(&["patch"]), &w.deps()).unwrap()));
+  assert!(w.runner.calls_for("uv").iter().all(|c| c[0] != "sync"));
+}
+
+#[test]
+fn local_resync_failure_is_a_warning_not_a_rollback() {
+  use aeth_devkit_release::{Outcome, run_outcome};
+  let w = World::new(&[]);
+  w.runner.script_err("uv", SYNC, 1, "error: build failed");
+  assert_eq!(
+    run_outcome(&w.args(&["patch"]), &w.deps()).unwrap(),
+    Outcome::Released { version: "1.0.1".into() }
+  );
+  assert!(w.state().tag.is_some());
+  assert!(!w.runner.calls_for("gh").iter().any(|c| deletes_release(c)));
+}
+
+#[test]
+fn no_wait_still_resyncs_the_local_venv() {
+  let w = World::new(&[]);
+  let mut a = w.args(&["patch"]);
+  a.no_wait = true;
+  assert!(ok(run(&a, &w.deps()).unwrap()));
+  assert!(w.runner.calls_for("uv").iter().any(|c| starts(c, SYNC)));
+}
+
 #[test]
 fn no_wait_returns_once_the_release_exists() {
   use aeth_devkit_release::{Outcome, run_outcome};
