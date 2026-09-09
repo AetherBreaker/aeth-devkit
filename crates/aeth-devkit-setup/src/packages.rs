@@ -37,12 +37,14 @@ pub const CONTAINER: DevkitPackage = DevkitPackage {
 };
 
 /// The devkit packages this project should carry. Only the container so far; the templates,
-/// hooks and completion packages join in later split steps. A project never carries itself,
-/// so each satellite repo can be devkit-managed without depending on its own name.
+/// hooks and completion packages join in later split steps. The container's condition is the
+/// template's `if-docker` gate (services listed, or Docker files present), so a dependency
+/// the merge adds is always one this step locks and installs. A project never carries
+/// itself, so each satellite repo can be devkit-managed without depending on its own name.
 pub fn active(ctx: &ProjectContext) -> Vec<&'static DevkitPackage> {
   let own = normalize_dist_name(&ctx.name);
   let mut out = Vec::new();
-  if ctx.has_docker {
+  if ctx.has_docker || ctx.docker_files {
     out.push(&CONTAINER);
   }
   out.retain(|p| normalize_dist_name(p.name) != own);
@@ -134,13 +136,8 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
   if packages.is_empty() {
     return Ok(());
   }
-  let missing: Vec<&DevkitPackage> = packages
-    .iter()
-    .copied()
-    .filter(|p| deps.packages.dir(&ctx.root, p.import_name).is_none())
-    .collect();
   if dry_run {
-    for p in &missing {
+    for p in packages.iter().filter(|p| deps.packages.dir(&ctx.root, p.import_name).is_none()) {
       changes.notes.push(format!(
         "{} is not installed in this venv; a plain run adds it to pyproject.toml, locks it and syncs.",
         p.name
@@ -153,33 +150,38 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
   let lock_before = crate::read_optional(&lock_path)?;
   // The constraint is the running binary's version, so a lock that already names another
   // devkit means the venv is out of step with the lock: the lock step must not paper over
-  // that by moving devkit's entry to match the binary.
+  // that by moving devkit's entry to match the binary. On a committing run this is HEAD's
+  // lock (the run merges against HEAD), so a lock moved but not committed reads as stale.
   if let Some(v) = lock_before.as_deref().and_then(|l| locked_registry_version(l, "aeth-devkit"))
     && v != RUNNING_DEVKIT
   {
     bail!(
-      "uv.lock pins aeth-devkit {v} but this devkit is {RUNNING_DEVKIT}; run `uv sync` so the venv matches the lock, then rerun setup-project"
+      "uv.lock pins aeth-devkit {v} but this devkit is {RUNNING_DEVKIT}; run `uv sync` so the venv matches the lock (or commit a uv.lock you already moved), then rerun setup-project"
     );
   }
-  let constraints = root.join(".cache").join("devkit-constraints.txt");
-  std::fs::create_dir_all(root.join(".cache")).context("creating .cache")?;
-  std::fs::write(&constraints, format!("aeth-devkit=={RUNNING_DEVKIT}\n")).context("writing the constraints file")?;
+  // `uv lock` has no constraints flag; a version specifier on `--upgrade-package` is a hard
+  // constraint for this resolution (verified: an unmeetable one is "No solution found"), so
+  // `aeth-devkit==<running>` rides beside the packages allowed to move. Every other locked
+  // package stays a preference, as spec 4.0 wants.
   let mut args: Vec<String> = vec!["lock".into()];
   for p in &packages {
     args.push("--upgrade-package".into());
     args.push(p.name.into());
   }
-  args.push("--constraints".into());
-  args.push(constraints.to_string_lossy().into_owned());
+  args.push("--upgrade-package".into());
+  args.push(format!("aeth-devkit=={RUNNING_DEVKIT}"));
   let out = deps.docker.runner.run_capture("uv", &args, root)?;
   if !out.success() {
-    let first = out.stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
-    if out.stderr.contains("No solution found") {
+    let stderr = out.stderr.trim();
+    // uv's report starts at the `×` headline; what precedes it (interpreter discovery) is
+    // noise, and the `╰─▶` lines after it are the reason the user needs.
+    if let Some(at) = stderr.find("No solution found") {
+      let reason = stderr[at..].lines().map(str::trim).collect::<Vec<_>>().join("\n  ");
       bail!(
-        "a devkit package's floor cannot be met by the running devkit {RUNNING_DEVKIT}: {first}; run `devkit lock`, then rerun setup-project"
+        "a devkit package's floor cannot be met by the running devkit {RUNNING_DEVKIT}:\n  {reason}\nrun `devkit lock`, then rerun setup-project"
       );
     }
-    bail!("uv lock failed: {}", out.stderr.trim());
+    bail!("uv lock failed: {stderr}");
   }
   let lock_after = std::fs::read_to_string(&lock_path).context("reading uv.lock after locking")?;
   let pyproject_path = root.join("pyproject.toml");
@@ -187,9 +189,14 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
   let mut doc: DocumentMut = text.parse().context("parsing pyproject.toml")?;
   let mut pinned: Vec<String> = Vec::new();
   let mut locked_all: Vec<String> = Vec::new();
+  // Whether the venv must be synced: a package absent or installed at another version
+  // than the lock names would hand the Docker step the wrong template.
+  let mut stale = false;
   for p in &packages {
     let locked = locked_version(&lock_after, p.name).with_context(|| format!("{} is not in uv.lock after locking", p.name))?;
     locked_all.push(format!("{} {locked}", p.name));
+    let installed = deps.packages.dir(root, p.import_name).and_then(|d| installed_version(&d));
+    stale |= installed.as_deref() != Some(locked.as_str());
     if latest.iter().any(|n| n == p.name)
       && let Some(req) = find_requirement(&doc, p.name)
     {
@@ -219,7 +226,7 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
             && newest > have
           {
             changes.warnings.push(format!(
-              "{} {newest} is available but needs a newer aeth-devkit than the running {RUNNING_DEVKIT}; run `devkit lock`, then rerun setup-project",
+              "{} {newest} is available but {locked} is the newest the running aeth-devkit {RUNNING_DEVKIT} accepts; run `devkit lock`, then rerun setup-project",
               p.name
             ));
           }
@@ -231,13 +238,15 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
     }
   }
   if !pinned.is_empty() {
+    // A managed-file write like every other: a Ctrl-C waits for it (see `interrupt`).
+    let _w = crate::interrupt::Writing::begin();
     std::fs::write(&pyproject_path, doc.to_string()).context("writing pyproject.toml")?;
     for line in &pinned {
       changes.note(&pyproject_path, line);
     }
   }
   let lock_changed = lock_before.as_deref() != Some(lock_after.as_str());
-  if lock_changed || !missing.is_empty() {
+  if lock_changed || stale {
     match deps.docker.runner.run_inherit("uv", &["sync".into(), "--frozen".into()], root)? {
       Some(0) => {}
       Some(code) => bail!("uv sync --frozen exited with {code}"),

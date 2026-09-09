@@ -6,6 +6,13 @@
 # Placeholders: {package} → the project's import name; {python_dir} → "src", or "python"
 # for mixed Rust/Python projects where src/ belongs to cargo.
 
+# setup-project: if-docker
+[project]
+  # devkit-container: the image-side helper (build-time queries and the entrypoint) and the
+  # Dockerfile template. setup-project keeps its floor at the newest release the installed
+  # devkit accepts and renders docker/Dockerfile from that same wheel.
+  dependencies = ["devkit-container>={latest}"]
+
 [dependency-groups]
   # Every tool this template writes config for below, so a fresh project can actually run the
   # thing it was just configured for. The pytest entries are not optional: [tool.pytest]
@@ -38,17 +45,6 @@
 
   [tool.coverage.lcov]
     output = ".cache/coverage.lcov"
-
-# setup-project: if-docker
-[project]
-  # The image-side helper (build-time queries and the entrypoint). `{latest}` is the newest
-  # release the installed devkit accepts; setup-project locks it and renders docker/Dockerfile
-  # from the template in that same wheel.
-  dependencies = ["devkit-container>={latest}"]
-
-# setup-project: if-docker
-[tool.uv.sources]
-  devkit-container = [{ index = "SFTPyPI" }]
 
 # setup-project: if-docker
 [tool.docker]
@@ -243,3 +239,7 @@
     indent-table-key-value-pairs    = true
     key-value-equals-sign-alignment = true
     trailing-comment-alignment      = true
+
+# setup-project: if-docker
+[tool.uv.sources]
+  devkit-container = [{ index = "SFTPyPI" }]

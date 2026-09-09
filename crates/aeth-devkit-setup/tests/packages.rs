@@ -94,16 +94,18 @@ fn a_latest_package_is_locked_under_the_devkit_constraint_and_its_floor_written(
   };
   let changes = advance(root, &runner, &index, true, false);
   let lock_call = &runner.calls_for("uv")[0];
-  assert_eq!(&lock_call[..3], &["lock", "--upgrade-package", "devkit-container"], "{lock_call:?}");
-  let constraints = lock_call
-    .iter()
-    .position(|a| a == "--constraints")
-    .map(|i| PathBuf::from(&lock_call[i + 1]))
-    .expect("a constraints file");
-  assert_eq!(constraints, root.join(".cache").join("devkit-constraints.txt"));
+  // The running devkit rides along as a pinned `--upgrade-package`: uv treats the specifier
+  // as a hard constraint for this resolution, and `uv lock` has no constraints flag.
   assert_eq!(
-    fs::read_to_string(&constraints).unwrap().trim(),
-    format!("aeth-devkit=={RUNNING_DEVKIT}")
+    lock_call,
+    &[
+      "lock",
+      "--upgrade-package",
+      "devkit-container",
+      "--upgrade-package",
+      &format!("aeth-devkit=={RUNNING_DEVKIT}"),
+    ],
+    "{lock_call:?}"
   );
   let py = fs::read_to_string(root.join("pyproject.toml")).unwrap();
   assert!(py.contains("\"devkit-container>=1.4.0\""), "{py}");
@@ -176,6 +178,37 @@ fn a_missing_package_is_synced_and_a_dry_run_only_notes() {
     Some(&["sync".to_string(), "--frozen".to_string()][..]),
     "{calls:?}"
   );
+}
+
+#[test]
+fn a_venv_on_another_version_than_the_lock_is_synced() {
+  let dir = project(DOCKER_PYPROJECT, Some(&lock_with("1.4.0")));
+  // Installed 1.3.0 beside the package dir; the lock says 1.4.0.
+  let site = tempfile::tempdir().unwrap();
+  let pkg = site.path().join("devkit_container");
+  fs::create_dir_all(&pkg).unwrap();
+  fs::create_dir(site.path().join("devkit_container-1.3.0.dist-info")).unwrap();
+  let mut map = HashMap::new();
+  map.insert("devkit_container".to_string(), pkg);
+  let dirs = StubPackageDirs(map);
+  let runner = RecordingRunner::new(0);
+  let prompt = ScriptedPrompt::new(&[]);
+  let index = StubIndexClient { versions: vec![] };
+  let deps = aeth_devkit_setup::Deps {
+    docker: DockerDeps {
+      runner: &runner,
+      prompt: &prompt,
+      reviewer: None,
+      mode: Mode::Ask,
+    },
+    index: &index,
+    packages: &dirs,
+  };
+  let ctx = aeth_devkit_setup::context::ProjectContext::discover(dir.path()).unwrap();
+  let mut changes = aeth_devkit_setup::changes::Changes::new(false);
+  packages::advance(&ctx, &deps, false, &[], &mut changes).unwrap();
+  let calls = runner.calls_for("uv");
+  assert_eq!(calls.last().map(|c| c[0].as_str()), Some("sync"), "{calls:?}");
 }
 
 #[test]
