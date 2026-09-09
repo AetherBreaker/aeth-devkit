@@ -10,6 +10,10 @@ const ADDED_COMMENT_PREFIX: &str = " # setup-project added: ";
 const MARKER: &str = "setup-project:";
 const IF_DEP_MARKER: &str = "setup-project: if-dep ";
 const IF_DOCKER_MARKER: &str = "setup-project: if-docker";
+/// Narrower than `if-docker`: only a project whose `[tool.docker].services` names something.
+/// `if-docker` also fires on bare Docker files so the `[tool.docker]` switch gets seeded; a
+/// runtime dependency must wait for the switch to be set.
+const IF_DOCKER_SERVICES_MARKER: &str = "setup-project: if-docker-services";
 
 /// In a template specifier, "the newest release this devkit can use". The merge only makes
 /// sure the package is listed; `packages::advance` writes the real floor once uv has chosen
@@ -91,6 +95,9 @@ impl Merger<'_> {
         continue;
       }
       if conditional_docker(template, key) && !(self.ctx.has_docker || self.ctx.docker_files) {
+        continue;
+      }
+      if marker_lines(template, key).iter().any(|l| l == IF_DOCKER_SERVICES_MARKER) && !self.ctx.has_docker {
         continue;
       }
       let tkey = template.key(key).expect("iterating template keys").clone();
@@ -526,6 +533,19 @@ mod docker_tests {
     let mut log = vec![];
     let out = merge_pyproject("[project]\nname = \"p\"\n", TPL, &ctx(true), &mut log).unwrap();
     assert!(out.contains("[tool.docker]"), "{out}");
+  }
+
+  #[test]
+  fn if_docker_services_needs_the_switch_not_just_docker_files() {
+    const TPL2: &str = "# setup-project: if-docker\n[tool.docker]\n  services = []\n\n# setup-project: if-docker-services\n[tool.uv.sources]\n  devkit-container = [{ index = \"SFTPyPI\" }]\n";
+    let mut log = vec![];
+    let mut files_only = ctx(false);
+    files_only.docker_files = true;
+    let out = merge_pyproject("[project]\nname = \"p\"\n", TPL2, &files_only, &mut log).unwrap();
+    assert!(out.contains("[tool.docker]"), "the switch is seeded: {out}");
+    assert!(!out.contains("devkit-container"), "no dependency before the switch is set: {out}");
+    let out = merge_pyproject("[project]\nname = \"p\"\n", TPL2, &ctx(true), &mut log).unwrap();
+    assert!(out.contains("devkit-container"), "{out}");
   }
 
   #[test]
