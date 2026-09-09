@@ -6,7 +6,7 @@
 # Placeholders: {package} → the project's import name; {python_dir} → "src", or "python"
 # for mixed Rust/Python projects where src/ belongs to cargo.
 
-# setup-project: if-docker
+# setup-project: if-docker-services
 [project]
   # devkit-container: the image-side helper (build-time queries and the entrypoint) and the
   # Dockerfile template. setup-project keeps its floor at the newest release the installed
@@ -240,6 +240,6 @@
     key-value-equals-sign-alignment = true
     trailing-comment-alignment      = true
 
-# setup-project: if-docker
+# setup-project: if-docker-services
 [tool.uv.sources]
   devkit-container = [{ index = "SFTPyPI" }]

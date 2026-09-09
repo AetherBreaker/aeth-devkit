@@ -253,8 +253,8 @@ fn mixed_rust_python_project_uses_python_dir_and_rust_overlays() {
   let gi = read(root, ".gitignore");
   assert!(gi.contains("*.pdb"), "rust overlay must be merged: {gi}");
   assert!(gi.contains("secrets/"), "{gi}");
-  // The container binary is devkit's own release stream (`.github/workflows/devkit-container.yml`
-  // in devkit, not a template), so no rendered release workflow mentions it.
+  // The container package has its own repository and release workflow, so no rendered
+  // release workflow mentions it.
   let wf = read(root, ".github/workflows/release.yml");
   assert!(!wf.contains("container"), "{wf}");
   assert!(wf.contains("targets: ${{ matrix.target }}\n"), "{wf}");

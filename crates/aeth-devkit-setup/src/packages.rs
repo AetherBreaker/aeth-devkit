@@ -37,14 +37,15 @@ pub const CONTAINER: DevkitPackage = DevkitPackage {
 };
 
 /// The devkit packages this project should carry. Only the container so far; the templates,
-/// hooks and completion packages join in later split steps. The container's condition is the
-/// template's `if-docker` gate (services listed, or Docker files present), so a dependency
-/// the merge adds is always one this step locks and installs. A project never carries
-/// itself, so each satellite repo can be devkit-managed without depending on its own name.
+/// hooks and completion packages join in later split steps. The container's condition is
+/// `[tool.docker].services`, the same `if-docker-services` gate the template adds the
+/// dependency under, so a dependency the merge adds is always one this step locks and
+/// installs. A project never carries itself, so each satellite repo can be devkit-managed
+/// without depending on its own name.
 pub fn active(ctx: &ProjectContext) -> Vec<&'static DevkitPackage> {
   let own = normalize_dist_name(&ctx.name);
   let mut out = Vec::new();
-  if ctx.has_docker || ctx.docker_files {
+  if ctx.has_docker {
     out.push(&CONTAINER);
   }
   out.retain(|p| normalize_dist_name(p.name) != own);

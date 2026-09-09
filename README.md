@@ -79,8 +79,8 @@ second run is a byte-for-byte no-op.
   the workflow checks that the release owning the tag is still the one that triggered
   it, so a release deleted and recreated mid-build gets nothing from the old run. The
   first install prints a `note:` with the secret names or the trusted-publisher
-  registration values. The `devkit-container` binary is not part of this workflow: devkit
-  releases it on its own tag stream (see **`devkit-container`** below).
+  registration values. The `devkit-container` package is not part of this workflow: it has
+  its own repository and releases (see **`devkit-container`** below).
 - **Claude config** - `.claude/settings.json` (shared, no machine-specific paths) vs
   `settings.local.json` (absolute env paths + hook commands). Hook merge keeps exactly one
   entry per devkit hook, updates it in place, and leaves user hooks alone. `.mcp.json`:
