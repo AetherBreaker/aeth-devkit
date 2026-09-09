@@ -136,8 +136,10 @@ impl Merger<'_> {
           let needs_insert = !matches!(target.get(key), Some(Item::Table(_)));
           if needs_insert {
             if ttable.is_implicit() || has_only_subtables(ttable) {
-              // A missing intermediate table (e.g. `tool`) stays implicit so no bare header
-              // is emitted; recurse so conditional/keep rules still apply to its children.
+              // A missing intermediate table (e.g. `tool`) is created implicit, so no bare
+              // header is emitted, and recursed into so conditional/keep rules still apply
+              // to its children; the block after this makes it explicit when the template
+              // writes the header.
               let mut t = Table::new();
               t.set_implicit(true);
               target.insert_formatted(&tkey, Item::Table(t));
@@ -156,6 +158,16 @@ impl Merger<'_> {
             }
           }
           let sub = target.get_mut(key).and_then(Item::as_table_mut).expect("just inserted");
+          // A header the template writes over sub-tables only (`[tool.coverage]`) is there
+          // for tombi to nest the children under; a project whose table exists only through
+          // its children (or was just created above) gets the header, with the template's
+          // decor, and reports it.
+          if !ttable.is_implicit() && sub.is_implicit() {
+            sub.set_implicit(false);
+            *sub.decor_mut() = ttable.decor().clone();
+            strip_marker_comments(sub);
+            self.log.push(format!("added [{child}]"));
+          }
           self.merge_table(sub, ttable, &child);
         }
         Item::Value(tval) => self.merge_value(target, &tkey, tval, &child),
@@ -511,6 +523,36 @@ mod tests {
     assert!(!out.contains("tool.mypy"));
     let out2 = merge_pyproject(orig, tpl, &ctx(&["mypy"]), &mut vec![]).unwrap();
     assert!(out2.contains("[tool.mypy]"), "{out2}");
+  }
+
+  #[test]
+  fn an_explicit_parent_header_over_subtables_is_written() {
+    // `[tool.coverage]` holds no keys of its own; the header exists so tombi nests the
+    // sub-tables under it. A project without it gets it, whether the sub-tables are new or
+    // already there, and the implicit `tool` parent still gets no header.
+    let tpl = "[tool.coverage]\n  [tool.coverage.run]\n    data_file = \".cache/.coverage\"\n";
+    let mut log = vec![];
+    let fresh = merge_pyproject("[project]\n  name = \"p\"\n", tpl, &ctx(&[]), &mut log).unwrap();
+    assert!(fresh.contains("\n[tool.coverage]\n"), "{fresh}");
+    assert!(!fresh.contains("[tool]\n"), "{fresh}");
+    assert!(log.contains(&"added [tool.coverage]".to_string()), "{log:?}");
+    let mut log = vec![];
+    let existing = merge_pyproject(
+      "[tool.coverage.run]\n  data_file = \".cache/.coverage\"\n",
+      tpl,
+      &ctx(&[]),
+      &mut log,
+    )
+    .unwrap();
+    assert!(existing.contains("[tool.coverage]\n"), "{existing}");
+    assert!(
+      existing.find("[tool.coverage]").unwrap() < existing.find("[tool.coverage.run]").unwrap(),
+      "{existing}"
+    );
+    assert_eq!(log, vec!["added [tool.coverage]"]);
+    let mut log = vec![];
+    assert_eq!(merge_pyproject(&existing, tpl, &ctx(&[]), &mut log).unwrap(), existing);
+    assert!(log.is_empty(), "{log:?}");
   }
 
   #[test]
