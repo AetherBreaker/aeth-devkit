@@ -12,9 +12,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "aeth-devkit"
 version = "12.1.0"
 dependencies = [
- "aeth-devkit-complete",
  "aeth-devkit-core",
- "aeth-devkit-hooks",
  "aeth-devkit-lock",
  "aeth-devkit-pin",
  "aeth-devkit-release",
@@ -22,20 +20,6 @@ dependencies = [
  "anyhow",
  "clap",
  "tempfile",
-]
-
-[[package]]
-name = "aeth-devkit-complete"
-version = "12.1.0"
-dependencies = [
- "aeth-devkit-core",
- "anyhow",
- "clap",
- "serde",
- "serde_json",
- "shell-words",
- "tempfile",
- "toml_edit",
 ]
 
 [[package]]
@@ -51,19 +35,6 @@ dependencies = [
  "tempfile",
  "toml_edit",
  "ureq",
-]
-
-[[package]]
-name = "aeth-devkit-hooks"
-version = "12.1.0"
-dependencies = [
- "aeth-devkit-core",
- "anyhow",
- "clap",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
 ]
 
 [[package]]
@@ -887,12 +858,6 @@ dependencies = [
  "serde_core",
  "zmij",
 ]
-
-[[package]]
-name = "shell-words"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "shlex"

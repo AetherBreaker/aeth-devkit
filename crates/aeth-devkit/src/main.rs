@@ -26,25 +26,6 @@ enum Command {
   /// Release (always waiting for the workflow; `--no-wait` is refused), then pin the docker
   /// compose file to the freshly released version.
   ReleaseAndPin(aeth_devkit_release::Args),
-  /// Shell-completion data for poe tasks (fast replacement for poe's `_list_tasks`).
-  Complete(aeth_devkit_complete::Args),
-  /// Run a Claude Code hook (payload on stdin, decision on stdout). Always exits 0.
-  Hook(aeth_devkit_hooks::Args),
-}
-
-impl Command {
-  /// Whether to append the outdated-devkit nag after this command. The completion data and
-  /// script subcommands run on every Tab press and their output must stay pure and fast, so
-  /// only `complete install` — an ordinary, interactive command — gets it. Hooks are the
-  /// same story: Claude runs them on every tool call, nobody is watching their stderr, and
-  /// the nag's once-a-day index fetch would put a network timeout in that path.
-  fn wants_update_check(&self) -> bool {
-    match self {
-      Command::Complete(args) => matches!(args.command, aeth_devkit_complete::Command::Install { .. }),
-      Command::Hook(_) => false,
-      _ => true,
-    }
-  }
 }
 
 /// `devkit release` then `devkit docker-pin --version <released>`, in-process. The pin step
@@ -84,14 +65,10 @@ fn main() -> ExitCode {
     Command::Release(args) => aeth_devkit_release::run_real(args),
     Command::DockerPin(args) => aeth_devkit_pin::run_real(args),
     Command::ReleaseAndPin(args) => release_and_pin(args),
-    Command::Complete(args) => Ok(aeth_devkit_complete::run_real(args)),
-    Command::Hook(args) => Ok(aeth_devkit_hooks::run_real(args)),
   };
   // Last thing printed, so it is what the user sees; runs even after a failure, since an
   // outdated devkit may be the reason for it.
-  if cli.command.wants_update_check() {
-    aeth_devkit_core::update::nag(env!("CARGO_PKG_VERSION"));
-  }
+  aeth_devkit_core::update::nag(env!("CARGO_PKG_VERSION"));
   match result {
     Ok(code) => code,
     Err(e) => {
