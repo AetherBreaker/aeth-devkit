@@ -289,10 +289,10 @@ that repository's README for the binary's subcommands and the `[tool.docker]` sc
 
 ### VS Code extension
 
-`aeth.aeth-devkit`, in `vscode-extension/`. Never published to the marketplace: each build
-is a GitHub release on its own tag stream (`vscode-extension-vN`, asset
-`aeth-devkit-vscode-N.vsix`), cut automatically by `.github/workflows/vscode-extension.yml`
-when a devkit release ships with changes under `vscode-extension/`.
+`aeth.aeth-devkit`, in its own repository, `AetherBreaker/devkit-vscode`. Never published
+to the marketplace: each build is a GitHub release there (`vN`, asset
+`aeth-devkit-vscode-N.vsix`), cut by that repository's workflow from a `vN` tag push. Build 1
+is `vscode-extension-v1` on this repository and stays published.
 
 When `devkit setup-project` runs in a VS Code terminal (`TERM_PROGRAM=vscode`; force with
 `--vscode`, disable with `--no-vscode`) with stdin a terminal and neither `--check` nor

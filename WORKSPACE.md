@@ -10,16 +10,18 @@ Every repository lives beside the others under one folder; the paths below assum
 cd "/d/SFT Software Projects"
 gh repo clone AetherBreaker/aeth-devkit
 gh repo clone AetherBreaker/devkit-container
+gh repo clone AetherBreaker/devkit-vscode
 ```
 
 ## Publishing credentials
 
 The release workflows read the SFTPyPI credentials from repository secrets, but `poe release`
 and the local index queries read them from `.env`. Copy `aeth-devkit/.env` (never committed)
-into every repository that publishes a wheel:
+into every repository that publishes a wheel, and into `devkit-vscode` as well: it publishes
+no wheel, but devkit's index queries want the credentials there too.
 
 ```bash
-for r in devkit-container; do cp aeth-devkit/.env "$r/.env"; done
+for r in devkit-container devkit-vscode; do cp aeth-devkit/.env "$r/.env"; done
 ```
 
 ## Bring each repository up
@@ -28,10 +30,13 @@ for r in devkit-container; do cp aeth-devkit/.env "$r/.env"; done
 from a tool with piped stdin.
 
 ```bash
-for r in aeth-devkit devkit-container; do
+for r in aeth-devkit devkit-container devkit-vscode; do
   (cd "$r" && uv sync && uv run poe setup-project)
 done
 ```
+
+`devkit-vscode` also needs `npm ci`; its `poe setup-project` needs `aeth-devkit>=12.1.0` in its
+venv, which `uv sync` provides.
 
 `setup-project` installs the VS Code extension, the Claude Code hook lines and the shell
 completion for this machine as part of that run.
