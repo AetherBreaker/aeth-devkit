@@ -15,6 +15,7 @@
 // the `Runner` trait methods take `&self` — a runner is shared read-only by callers — yet the
 // recording implementation must append to its call log.
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 // `Path` is the borrowed, unsized view of a filesystem path (like `str`); `PathBuf` is the
 // owned, growable version (like `String`). Functions take `&Path`, structs store `PathBuf`.
 use std::path::{Path, PathBuf};
@@ -198,14 +199,20 @@ impl Runner for SystemRunner {
 
 /// A canned answer the [`RecordingRunner`] gives for calls matching `program` whose
 /// arguments start with `arg_prefix`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Script {
   pub program: String,
   pub arg_prefix: Vec<String>,
   pub code: i32,
   pub stdout: String,
   pub stderr: String,
+  /// Run against the call's working directory when this script answers: how a test stands
+  /// in for a tool that writes files (uv rewriting `uv.lock`), which no canned output can.
+  pub effect: Option<Effect>,
 }
+
+/// A [`Script`]'s side effect, given the call's working directory.
+pub type Effect = Rc<dyn Fn(&Path)>;
 
 /// Records every call and answers from scripts; for tests.
 ///
@@ -248,6 +255,21 @@ impl RecordingRunner {
       code,
       stdout: stdout.to_string(),
       stderr: String::new(),
+      effect: None,
+    });
+    self
+  }
+
+  /// Like [`script`](Self::script), plus an `effect` run in the call's working directory
+  /// whenever the script answers (see [`Script::effect`]).
+  pub fn script_with_effect(&self, program: &str, arg_prefix: &[&str], code: i32, effect: impl Fn(&Path) + 'static) -> &Self {
+    self.scripts.borrow_mut().push(Script {
+      program: program.to_string(),
+      arg_prefix: arg_prefix.iter().map(|s| s.to_string()).collect(),
+      code,
+      stdout: String::new(),
+      stderr: String::new(),
+      effect: Some(Rc::new(effect)),
     });
     self
   }
@@ -261,6 +283,7 @@ impl RecordingRunner {
       code,
       stdout: String::new(),
       stderr: stderr.to_string(),
+      effect: None,
     });
     self
   }
@@ -314,11 +337,16 @@ impl RecordingRunner {
       .rev()
       .find(|s| s.program == program && args.starts_with(&s.arg_prefix))
     {
-      Some(s) => CapturedOutput {
-        code: Some(s.code),
-        stdout: s.stdout.clone(),
-        stderr: s.stderr.clone(),
-      },
+      Some(s) => {
+        if let Some(effect) = &s.effect {
+          effect(cwd);
+        }
+        CapturedOutput {
+          code: Some(s.code),
+          stdout: s.stdout.clone(),
+          stderr: s.stderr.clone(),
+        }
+      }
       // Struct-update syntax: take `code` from here, everything else from `Default`.
       None => CapturedOutput {
         code: Some(self.exit_code),
