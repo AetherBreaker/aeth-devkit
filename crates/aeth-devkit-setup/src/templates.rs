@@ -139,8 +139,11 @@ pub fn locate(explicit: Option<&Path>) -> Result<PathBuf> {
   if let Ok(p) = std::env::var("DEVKIT_TEMPLATES") {
     return existing_dir(PathBuf::from(p), "DEVKIT_TEMPLATES");
   }
-  if let Some(p) = from_python() {
-    return Ok(p);
+  if let Some(p) = installed_package_dir("aeth_devkit") {
+    let templates = p.join("templates");
+    if templates.is_dir() {
+      return Ok(templates);
+    }
   }
   let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
     .join("..")
@@ -162,20 +165,16 @@ fn existing_dir(p: PathBuf, what: &str) -> Result<PathBuf> {
   }
 }
 
-/// Ask the Python interpreter that lives alongside this binary (the venv's `Scripts/`)
-/// where `aeth_devkit` is installed.
-fn from_python() -> Option<PathBuf> {
+/// Where the Python interpreter that lives alongside this binary (the venv's `Scripts/` or
+/// `bin/`) has `import_name` installed: the package directory, or `None` when it is not
+/// importable there.
+pub fn installed_package_dir(import_name: &str) -> Option<PathBuf> {
   let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
   let candidates = [exe_dir.join("python.exe"), exe_dir.join("python"), PathBuf::from("python")];
+  let code = format!("import {import_name}, os; print(os.path.dirname({import_name}.__file__))");
   for py in candidates {
     // A candidate that cannot be spawned (e.g. `python.exe` on Unix) must not end the search.
-    let Ok(out) = Command::new(&py)
-      .args([
-        "-c",
-        "import aeth_devkit, os; print(os.path.join(os.path.dirname(aeth_devkit.__file__), 'templates'))",
-      ])
-      .output()
-    else {
+    let Ok(out) = Command::new(&py).args(["-c", &code]).output() else {
       continue;
     };
     if out.status.success() {
