@@ -46,7 +46,7 @@ fn project(services: &[&str], origin: &str) -> tempfile::TempDir {
     root,
     "uv.lock",
     &format!(
-      "version = 1\n\n[[package]]\nname = \"aeth-devkit\"\nversion = \"{}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-container\"\nversion = \"1.4.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n",
+      "version = 1\n\n[[package]]\nname = \"aeth-devkit\"\nversion = \"{}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-claude-hooks\"\nversion = \"1.0.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-poe-complete\"\nversion = \"1.0.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-container\"\nversion = \"1.4.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n",
       aeth_devkit_setup::packages::RUNNING_DEVKIT
     ),
   );
@@ -60,17 +60,23 @@ fn project(services: &[&str], origin: &str) -> tempfile::TempDir {
   dir
 }
 
-/// The venv as the tests see it: the container package at the version the fixture lock
-/// names, its template the fixture copy.
+/// The venv as the tests see it: every devkit package at the version the fixture lock
+/// names, the container's template the fixture copy.
 fn package_dirs() -> StubVenv {
   let mut map = std::collections::HashMap::new();
-  map.insert(
-    "devkit_container".to_string(),
-    Installed {
-      dir: fixtures(),
-      version: "1.4.0".into(),
-    },
-  );
+  for (name, version) in [
+    ("devkit_container", "1.4.0"),
+    ("devkit_claude_hooks", "1.0.0"),
+    ("devkit_poe_complete", "1.0.0"),
+  ] {
+    map.insert(
+      name.to_string(),
+      Installed {
+        dir: fixtures(),
+        version: version.into(),
+      },
+    );
+  }
   StubVenv(map)
 }
 
