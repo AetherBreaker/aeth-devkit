@@ -254,7 +254,7 @@ mod tests {
   }
 
   #[test]
-  fn parses_installed_version_and_tag_numbers() {
+  fn parses_installed_version_and_release_numbers() {
     assert_eq!(installed_version("ms-python.python@2024.1.0\nAeth.aeth-devkit@3.0.0\n"), Some(3));
     assert_eq!(installed_version("ms-python.python@2024.1.0\n"), None);
     assert_eq!(latest_release_number(RELEASES).unwrap(), Some(3));
