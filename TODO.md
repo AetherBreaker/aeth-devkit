@@ -15,9 +15,10 @@ design exists. Check items off in place; delete them once released.
       `timeclock_playground` to temp dirs (on their own TODO lists, high priority).
 - [ ] IMAPReportCollector: `[tool.docker].mkdirs = [""]` is a data bug (would have chowned
       `/app`); goes away with the migration above.
-- [ ] A command that advances a Dockerfile's `container-v<N>` pin to devkit's newest
-      container release (a separate invocation: `docker-pin` pins the project's own release,
-      not devkit's). setup-project fills a missing pin only and never moves an existing one.
+- [ ] Dockerfile customisation: `docker/Dockerfile` is devkit-owned and `docker-pin` replaces
+      drift without asking, so a hunk kept in `setup-project` does not survive the next pin.
+      Consider a mechanism for project-specific Dockerfile edits, or a `[tool.devkit]` setting
+      that opts a project out of Dockerfile management.
 - [x] `if-docker` conditional marker for template tables (mirrors `if-dep`; drives the
       `[tool.docker]` item above). Done on `feat/agent-config`.
 - [ ] Vendored gitignore refresh: a `poe` task or script that re-fetches
