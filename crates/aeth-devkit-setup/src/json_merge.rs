@@ -366,7 +366,8 @@ pub fn merge_hooks(target: &mut Value, template: &Value, log: &mut Vec<String>) 
         continue;
       };
       for entry in entries {
-        // Only entries carrying a `hook <name>` token are ours to manage.
+        // Only entries carrying a devkit hook command (`devkit-hook <name>`, or the old
+        // `hook <name>`) are ours to manage.
         let Some(key) = hook_key(entry) else { continue };
         if reconcile_hook(arr, matcher.as_ref(), entry, &key, event, log) {
           emptied = true;

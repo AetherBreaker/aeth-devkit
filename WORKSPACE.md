@@ -43,5 +43,9 @@ done
 venv, which `uv sync` provides. `devkit-claude-hooks` and `devkit-poe-complete` build their
 binaries into the venv through maturin during `uv sync`, so they need the Rust toolchain.
 
+Keep uv's cache on the same drive as the checkouts (`UV_CACHE_DIR`), so `uv sync` hard-links
+into the venvs: `setup-project` and `poe lock` re-sync the environment their own `devkit.exe`
+runs from, which Windows allows only when that file is a hard link, not a copy.
+
 `setup-project` installs the VS Code extension, the Claude Code hook lines and the shell
 completion for this machine as part of that run.

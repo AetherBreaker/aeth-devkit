@@ -25,21 +25,7 @@ pub fn merge_pyproject(original: &str, template: &str, ctx: &ProjectContext, log
   let mut doc: DocumentMut = original.parse().context("parsing project pyproject.toml")?;
   let mut tpl: DocumentMut = template.parse().context("parsing template pyproject.toml")?;
   check_markers(tpl.as_table(), "")?;
-  // The project's own package is not its own dependency (spec 4.0): a satellite repo is
-  // devkit-managed without resolving its published self beside the editable one. Out of
-  // the template before the merge, so every path that copies an array or a key honours it.
-  let own = normalize_dist_name(&ctx.name);
-  drop_own_package(tpl.as_table_mut(), &own);
-  if let Some(sources) = tpl
-    .get_mut("tool")
-    .and_then(Item::as_table_mut)
-    .and_then(|t| t.get_mut("uv"))
-    .and_then(Item::as_table_mut)
-    .and_then(|t| t.get_mut("sources"))
-    .and_then(Item::as_table_mut)
-  {
-    sources.retain(|k, _| normalize_dist_name(k) != own);
-  }
+  drop_own_package(tpl.as_table_mut(), &normalize_dist_name(&ctx.name));
 
   let mut merger = Merger { ctx, log };
   merger.merge_table(doc.as_table_mut(), tpl.as_table(), "");
@@ -343,20 +329,38 @@ fn union_array(existing: &mut Array, template: &Array) -> Vec<String> {
   added
 }
 
-/// Drop every `{latest}` requirement naming `own` from the template's arrays, wherever they
-/// sit (`[project].dependencies`, each dependency group).
-fn drop_own_package(table: &mut Table, own: &str) {
-  for (_, item) in table.iter_mut() {
-    match item {
-      Item::Value(Value::Array(a)) => {
-        a.retain(|v| {
-          !v.as_str()
-            .is_some_and(|s| s.contains(LATEST) && normalize_dist_name(&dependency_name(s)) == own)
-        });
+/// The project's own package out of the template before the merge, so every path that
+/// copies an array or a key honours spec 4.0: its requirement under `[project].dependencies`
+/// or any dependency group (a `{latest}` entry or an explicit floor alike) and its
+/// `[tool.uv.sources]` entry. A satellite repo is devkit-managed without resolving its
+/// published self beside the editable one. Dependency arrays only: a project named like an
+/// entry of some other list (`dist`, say) keeps that list whole.
+fn drop_own_package(tpl: &mut Table, own: &str) {
+  let drop = |a: &mut Array| a.retain(|v| !v.as_str().is_some_and(|s| normalize_dist_name(&dependency_name(s)) == own));
+  if let Some(deps) = tpl
+    .get_mut("project")
+    .and_then(Item::as_table_mut)
+    .and_then(|t| t.get_mut("dependencies"))
+    .and_then(Item::as_array_mut)
+  {
+    drop(deps);
+  }
+  if let Some(groups) = tpl.get_mut("dependency-groups").and_then(Item::as_table_mut) {
+    for (_, item) in groups.iter_mut() {
+      if let Some(group) = item.as_array_mut() {
+        drop(group);
       }
-      Item::Table(t) => drop_own_package(t, own),
-      _ => {}
     }
+  }
+  if let Some(sources) = tpl
+    .get_mut("tool")
+    .and_then(Item::as_table_mut)
+    .and_then(|t| t.get_mut("uv"))
+    .and_then(Item::as_table_mut)
+    .and_then(|t| t.get_mut("sources"))
+    .and_then(Item::as_table_mut)
+  {
+    sources.retain(|k, _| normalize_dist_name(k) != own);
   }
 }
 
@@ -635,20 +639,24 @@ mod docker_tests {
 
   #[test]
   fn a_project_never_gets_its_own_package() {
-    let tpl = "[dependency-groups]\n  dev = [\"devkit-claude-hooks>={latest}\", \"devkit-poe-complete>={latest}\", \"ruff>=0.15\"]\n\n[tool.uv.sources]\n  devkit-claude-hooks = [{ index = \"SFTPyPI\" }]\n  devkit-poe-complete = [{ index = \"SFTPyPI\" }]\n";
+    // A `{latest}` entry, an explicit floor and the source entry all go; an unrelated list
+    // that happens to name the project (`exclude`) stays whole.
+    let tpl = "[project]\n  dependencies = [\"devkit-claude-hooks>=1.2\"]\n\n[dependency-groups]\n  dev = [\"devkit-claude-hooks>={latest}\", \"devkit-poe-complete>={latest}\", \"ruff>=0.15\"]\n\n[tool.tombi.files]\n  exclude = [\"devkit-claude-hooks\", \"dist\"]\n\n[tool.uv.sources]\n  devkit-claude-hooks = [{ index = \"SFTPyPI\" }]\n  devkit-poe-complete = [{ index = \"SFTPyPI\" }]\n";
     let mut own = ctx(false);
     own.name = "Devkit_Claude_Hooks".into();
-    // A project without the tables (both copied whole) and one with them (union and key merge).
+    // A project without the tables (copied whole) and one with them (union and key merge).
     let fresh = "[project]\n  name = \"Devkit_Claude_Hooks\"\n";
-    let existing = "[project]\n  name = \"Devkit_Claude_Hooks\"\n\n[dependency-groups]\n  dev = [\"maturin>=1.7\"]\n\n[tool.uv.sources]\n  aeth-devkit = [{ index = \"SFTPyPI\" }]\n";
+    let existing = "[project]\n  name = \"Devkit_Claude_Hooks\"\n  dependencies = []\n\n[dependency-groups]\n  dev = [\"maturin>=1.7\"]\n\n[tool.uv.sources]\n  aeth-devkit = [{ index = \"SFTPyPI\" }]\n";
     for orig in [fresh, existing] {
       let out = merge_pyproject(orig, tpl, &own, &mut vec![]).unwrap();
-      assert!(!out.contains("devkit-claude-hooks"), "{out}");
       assert!(
-        out.contains("\"devkit-poe-complete\"") && out.contains("devkit-poe-complete = [{ index = \"SFTPyPI\" }]"),
+        !out.contains("devkit-claude-hooks>") && !out.contains("devkit-claude-hooks ="),
         "{out}"
       );
+      assert!(out.contains("\"devkit-poe-complete\""), "{out}");
+      assert!(out.contains("devkit-poe-complete = [{ index = \"SFTPyPI\" }]"), "{out}");
       assert!(out.contains("\"ruff>=0.15\""), "{out}");
+      assert!(out.contains("exclude = [\"devkit-claude-hooks\", \"dist\"]"), "{out}");
     }
   }
 

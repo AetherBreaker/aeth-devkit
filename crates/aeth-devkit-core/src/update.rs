@@ -2,8 +2,7 @@
 //!
 //! Every user-facing command ends by asking "is the running devkit the latest stable on the
 //! project's index?" and, if not, printing a one-line `note:` on stderr with the right fix.
-//! The index is consulted at most once a day — a fetch per Tab press or per `lock` would be
-//! wasteful — and the answer is remembered in a small JSON file, so the nag itself is free
+//! The index is consulted at most once a day — a fetch per command would be wasteful — and the answer is remembered in a small JSON file, so the nag itself is free
 //! and repeats on every run until the upgrade happens. Anything that goes wrong (no
 //! pyproject, no index entry, network down, garbage cache) silently produces no nag; an
 //! update reminder must never break the command it decorates.
