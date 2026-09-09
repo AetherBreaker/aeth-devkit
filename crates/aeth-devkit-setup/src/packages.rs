@@ -252,7 +252,7 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
   for p in &packages {
     let locked = locked_version(&lock_after, p.name).with_context(|| {
       format!(
-        "{} is not in uv.lock after locking; the merge lists it under [project].dependencies unless `[tool.setup-project].keep` holds that key back, and a project with Docker services must carry it",
+        "{} is not in uv.lock after locking; the merge lists it under [project].dependencies, and a project with Docker services must carry it",
         p.name
       )
     })?;

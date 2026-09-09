@@ -306,7 +306,7 @@ fn a_lagging_venv_is_synced_and_a_sync_that_changes_nothing_is_an_error() {
 }
 
 #[test]
-fn a_kept_dependency_list_is_named_when_the_package_is_missing_from_the_lock() {
+fn a_package_missing_from_the_lock_after_locking_is_an_error() {
   let dir = project(
     DOCKER_PYPROJECT,
     Some(&lock_with("1.4.0").replace("devkit-container", "something-else")),
@@ -316,7 +316,10 @@ fn a_kept_dependency_list_is_named_when_the_package_is_missing_from_the_lock() {
   let err = advance(dir.path(), &runner, &index, &venv(None), &[], false)
     .unwrap_err()
     .to_string();
-  assert!(err.contains("not in uv.lock after locking") && err.contains("keep"), "{err}");
+  assert!(
+    err.contains("not in uv.lock after locking") && err.contains("devkit-container"),
+    "{err}"
+  );
 }
 
 #[test]

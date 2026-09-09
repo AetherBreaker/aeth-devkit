@@ -94,9 +94,10 @@ design exists. Check items off in place; delete them once released.
       run (harmless except in a double-Ctrl-C abort, which drops uncommitted edits to it), and
       `devkit release` refuses on the missing publish step with advice to run `setup-project`,
       which cannot help there; it should say the project opts out.
-- [ ] Two devkit settings namespaces coexist: `[tool.setup-project].keep` and `[tool.devkit]`
-      (the table the split spec reserves for devkit-level settings). Reconcile before either
-      gains more keys.
+- [ ] Per-key opt-out for the pyproject merge, removed 2026-09-09: `[tool.setup-project].keep`
+      listed dotted key paths the merge never touched. Nothing used it, so it went with the
+      bloat. If a project ever needs to hold a template-managed key, re-add it as a
+      `[tool.devkit]` setting once the core merge is ironclad, not before.
 - [ ] Now that `vscode-extension-v1` has shipped: delete `.vscode/extension/` and
       `install.ps1` from aeth_ext and aeth_ext-2, and the
       `~/.vscode/extensions/local.[drekker-]add-to-runtime-base-*` junction (setup-project

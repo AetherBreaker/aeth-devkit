@@ -51,8 +51,8 @@ second run is a byte-for-byte no-op.
   differs from HEAD's: commit it, then rerun.
 - **pyproject merge** - Comment-preserving deep merge of the template into
   `pyproject.toml` — scalars replace, arrays union, dependency arrays match by normalized
-  package name so pins upgrade in place, `[tool.setup-project].keep` opts paths out,
-  `if-dep` / `if-docker` markers gate conditional tables. Managed keys: the dev dependency
+  package name so pins upgrade in place, `if-dep` / `if-docker` markers gate conditional
+  tables. Managed keys: the dev dependency
   group, `tool.coverage`, `tool.docker`, `tool.mypy.cache_dir`, `tool.poe.include_script`,
   `tool.pyright` (incl. `executionEnvironments`), `tool.pytest`, `tool.ruff` — incl.
   `lint.isort.known-first-party = ["{package}"]` and the import headings — and `tool.tombi`.

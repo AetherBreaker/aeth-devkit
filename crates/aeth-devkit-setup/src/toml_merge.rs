@@ -6,7 +6,7 @@ use toml_edit::{Array, DocumentMut, Item, Table, Value};
 use crate::context::{ProjectContext, dependency_name};
 
 const ADDED_COMMENT_PREFIX: &str = " # setup-project added: ";
-/// Common prefix of every marker comment, used to strip them all on the keep path.
+/// Common prefix of every marker comment, used to strip them all from a table copied whole.
 const MARKER: &str = "setup-project:";
 const IF_DEP_MARKER: &str = "setup-project: if-dep ";
 const IF_DOCKER_MARKER: &str = "setup-project: if-docker";
@@ -26,8 +26,7 @@ pub fn merge_pyproject(original: &str, template: &str, ctx: &ProjectContext, log
   let tpl: DocumentMut = template.parse().context("parsing template pyproject.toml")?;
   check_markers(tpl.as_table(), "")?;
 
-  let keep = keep_list(&doc);
-  let mut merger = Merger { ctx, keep: &keep, log };
+  let mut merger = Merger { ctx, log };
   merger.merge_table(doc.as_table_mut(), tpl.as_table(), "");
   remove_extends(&mut doc, merger.log);
   renumber_tables(doc.as_table_mut(), &mut 1);
@@ -81,28 +80,12 @@ fn check_markers(template: &Table, path: &str) -> Result<()> {
   Ok(())
 }
 
-/// `[tool.setup-project].keep` — dotted keys that must never be touched.
-fn keep_list(doc: &DocumentMut) -> Vec<String> {
-  doc
-    .get("tool")
-    .and_then(|t| t.get("setup-project"))
-    .and_then(|s| s.get("keep"))
-    .and_then(Item::as_array)
-    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
-    .unwrap_or_default()
-}
-
 struct Merger<'a> {
   ctx: &'a ProjectContext,
-  keep: &'a [String],
   log: &'a mut Vec<String>,
 }
 
 impl Merger<'_> {
-  fn kept(&self, path: &str) -> bool {
-    self.keep.iter().any(|k| k == path || path.starts_with(&format!("{k}.")))
-  }
-
   fn merge_table(&mut self, target: &mut Table, template: &Table, path: &str) {
     for (key, titem) in template.iter() {
       let child = if path.is_empty() {
@@ -110,9 +93,6 @@ impl Merger<'_> {
       } else {
         format!("{path}.{key}")
       };
-      if self.kept(&child) {
-        continue;
-      }
       if let Some(dep) = conditional_dep(template, key)
         && !self.ctx.has_dependency(&dep)
       {
@@ -137,7 +117,7 @@ impl Merger<'_> {
           if needs_insert {
             if ttable.is_implicit() || has_only_subtables(ttable) {
               // A missing intermediate table (e.g. `tool`) is created implicit, so no bare
-              // header is emitted, and recursed into so conditional/keep rules still apply
+              // header is emitted, and recursed into so the conditional rules still apply
               // to its children; the block after this makes it explicit when the template
               // writes the header.
               let mut t = Table::new();
@@ -514,13 +494,12 @@ mod tests {
   }
 
   #[test]
-  fn keep_list_and_conditional_tables() {
-    let orig = "[tool.setup-project]\n  keep = [\"tool.pyright.strict\"]\n[tool.pyright]\n  strict = false\n";
+  fn a_conditional_table_follows_the_dependency() {
+    let orig = "[tool.pyright]\n  strict = false\n";
     let tpl = "[tool.pyright]\n  strict = true\n\n# setup-project: if-dep mypy\n[tool.mypy]\n  cache_dir = \".cache/mypy\"\n";
-    let mut log = vec![];
-    let out = merge_pyproject(orig, tpl, &ctx(&[]), &mut log).unwrap();
-    assert!(out.contains("strict = false"));
-    assert!(!out.contains("tool.mypy"));
+    let out = merge_pyproject(orig, tpl, &ctx(&[]), &mut vec![]).unwrap();
+    assert!(out.contains("strict = true"), "{out}");
+    assert!(!out.contains("tool.mypy"), "{out}");
     let out2 = merge_pyproject(orig, tpl, &ctx(&["mypy"]), &mut vec![]).unwrap();
     assert!(out2.contains("[tool.mypy]"), "{out2}");
   }

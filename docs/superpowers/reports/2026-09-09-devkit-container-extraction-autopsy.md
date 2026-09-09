@@ -349,8 +349,6 @@ project-specific edits, or a `[tool.devkit]` opt-out). Unchanged by choice.
 
 ### 5.2 Left as designed, on record
 
-- `[tool.setup-project].keep` on `project.dependencies` makes a Docker project's run fail: the
-  merge cannot add the container and the package step requires it. The error names the cause.
 - On a committing run the "lock pins another devkit" check reads HEAD's lock, so a lock the
   user moved but has not committed is refused, with the remedy in the message.
 - A dry run cannot preview the floor or lock change; that needs `uv lock`.
