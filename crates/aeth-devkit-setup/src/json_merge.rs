@@ -468,10 +468,19 @@ fn matches_key(entry: &Value, key: &str) -> bool {
   hook_key(entry).as_deref() == Some(key) || legacy_hook_key(entry).as_deref() == Some(key)
 }
 
-/// The `<name>` in a `… hook <name> …` command, which identifies a devkit-owned entry
-/// regardless of which binary path precedes it.
+/// The `<name>` of a devkit hook command: `… devkit-hook <name>` (the binary, possibly a
+/// quoted venv path) or, from before the hooks had their own package, `… hook <name>`. One
+/// entry per hook name whichever spelling wrote it, so migration updates in place.
 fn hook_key(entry: &Value) -> Option<String> {
   let cmd = entry.get("command")?.as_str()?;
+  let words: Vec<&str> = cmd.split_whitespace().collect();
+  let is_hook_bin = |w: &str| {
+    let base = w.trim_matches(['"', '\'']).rsplit(['/', '\\']).next().unwrap_or("");
+    base == "devkit-hook" || base == "devkit-hook.exe"
+  };
+  if let Some(i) = words.iter().position(|w| is_hook_bin(w)) {
+    return words.get(i + 1).map(|w| w.to_string());
+  }
   let (_, rest) = cmd.split_once(" hook ")?;
   rest.split_whitespace().next().map(str::to_string)
 }
@@ -563,6 +572,32 @@ mod hooks_tests {
     assert_eq!(target["Stop"][0]["hooks"][0]["timeout"], 30);
     assert_eq!(target["Stop"][0]["hooks"][0]["command"], "\"$D/devkit\" hook stop-ruff");
     assert!(log.iter().any(|l| l.contains("stop-ruff")), "{log:?}");
+  }
+
+  #[test]
+  fn a_pre_split_hook_line_is_updated_in_place_to_the_new_binary() {
+    let template = r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/devkit-hook.exe\" stop-ruff", "shell": "bash", "timeout": 30}]}]}}"#;
+    let original = r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/devkit.exe\" hook stop-ruff", "shell": "bash", "timeout": 30}]}]}}"#;
+    let out = merge_claude_settings(Some(original), template, &mut vec![]).unwrap();
+    let doc: Value = serde_json::from_str(&out).unwrap();
+    let stop = doc["hooks"]["Stop"][0]["hooks"].as_array().unwrap();
+    assert_eq!(stop.len(), 1, "one entry per hook, updated in place: {out}");
+    assert_eq!(
+      stop[0]["command"],
+      "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/devkit-hook.exe\" stop-ruff"
+    );
+    assert_eq!(
+      hook_key(&json!({"command": "uv run devkit-hook pre-bash-protect-deps"})).as_deref(),
+      Some("pre-bash-protect-deps")
+    );
+    assert_eq!(
+      hook_key(&json!({"command": "\"$D/devkit-hook\" stop-clean"})).as_deref(),
+      Some("stop-clean")
+    );
+    assert_eq!(
+      hook_key(&json!({"command": "uv run devkit hook stop-clean"})).as_deref(),
+      Some("stop-clean")
+    );
   }
 
   #[test]

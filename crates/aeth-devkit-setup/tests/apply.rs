@@ -645,8 +645,8 @@ fn claude_config_files_are_created_and_create_if_missing_ones_are_never_rewritte
   let shared: serde_json::Value = serde_json::from_str(&read(root, ".claude/settings.json")).unwrap();
   let local: serde_json::Value = serde_json::from_str(&read(root, ".claude/settings.local.json")).unwrap();
   let cmd = local["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
-  assert!(cmd.ends_with(" hook stop-ruff"), "{cmd}");
-  assert!(cmd.starts_with("uv run devkit"), "no venv in fixture → uv fallback: {cmd}");
+  assert!(cmd.ends_with("devkit-hook stop-ruff"), "{cmd}");
+  assert!(cmd.starts_with("uv run devkit-hook"), "no venv in fixture → uv fallback: {cmd}");
   assert!(local["env"]["PYTHONPYCACHEPREFIX"].as_str().unwrap().contains(".cache"));
   // Nothing machine-specific may reach the committed half.
   assert!(shared.get("hooks").is_none(), "hooks belong in the local half: {shared}");
@@ -664,7 +664,7 @@ fn the_committed_settings_carry_no_absolute_or_os_specific_path() {
   // runs a different OS.
   let dir = make_project();
   let root = dir.path();
-  write(root, ".venv/Scripts/devkit.exe", "");
+  write(root, ".venv/Scripts/devkit-hook.exe", "");
   run(root, false).unwrap();
 
   let shared = read(root, ".claude/settings.json");
@@ -678,22 +678,22 @@ fn the_committed_settings_carry_no_absolute_or_os_specific_path() {
   }
   // The local half is where those belong, and it is ignored by the shipped gitignore.
   let local = read(root, ".claude/settings.local.json");
-  assert!(local.contains(".venv/Scripts/devkit.exe"), "{local}");
+  assert!(local.contains(".venv/Scripts/devkit-hook.exe"), "{local}");
   assert!(read(root, ".gitignore").contains(".claude/settings.local.json"));
 }
 
 #[test]
-fn claude_md_and_workflow_are_created_when_missing_and_devkit_bin_prefers_the_venv() {
+fn claude_md_and_workflow_are_created_when_missing_and_hook_bin_prefers_the_venv() {
   let dir = make_project();
   let root = dir.path();
-  write(root, ".venv/Scripts/devkit.exe", "");
+  write(root, ".venv/Scripts/devkit-hook.exe", "");
 
   run(root, false).unwrap();
   assert!(read(root, ".claude/CLAUDE.md").starts_with("@../AGENTS.md\n"));
   assert!(read(root, ".github/workflows/claude.yml").contains("claude-code-action@v1"));
   let local: serde_json::Value = serde_json::from_str(&read(root, ".claude/settings.local.json")).unwrap();
   let cmd = local["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
-  assert_eq!(cmd, "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/devkit.exe\" hook pre-edit-protect");
+  assert_eq!(cmd, "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/devkit-hook.exe\" pre-edit-protect");
 }
 
 #[test]
