@@ -15,12 +15,13 @@ pub struct Shells {
   pub bash: bool,
 }
 
-/// Which shells `PATH` can start: `pwsh` or Windows PowerShell counts as PowerShell, any
-/// `bash` counts (Git Bash on Windows, the login shell elsewhere).
+/// Which shells `PATH` can start: Windows PowerShell or `pwsh.exe` counts as PowerShell (the
+/// installer resolves `$PROFILE` through `powershell`, so a Linux `pwsh` would only make the
+/// whole install fail), any `bash` counts (Git Bash on Windows, the login shell elsewhere).
 pub fn shells_on(path: &OsStr) -> Shells {
   let has = |names: &[&str]| std::env::split_paths(path).any(|d| names.iter().any(|n| d.join(n).is_file()));
   Shells {
-    powershell: has(&["pwsh.exe", "powershell.exe", "pwsh"]),
+    powershell: has(&["powershell.exe", "pwsh.exe"]),
     bash: has(&["bash.exe", "bash"]),
   }
 }
@@ -37,9 +38,13 @@ pub fn binary(root: &Path) -> Option<PathBuf> {
 }
 
 /// Run the install for `shells`; `--dry-run` on a dry run, since it writes to the home
-/// directory rather than the project. The installer's "  - …" lines become notes, and its
-/// "Nothing to do" is silence, so a routine run says nothing about completion.
+/// directory rather than the project. The installer's "  - …" lines become notes (worded as
+/// what a plain run would do on a dry run, since the installer's lines read as done either
+/// way), and its "Nothing to do" is silence, so a routine run says nothing about completion.
 pub fn install(root: &Path, binary: &Path, shells: Shells, runner: &dyn Runner, dry_run: bool, changes: &mut Changes) {
+  if shells == Shells::default() {
+    return;
+  }
   let mut args: Vec<String> = vec!["install".into()];
   if shells.powershell {
     args.push("--powershell".into());
@@ -47,16 +52,24 @@ pub fn install(root: &Path, binary: &Path, shells: Shells, runner: &dyn Runner, 
   if shells.bash {
     args.push("--bash".into());
   }
-  if args.len() == 1 {
-    return;
-  }
   if dry_run {
     args.push("--dry-run".into());
   }
   match runner.run_capture(&binary.to_string_lossy(), &args, root) {
     Ok(out) if out.success() => {
+      let prefix = if dry_run {
+        "shell completion would change"
+      } else {
+        "shell completion"
+      };
+      let before = changes.notes.len();
       for line in out.stdout.lines().filter_map(|l| l.strip_prefix("  - ")) {
-        changes.notes.push(format!("shell completion: {line}"));
+        changes.notes.push(format!("{prefix}: {line}"));
+      }
+      if !dry_run && changes.notes.len() > before {
+        changes
+          .notes
+          .push("shell completion changed: open a new shell for it to take effect".into());
       }
     }
     Ok(out) => changes
@@ -83,6 +96,15 @@ mod tests {
         powershell: false,
         bash: true
       }
+    );
+    std::fs::write(dir.path().join("pwsh"), "").unwrap();
+    assert_eq!(
+      shells_on(&path),
+      Shells {
+        powershell: false,
+        bash: true
+      },
+      "a Linux pwsh is not one the installer can configure"
     );
     std::fs::write(dir.path().join("pwsh.exe"), "").unwrap();
     assert_eq!(
@@ -126,7 +148,8 @@ mod tests {
       changes.notes,
       vec![
         "shell completion: created C:/home/.local/share/devkit/poe-completion.ps1",
-        "shell completion: added: $c = …"
+        "shell completion: added: $c = …",
+        "shell completion changed: open a new shell for it to take effect"
       ]
     );
 
@@ -151,6 +174,20 @@ mod tests {
     );
     assert_eq!(r.calls_for(&bin.to_string_lossy())[0], vec!["install", "--bash", "--dry-run"]);
     assert!(changes.notes.is_empty(), "{:?}", changes.notes);
+
+    let r = RecordingRunner::new(0);
+    r.script(
+      &bin.to_string_lossy(),
+      &["install"],
+      0,
+      "Would change:\n  - created C:/home/bash_completion.d/poe.bash\n",
+    );
+    let mut changes = Changes::new(true);
+    install(root.path(), &bin, shells, &r, true, &mut changes);
+    assert_eq!(
+      changes.notes,
+      vec!["shell completion would change: created C:/home/bash_completion.d/poe.bash"]
+    );
 
     let r = RecordingRunner::new(0);
     let mut changes = Changes::new(false);

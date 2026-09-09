@@ -34,7 +34,8 @@ pub struct Changes {
   /// *after* a successful run changes nothing on the next one, so the managed files would
   /// stay invisible to git forever.
   pub managed: Vec<PathBuf>,
-  /// Advisory `note:` lines — things the user may want to clean up by hand. Never written.
+  /// Advisory `note:` lines — things the user may want to clean up by hand, or what a step
+  /// changed outside the project. Never written.
   pub notes: Vec<String>,
   /// `warning:` lines (stderr): a managed file devkit deliberately left whole because the
   /// project's layout puts it out of reach, not because anything is wrong with it. Never

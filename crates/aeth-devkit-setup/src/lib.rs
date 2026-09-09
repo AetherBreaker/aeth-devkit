@@ -348,15 +348,19 @@ pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps:
 
   // 15. Shell completion for poe, from the venv's `devkit-complete` the package step
   //     installed (1b), for the shells on PATH. Last, and outside the project: it writes to
-  //     the home directory, so a dry run asks the installer for its own dry run.
+  //     the home directory, so a dry run asks the installer for its own dry run. A dry run
+  //     before adoption has no binary yet; 1b's note already says a plain run adds it.
   match completion::binary(&ctx.root) {
     Some(bin) => {
       let shells = completion::shells_on(&std::env::var_os("PATH").unwrap_or_default());
       completion::install(&ctx.root, &bin, shells, deps.docker.runner, dry_run, &mut changes);
     }
-    None => changes
-      .notes
-      .push("devkit-complete is not installed in this venv; shell completion was not installed".into()),
+    None if dry_run => {}
+    None => changes.notes.push(
+      "devkit-complete is not in the project's environment, so shell completion was not installed; is the environment \
+       elsewhere (UV_PROJECT_ENVIRONMENT)?"
+        .into(),
+    ),
   }
 
   Ok(changes)
