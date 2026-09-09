@@ -201,9 +201,20 @@ pub fn run_outcome(args: &Args, deps: &Deps) -> Result<Outcome> {
       );
       return Ok(Outcome::Aborted);
     }
-    if !args.dry_run && !confirm_force(deps.prompt, force, "Remove these and continue? Type 'force' to continue:")? {
-      eprintln!("aborted: artefacts for v{} already exist", target.new);
-      return Ok(Outcome::Aborted);
+    // Declined, or the input ended before an answer: a normal exit (1), as at the
+    // dirty-tree prompt.
+    if !args.dry_run {
+      let go = match confirm_force(deps.prompt, force, "Remove these and continue? Type 'force' to continue:") {
+        Ok(go) => go,
+        Err(e) => {
+          eprintln!("{e:#}");
+          false
+        }
+      };
+      if !go {
+        eprintln!("aborted: artefacts for v{} already exist", target.new);
+        return Ok(Outcome::Aborted);
+      }
     }
     // The probe above may have taken a while; do not start deleting after a Ctrl-C.
     deps.check_interrupt()?;
