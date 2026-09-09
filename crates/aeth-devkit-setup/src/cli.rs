@@ -31,10 +31,10 @@ pub struct Args {
   #[arg(long)]
   pub no_commit: bool,
 
-  /// Answer `replace all` to every Docker replace prompt up front (adding a listed but
-  /// absent compose service is still asked).
-  #[arg(long)]
-  pub replace_docker: bool,
+  /// Accept every proposed change without asking (Docker files and compose services
+  /// included); the run then needs no standard input.
+  #[arg(short = 'y', long)]
+  pub yes: bool,
 
   /// Use the VS Code diff for Docker consent even when TERM_PROGRAM is not "vscode".
   #[arg(long, conflicts_with = "no_vscode")]
@@ -45,14 +45,16 @@ pub struct Args {
   pub no_vscode: bool,
 }
 
-/// [`run`], refused first when stdin is not a terminal unless the run is `--dry-run` or
-/// `--check`. A headless run cannot answer a Docker prompt and would commit on nobody's
-/// behalf, so a pipeline that reaches for anything else fails fast instead of silently
-/// keeping or applying. Tests call [`run`] directly, which has no such check.
+/// [`run`], refused first when there is no standard input to answer a prompt from (see
+/// `prompt::stdin_present`) unless nothing will be asked: `--yes`, `--dry-run`, `--check`.
+/// A pipe counts as input: its lines answer the prompts, and running dry mid-way cancels
+/// the run. A launch with no input at all would otherwise block on a question nobody can
+/// answer, so it fails fast instead. Tests call [`run`] directly, which has no such check.
 pub fn run_reject_headless(args: &Args) -> Result<ExitCode> {
-  // `IsTerminal` is how std asks "is a human here?".
-  if !std::io::IsTerminal::is_terminal(&std::io::stdin()) && !(args.dry_run || args.check) {
-    bail!("setup-project needs a terminal to prompt and commit; without one only --dry-run or --check are allowed");
+  if !(args.yes || args.dry_run || args.check) && !aeth_devkit_core::prompt::stdin_present() {
+    bail!(
+      "setup-project has no standard input to answer its prompts from; pass -y/--yes to accept every change, or use --dry-run/--check"
+    );
   }
   run(args)
 }
@@ -84,10 +86,8 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   let dry_run = args.dry_run || args.check;
   let templates = crate::templates::locate(args.templates_dir.as_deref())?;
   let root = crate::context::strip_verbatim(args.root.canonicalize().unwrap_or(args.root.clone()));
-  // `IsTerminal` is how std asks "is a human here?": prompts only make sense on a tty.
-  // `run_reject_headless` has already refused a headless non-dry run, so the no-tty
-  // consent arm below is unreachable from the binaries; `KeepAll` is what a bare `run`
-  // (tests) falls to rather than a prompt nobody can answer.
+  // `IsTerminal` is how std asks "is a human here?": VS Code is only worth opening when
+  // one is, not when a pipe is scripting the answers.
   let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
   let runner = aeth_devkit_core::process::SystemRunner;
 
@@ -96,9 +96,9 @@ pub fn run(args: &Args) -> Result<ExitCode> {
     println!("note: {e:#}; a Ctrl-C will not wait for a write in progress to finish.");
   }
   // VS Code is consulted only where a human could answer in the terminal anyway: never
-  // for --check (hooks and CI), never without a tty, never when --replace-docker has
-  // already answered. It runs before staging so a "reload and rerun" stop touches nothing.
-  let vs = if args.no_vscode || args.check || !tty || args.replace_docker {
+  // for --check (hooks and CI), never without a tty, never when --yes has already
+  // answered. It runs before staging so a "reload and rerun" stop touches nothing.
+  let vs = if args.no_vscode || args.check || !tty || args.yes {
     None
   } else {
     let opts = crate::vscode::Options::from_env(args.vscode, !dry_run, &root);
@@ -151,11 +151,10 @@ pub fn run(args: &Args) -> Result<ExitCode> {
         runner: &runner,
         prompt: &aeth_devkit_core::prompt::StdinPrompt,
         reviewer: reviewer.as_ref().map(|r| r as &dyn crate::vscode::protocol::Reviewer),
-        mode: match (dry_run, args.replace_docker, tty) {
-          (true, _, _) => crate::docker::Mode::DryRun,
-          (false, true, _) => crate::docker::Mode::ReplaceAll,
-          (false, false, true) => crate::docker::Mode::Ask,
-          (false, false, false) => crate::docker::Mode::KeepAll,
+        mode: match (dry_run, args.yes) {
+          (true, _) => crate::docker::Mode::DryRun,
+          (false, true) => crate::docker::Mode::Yes,
+          (false, false) => crate::docker::Mode::Ask,
         },
       },
       index: &index,

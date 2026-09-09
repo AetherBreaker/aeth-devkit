@@ -30,8 +30,8 @@ for r in devkit-container devkit-vscode devkit-claude-hooks devkit-poe-complete;
 
 ## Bring each repository up
 
-`setup-project` prompts and commits, so it needs a real terminal: run this from a shell, not
-from a tool with piped stdin.
+`setup-project` prompts before replacing a Docker file: run this from a shell, or pass
+`-y` to accept every change (a run with no stdin at all is refused without it).
 
 ```bash
 for r in aeth-devkit devkit-container devkit-vscode devkit-claude-hooks devkit-poe-complete; do

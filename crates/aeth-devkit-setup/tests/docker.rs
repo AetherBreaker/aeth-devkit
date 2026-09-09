@@ -87,6 +87,12 @@ fn deps<'a>(docker: Deps<'a>, index: &'a StubIndexClient, venv: &'a StubVenv) ->
 }
 
 fn run(root: &Path, mode: Mode, answers: &[&str], dry_run: bool) -> (Changes, ScriptedPrompt, RecordingRunner) {
+  let (changes, prompt, runner) = try_run(root, mode, answers, dry_run);
+  (changes.unwrap(), prompt, runner)
+}
+
+/// [`run`] without the unwrap: running out of scripted answers is the run cancelling.
+fn try_run(root: &Path, mode: Mode, answers: &[&str], dry_run: bool) -> (anyhow::Result<Changes>, ScriptedPrompt, RecordingRunner) {
   let prompt = ScriptedPrompt::new(answers);
   let runner = RecordingRunner::new(0);
   runner.script("gh", &["api"], 0, "v1.1.0\nv1.0.0\n");
@@ -100,7 +106,7 @@ fn run(root: &Path, mode: Mode, answers: &[&str], dry_run: bool) -> (Changes, Sc
       mode,
     };
     let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
-    aeth_devkit_setup::run_with(&ctx, &templates(), dry_run, &deps(docker, &index, &dirs)).unwrap()
+    aeth_devkit_setup::run_with(&ctx, &templates(), dry_run, &deps(docker, &index, &dirs))
   };
   (changes, prompt, runner)
 }
@@ -222,18 +228,22 @@ fn replace_all_covers_the_compose_edits_too() {
 }
 
 #[test]
-fn non_interactive_keeps_everything_and_says_so() {
+fn input_ending_before_an_answer_cancels_the_run_and_yes_needs_none() {
   let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
   let root = dir.path();
   run(root, Mode::Ask, &[], false);
   write(root, "docker/Dockerfile", "FROM scratch\n");
-  let (changes, _, _) = run(root, Mode::KeepAll, &[], false);
-  assert!(changes.is_empty());
-  assert!(changes.notes.iter().any(|n| n.contains("no terminal")), "{:?}", changes.notes);
-  assert_eq!(read(root, "docker/Dockerfile"), "FROM scratch\n");
-  // --replace-docker without a terminal applies files.
-  let (changes, _, _) = run(root, Mode::ReplaceAll, &[], false);
+  // No answer left for the Dockerfile question: an error, not a silent keep.
+  let (result, prompt, _) = try_run(root, Mode::Ask, &[], false);
+  let err = result.unwrap_err().to_string();
+  assert!(err.contains("no scripted answer"), "{err}");
+  assert_eq!(prompt.asked.borrow().len(), 1);
+  assert_eq!(read(root, "docker/Dockerfile"), "FROM scratch\n", "the kept file is untouched");
+  // `--yes` applies everything without a question.
+  let (changes, prompt, _) = run(root, Mode::Yes, &[], false);
+  assert!(prompt.asked.borrow().is_empty());
   assert!(!changes.is_empty());
+  assert_ne!(read(root, "docker/Dockerfile"), "FROM scratch\n");
 }
 
 #[test]
@@ -344,30 +354,29 @@ fn a_missing_service_is_its_own_diff_and_sidecars_are_untouched() {
 }
 
 #[test]
-fn adding_a_missing_service_always_needs_a_human() {
+fn adding_a_missing_service_is_asked_past_replace_all_but_not_past_yes() {
   let dir = project(&["demo-app", "worker"], "https://github.com/O/Demo.git");
   let root = dir.path();
-  write(
-    root,
-    "docker/compose.yaml",
-    "services:
+  let bare = "services:
   demo-app:
     container_name: demo-app
-",
-  );
-  // Nobody to ask: nothing added and the note says so; a dry run still counts the add as
-  // drift.
-  let (changes, prompt, _) = run(root, Mode::KeepAll, &[], false);
+";
+  write(root, "docker/compose.yaml", bare);
+  // A dry run counts the add as drift.
+  let (dry, prompt, _) = run(root, Mode::DryRun, &[], true);
   assert!(prompt.asked.borrow().is_empty());
-  assert!(!read(root, "docker/compose.yaml").contains("  worker:"));
-  assert!(changes.notes.iter().any(|n| n.contains("no terminal")), "{:?}", changes.notes);
-  let (dry, _, _) = run(root, Mode::DryRun, &[], true);
   assert!(
     dry.files.iter().any(|f| f.details.iter().any(|d| d == "added service worker")),
     "{dry:?}"
   );
-  // `replace all` (and so `--replace-docker`) covers shown diffs only: the add is still
-  // asked, and `replace all` is not on offer there.
+  assert_eq!(read(root, "docker/compose.yaml"), bare);
+  // `--yes` adds it without a question.
+  let (_, prompt, _) = run(root, Mode::Yes, &[], false);
+  assert!(prompt.asked.borrow().is_empty());
+  assert!(read(root, "docker/compose.yaml").contains("\n  worker:\n    container_name: worker\n"));
+  write(root, "docker/compose.yaml", bare);
+  // A typed `replace all` covers shown diffs only: the add is still asked, and `replace
+  // all` is not on offer there.
   let (_, prompt, _) = run(root, Mode::ReplaceAll, &[""], false);
   let asked = prompt.asked.borrow().clone();
   assert_eq!(
@@ -380,14 +389,13 @@ fn adding_a_missing_service_always_needs_a_human() {
     "edits applied, add kept: {out}"
   );
   // A human answering `replace` gets the service and clears the drift.
-  let (changes, _, _) = run(root, Mode::Ask, &["replace"], false);
+  run(root, Mode::Ask, &["replace"], false);
   assert!(read(root, "docker/compose.yaml").contains(
     "
   worker:
     container_name: worker
 "
   ));
-  assert!(!changes.notes.iter().any(|n| n.contains("no terminal")), "{:?}", changes.notes);
   assert!(run(root, Mode::DryRun, &[], true).0.is_empty(), "--check agrees afterwards");
 }
 
