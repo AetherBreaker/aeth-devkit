@@ -202,6 +202,7 @@ mod tests {
       python_dir: "src".into(),
       has_rust: false,
       publish_index: None,
+      devkit_index: "SFTPyPI".into(),
     }
   }
 

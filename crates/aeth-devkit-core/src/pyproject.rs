@@ -212,7 +212,8 @@ pub fn replace_requirement(doc: &mut DocumentMut, req: &Requirement, new_spec: &
 
 /// Index name declared for `name` under `tool.uv.sources` (a table, inline table, or an
 /// array of either).
-fn source_index_name(doc: &DocumentMut, want: &str) -> Option<String> {
+pub fn source_index_name(doc: &DocumentMut, name: &str) -> Option<String> {
+  let want = normalize_dist_name(name);
   let sources = doc.get("tool")?.get("uv")?.get("sources")?.as_table_like()?;
   let (_, source) = sources.iter().find(|(k, _)| normalize_dist_name(k) == want)?;
   let from_table = |t: &dyn toml_edit::TableLike| t.get("index").and_then(Item::as_str).map(str::to_string);
@@ -228,7 +229,7 @@ fn source_index_name(doc: &DocumentMut, want: &str) -> Option<String> {
 /// The simple-index URL uv is told to use for `name`: `tool.uv.sources.<name>` names an
 /// index, and `[[tool.uv.index]]` maps that name to a URL.
 pub fn index_url_for(doc: &DocumentMut, name: &str) -> Option<String> {
-  let index_name = source_index_name(doc, &normalize_dist_name(name))?;
+  let index_name = source_index_name(doc, name)?;
   let url_of = |t: &dyn toml_edit::TableLike| -> Option<String> {
     (t.get("name").and_then(Item::as_str) == Some(index_name.as_str()))
       .then(|| t.get("url").and_then(Item::as_str).map(str::to_string))

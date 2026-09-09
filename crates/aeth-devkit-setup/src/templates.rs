@@ -1,7 +1,6 @@
 //! Locating and loading templates, with placeholder substitution.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 
@@ -33,8 +32,9 @@ pub fn template_file_name(target: &str) -> String {
 
 /// Read a template (by its target name, e.g. `pyproject.toml`) and substitute
 /// `{project_root}` / `{package}` / `{python_dir}` / `{devkit_bin}` / `{publish_index}` /
-/// `{publish_index_key}` / `{git_repo}`. `{git_tag}` and `{service}` are deliberately left
-/// in place for the Docker scaffold, which fills them per block.
+/// `{publish_index_key}` / `{devkit_index}` / `{git_repo}`. `{git_tag}` and `{service}` are
+/// deliberately left in place for the Docker scaffold, which fills them per block, and
+/// `{latest}` for the pyproject merger.
 pub fn load(templates_dir: &Path, name: &str, ctx: &ProjectContext, escape: Escape) -> Result<String> {
   let path = templates_dir.join(template_file_name(name));
   let text = std::fs::read_to_string(&path).with_context(|| format!("reading template {}", path.display()))?;
@@ -75,6 +75,7 @@ pub fn substitute(text: &str, ctx: &ProjectContext, escape: Escape) -> String {
           .unwrap_or_default(),
       ),
     )
+    .replace("{devkit_index}", &esc(&ctx.devkit_index))
     .replace("{git_repo}", &esc(&git_repo(ctx)))
 }
 
@@ -138,10 +139,18 @@ pub fn locate(explicit: Option<&Path>) -> Result<PathBuf> {
   if let Ok(p) = std::env::var("DEVKIT_TEMPLATES") {
     return existing_dir(PathBuf::from(p), "DEVKIT_TEMPLATES");
   }
-  if let Some(p) = installed_package_dir("aeth_devkit") {
-    let templates = p.join("templates");
-    if templates.is_dir() {
-      return Ok(templates);
+  // Devkit's own package data lives beside the interpreter this binary was installed with
+  // (the venv's `Scripts/` or `bin/`), else PATH's; a project's packages are looked up in
+  // the project's venv instead (see `packages::SystemVenv`).
+  if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+    let found = [exe_dir.join("python.exe"), exe_dir.join("python"), PathBuf::from("python")]
+      .iter()
+      .find_map(|py| crate::packages::probe(py, &crate::packages::DEVKIT));
+    if let Some(found) = found {
+      let templates = found.dir.join("templates");
+      if templates.is_dir() {
+        return Ok(templates);
+      }
     }
   }
   let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -162,27 +171,6 @@ fn existing_dir(p: PathBuf, what: &str) -> Result<PathBuf> {
   } else {
     bail!("{what}: {} is not a directory", p.display())
   }
-}
-
-/// Where the Python interpreter that lives alongside this binary (the venv's `Scripts/` or
-/// `bin/`) has `import_name` installed: the package directory, or `None` when it is not
-/// importable there. The right lookup for devkit's own package data; a project's packages
-/// live in the project's venv (see `packages::SystemPackageDirs`).
-pub fn installed_package_dir(import_name: &str) -> Option<PathBuf> {
-  let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-  [exe_dir.join("python.exe"), exe_dir.join("python"), PathBuf::from("python")]
-    .iter()
-    .find_map(|py| package_dir_via(py, import_name))
-}
-
-/// `import_name`'s package directory as the interpreter at `python` sees it; `None` when
-/// that interpreter cannot be spawned (e.g. `python.exe` on Unix) or cannot import it.
-pub fn package_dir_via(python: &Path, import_name: &str) -> Option<PathBuf> {
-  let code = format!("import {import_name}, os; print(os.path.dirname({import_name}.__file__))");
-  // `-X utf8`: a piped stdout is otherwise the ANSI code page, which mangles a non-ASCII path.
-  let out = Command::new(python).args(["-X", "utf8", "-c", &code]).output().ok()?;
-  let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-  (out.status.success() && p.is_dir()).then_some(p)
 }
 
 #[cfg(test)]
@@ -219,6 +207,7 @@ mod devkit_bin_tests {
       python_dir: "src".into(),
       has_rust: false,
       publish_index: None,
+      devkit_index: "SFTPyPI".into(),
     }
   }
 
@@ -263,7 +252,15 @@ mod publish_index_tests {
       python_dir: "src".into(),
       has_rust: false,
       publish_index: publish_index.map(str::to_string),
+      devkit_index: "SFTPyPI".into(),
     }
+  }
+
+  #[test]
+  fn the_devkit_index_placeholder() {
+    let mut c = ctx(None);
+    c.devkit_index = "Internal".into();
+    assert_eq!(substitute("{devkit_index}", &c, Escape::Toml), "Internal");
   }
 
   #[test]
@@ -301,6 +298,7 @@ mod docker_placeholder_tests {
       python_dir: "src".into(),
       has_rust: false,
       publish_index: None,
+      devkit_index: "SFTPyPI".into(),
       name: "proj".into(),
       version: Some("1.2.3".into()),
       origin: origin.map(str::to_string),

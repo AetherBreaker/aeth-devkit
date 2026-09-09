@@ -44,6 +44,9 @@ pub struct Changes {
   /// shape the engine does not model). Never written, never committed; `--check` fails on
   /// them, since a listed service is a declared intent to have the file managed.
   pub problems: Vec<String>,
+  /// The package step ran `uv sync`; a committing run resyncs after the replay when the
+  /// lock it synced was HEAD's copy rather than the user's (see `packages::resync_after_replay`).
+  pub venv_synced: bool,
 }
 
 impl Changes {
@@ -57,6 +60,7 @@ impl Changes {
       notes: Vec::new(),
       warnings: Vec::new(),
       problems: Vec::new(),
+      venv_synced: false,
     }
   }
 

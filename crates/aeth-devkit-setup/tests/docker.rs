@@ -8,7 +8,7 @@ use aeth_devkit_core::process::RecordingRunner;
 use aeth_devkit_core::prompt::ScriptedPrompt;
 use aeth_devkit_setup::changes::Changes;
 use aeth_devkit_setup::docker::{Deps, Mode};
-use aeth_devkit_setup::packages::StubPackageDirs;
+use aeth_devkit_setup::packages::{Installed, StubVenv};
 
 fn fixtures() -> PathBuf {
   Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("docker")
@@ -60,21 +60,24 @@ fn project(services: &[&str], origin: &str) -> tempfile::TempDir {
   dir
 }
 
-/// The venv as the tests see it: the container package's template is the fixture copy.
-fn package_dirs() -> StubPackageDirs {
+/// The venv as the tests see it: the container package at the version the fixture lock
+/// names, its template the fixture copy.
+fn package_dirs() -> StubVenv {
   let mut map = std::collections::HashMap::new();
-  map.insert("devkit_container".to_string(), fixtures());
-  StubPackageDirs(map)
+  map.insert(
+    "devkit_container".to_string(),
+    Installed {
+      dir: fixtures(),
+      version: "1.4.0".into(),
+    },
+  );
+  StubVenv(map)
 }
 
 /// The setup-level `Deps` around the Docker collaborators: no index answers, the fixture
-/// package directory.
-fn deps<'a>(docker: Deps<'a>, index: &'a StubIndexClient, dirs: &'a StubPackageDirs) -> aeth_devkit_setup::Deps<'a> {
-  aeth_devkit_setup::Deps {
-    docker,
-    index,
-    packages: dirs,
-  }
+/// venv.
+fn deps<'a>(docker: Deps<'a>, index: &'a StubIndexClient, venv: &'a StubVenv) -> aeth_devkit_setup::Deps<'a> {
+  aeth_devkit_setup::Deps { docker, index, venv }
 }
 
 fn run(root: &Path, mode: Mode, answers: &[&str], dry_run: bool) -> (Changes, ScriptedPrompt, RecordingRunner) {
@@ -133,7 +136,7 @@ fn without_the_container_package_the_dockerfile_is_skipped_with_a_note() {
   let runner = RecordingRunner::new(0);
   runner.script("gh", &["api"], 0, "v1.1.0\n");
   let index = StubIndexClient { versions: vec![] };
-  let dirs = StubPackageDirs::default();
+  let dirs = StubVenv::default();
   let docker = Deps {
     runner: &runner,
     prompt: &prompt,

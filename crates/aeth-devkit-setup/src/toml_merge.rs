@@ -1,6 +1,6 @@
 //! Comment-preserving deep merge of the template `pyproject.toml` into a project's.
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
 
 use crate::context::{ProjectContext, dependency_name};
@@ -24,6 +24,7 @@ pub const LATEST: &str = "{latest}";
 pub fn merge_pyproject(original: &str, template: &str, ctx: &ProjectContext, log: &mut Vec<String>) -> Result<String> {
   let mut doc: DocumentMut = original.parse().context("parsing project pyproject.toml")?;
   let tpl: DocumentMut = template.parse().context("parsing template pyproject.toml")?;
+  check_markers(tpl.as_table(), "")?;
 
   let keep = keep_list(&doc);
   let mut merger = Merger { ctx, keep: &keep, log };
@@ -55,6 +56,29 @@ fn renumber_tables(table: &mut Table, next: &mut isize) {
       _ => {}
     }
   }
+}
+
+/// Every `setup-project:` marker in the template must be one the merger acts on: an
+/// unknown one (a typo such as `if-docker-service`) would otherwise gate nothing, and the
+/// table it was meant to guard would merge into every project. The template is devkit's own
+/// file, so this is a devkit bug surfaced at the first run, not a user error.
+fn check_markers(template: &Table, path: &str) -> Result<()> {
+  for (key, item) in template.iter() {
+    let Item::Table(t) = item else { continue };
+    let child = if path.is_empty() {
+      key.to_string()
+    } else {
+      format!("{path}.{key}")
+    };
+    for line in marker_lines(template, key) {
+      let known = line == IF_DOCKER_MARKER || line == IF_DOCKER_SERVICES_MARKER || line.starts_with(IF_DEP_MARKER);
+      if line.starts_with(MARKER) && !known {
+        bail!("pyproject template: unknown marker `# {line}` above [{child}]");
+      }
+    }
+    check_markers(t, &child)?;
+  }
+  Ok(())
 }
 
 /// `[tool.setup-project].keep` — dotted keys that must never be touched.
@@ -103,6 +127,12 @@ impl Merger<'_> {
       let tkey = template.key(key).expect("iterating template keys").clone();
       match titem {
         Item::Table(ttable) => {
+          // A table the project wrote inline (`sources = { … }`) is real content: promoted
+          // to a header table so the merge adds to it, where a fresh copy would replace it.
+          if let Some(Item::Value(Value::InlineTable(inline))) = target.get(key) {
+            target.insert(key, Item::Table(inline.clone().into_table()));
+            self.log.push(format!("[{child}]: inline table rewritten as a table"));
+          }
           let needs_insert = !matches!(target.get(key), Some(Item::Table(_)));
           if needs_insert {
             if ttable.is_implicit() || has_only_subtables(ttable) {
@@ -417,6 +447,7 @@ mod tests {
       python_dir: "src".into(),
       has_rust: false,
       publish_index: None,
+      devkit_index: "SFTPyPI".into(),
     }
   }
 
@@ -515,6 +546,7 @@ mod docker_tests {
       python_dir: "src".into(),
       has_rust: false,
       publish_index: None,
+      devkit_index: "SFTPyPI".into(),
     }
   }
 
@@ -546,6 +578,36 @@ mod docker_tests {
     assert!(!out.contains("devkit-container"), "no dependency before the switch is set: {out}");
     let out = merge_pyproject("[project]\nname = \"p\"\n", TPL2, &ctx(true), &mut log).unwrap();
     assert!(out.contains("devkit-container"), "{out}");
+  }
+
+  #[test]
+  fn an_inline_project_table_is_promoted_not_replaced() {
+    const TPL2: &str = "# setup-project: if-docker-services\n[tool.uv.sources]\n  devkit-container = [{ index = \"SFTPyPI\" }]\n";
+    let mut log = vec![];
+    let out = merge_pyproject(
+      "[project]\nname = \"p\"\n\n[tool.uv]\nsources = { my-lib = { git = \"https://x/y.git\" } }\n",
+      TPL2,
+      &ctx(true),
+      &mut log,
+    )
+    .unwrap();
+    let doc: DocumentMut = out.parse().unwrap();
+    let sources = doc["tool"]["uv"]["sources"].as_table_like().unwrap();
+    assert!(sources.contains_key("my-lib") && sources.contains_key("devkit-container"), "{out}");
+  }
+
+  #[test]
+  fn an_unknown_marker_is_an_error() {
+    let mut log = vec![];
+    let err = merge_pyproject(
+      "[project]\nname = \"p\"\n",
+      "# setup-project: if-docker-service\n[tool.x]\n  a = 1\n",
+      &ctx(true),
+      &mut log,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("if-docker-service") && err.contains("[tool.x]"), "{err}");
   }
 
   #[test]

@@ -8,7 +8,7 @@ use similar::TextDiff;
 use crate::changes::Changes;
 use crate::context::ProjectContext;
 use crate::docker::Consent;
-use crate::packages::PackageDirs;
+use crate::packages::Venv;
 use crate::templates;
 use crate::vscode::protocol::Proposal;
 
@@ -24,11 +24,11 @@ pub const TEMPLATE_FILE: &str = "template.Dockerfile";
 /// The Dockerfile as the installed devkit-container renders it for this project, or `None`
 /// when the package is not in the venv. The version rendered is the version the image will
 /// install, because both come from the same locked package.
-pub fn render(ctx: &ProjectContext, packages: &dyn PackageDirs) -> Result<Option<String>> {
-  let Some(dir) = packages.dir(&ctx.root, crate::packages::CONTAINER.import_name) else {
+pub fn render(ctx: &ProjectContext, venv: &dyn Venv) -> Result<Option<String>> {
+  let Some(installed) = venv.installed(&ctx.root, &crate::packages::CONTAINER) else {
     return Ok(None);
   };
-  let path = dir.join(TEMPLATE_FILE);
+  let path = installed.dir.join(TEMPLATE_FILE);
   let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
   Ok(Some(templates::substitute(&text, ctx, templates::Escape::None)))
 }
@@ -52,14 +52,14 @@ pub fn unified_diff(rel: &str, old: &str, new: &str) -> String {
     .to_string()
 }
 
-pub fn apply(ctx: &ProjectContext, packages: &dyn PackageDirs, consent: &Consent, changes: &mut Changes) -> Result<()> {
+pub fn apply(ctx: &ProjectContext, venv: &dyn Venv, consent: &Consent, changes: &mut Changes) -> Result<()> {
   for target in TARGETS {
     let rel = format!("docker/{target}");
     let path = ctx.root.join("docker").join(target);
     let original = crate::read_optional(&path)?;
     // On a plain run the package step has already installed the package, so `None` here
     // means a dry run on a project that has not adopted it yet.
-    let Some(rendered) = render(ctx, packages)? else {
+    let Some(rendered) = render(ctx, venv)? else {
       changes.notes.push(format!(
         "{rel} was not rendered: devkit-container is not installed in this venv yet; a plain run installs it and renders the file."
       ));
@@ -132,8 +132,14 @@ mod tests {
     std::fs::create_dir_all(&pkg).unwrap();
     std::fs::write(pkg.join(TEMPLATE_FILE), "RUN mv /tmp/repo/{python_dir} /app/{python_dir}\n").unwrap();
     let mut map = std::collections::HashMap::new();
-    map.insert("devkit_container".to_string(), pkg);
-    let dirs = crate::packages::StubPackageDirs(map);
+    map.insert(
+      "devkit_container".to_string(),
+      crate::packages::Installed {
+        dir: pkg,
+        version: "1.4.0".into(),
+      },
+    );
+    let venv = crate::packages::StubVenv(map);
     let ctx = ProjectContext {
       root: std::path::PathBuf::from("/p"),
       package: "proj".into(),
@@ -149,9 +155,10 @@ mod tests {
       python_dir: "python".into(),
       has_rust: true,
       publish_index: None,
+      devkit_index: "SFTPyPI".into(),
     };
-    assert_eq!(render(&ctx, &dirs).unwrap().unwrap(), "RUN mv /tmp/repo/python /app/python\n");
-    assert_eq!(render(&ctx, &crate::packages::StubPackageDirs::default()).unwrap(), None);
+    assert_eq!(render(&ctx, &venv).unwrap().unwrap(), "RUN mv /tmp/repo/python /app/python\n");
+    assert_eq!(render(&ctx, &crate::packages::StubVenv::default()).unwrap(), None);
   }
 
   #[test]
