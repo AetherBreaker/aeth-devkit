@@ -59,8 +59,7 @@ pub const DEVKIT: DevkitPackage = DevkitPackage {
 };
 
 /// The devkit packages this project should carry: the hooks and the completion for every
-/// project, the container for Docker projects (the templates package joins in split step 4).
-/// The container's condition is `[tool.docker].services`, the same `if-docker-services` gate
+/// project, the container for Docker projects. The container's condition is `[tool.docker].services`, the same `if-docker-services` gate
 /// the template adds the dependency under, so a dependency the merge adds is always one this
 /// step locks and installs. A project never carries itself, so each satellite repo can be
 /// devkit-managed without depending on its own name.
@@ -189,9 +188,6 @@ pub fn latest_requested(template: &str) -> Vec<String> {
 /// merge has listed the packages and before anything reads them from the venv.
 pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: &[String], changes: &mut Changes) -> Result<()> {
   let packages = active(ctx);
-  if packages.is_empty() {
-    return Ok(());
-  }
   let root = &ctx.root;
   let lock_path = root.join("uv.lock");
   let lock_before = crate::read_optional(&lock_path)?;
@@ -265,7 +261,7 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
   for p in &packages {
     let locked = locked_version(&lock_after, p.name).with_context(|| {
       format!(
-        "{} is not in uv.lock after locking; the merge lists it under [project].dependencies, and a project with Docker services must carry it",
+        "{} is not in uv.lock after locking; the merge lists every active devkit package in pyproject.toml, so the lock should carry it",
         p.name
       )
     })?;
