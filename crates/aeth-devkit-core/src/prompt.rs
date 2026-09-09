@@ -79,7 +79,9 @@ pub fn stdin_present() -> bool {
   {
     use std::os::fd::AsFd as _;
     use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
-    // `try_clone_to_owned` dups fd 0, which fails with EBADF when it is closed.
+    // `try_clone_to_owned` dups fd 0, which fails with EBADF when it is closed. Rarely
+    // seen: std reopens a closed fd 0 onto /dev/null at startup, so the null-device
+    // comparison below is what usually catches a closed descriptor.
     let Ok(fd) = std::io::stdin().as_fd().try_clone_to_owned() else {
       return false;
     };
@@ -102,8 +104,9 @@ pub fn stdin_present() -> bool {
     const FILE_TYPE_UNKNOWN: u32 = 0;
     const FILE_TYPE_CHAR: u32 = 2;
     let handle = std::io::stdin().as_raw_handle();
-    // No handle at all (a detached or GUI-subsystem launch), or the invalid sentinel.
-    if handle.is_null() || handle as isize == -1 {
+    // No handle at all (a detached or GUI-subsystem launch; std maps the invalid sentinel
+    // to null too).
+    if handle.is_null() {
       return false;
     }
     match unsafe { GetFileType(handle) } {

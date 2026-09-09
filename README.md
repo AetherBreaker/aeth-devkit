@@ -120,9 +120,10 @@ or `--check`. Idempotent — a second run is a byte-for-byte no-op.
   yet notes that instead of rendering.
   `-y` accepts everything up front, an add included; a typed `replace all` covers the
   shown diffs that follow, and adding a listed-but-absent service is still asked.
-  `--dry-run`/`--check` print everything and count Docker drift. Inside a VS Code terminal the diff opens in the editor instead (see **VS Code
-  extension**). `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to
-  delete, never removed.
+  `--dry-run`/`--check` print everything and count Docker drift. Inside a VS Code
+  terminal the diff opens in the editor instead (see **VS Code extension**).
+  `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to delete, never
+  removed.
 - **Placeholders** - `{project_root}`, `{package}`, `{python_dir}`, `{hook_bin}`,
   `{publish_index}`, `{publish_index_key}`, `{devkit_index}` (the index the project's
   `aeth-devkit` source names, `SFTPyPI` when there is none), `{git_repo}` with per-format
@@ -305,9 +306,9 @@ is `vscode-extension-v1` on this repository and stays published.
 
 When `devkit setup-project` runs in a VS Code terminal (`TERM_PROGRAM=vscode`; force with
 `--vscode`, disable with `--no-vscode`) with stdin a terminal and neither `--check` nor
-`-y`, it installs the newest compatible extension if none is present (a
-one-off `code --install-extension`; an upgrade over a running one exits 2 asking you to
-reload the window and run again), adds itself to `enable-proposed-api` in `~/.vscode/argv.json`
+`-y`, it installs the newest compatible extension if none is present (a one-off
+`code --install-extension`; an upgrade over a running one exits 2 asking you to reload the
+window and run again), adds itself to `enable-proposed-api` in `~/.vscode/argv.json`
 (restart VS Code once; this enables the floating Replace/Keep button), and then opens
 each Docker change as a native diff instead of the typed prompt. Per hunk: `Accept` and
 `Reject` CodeLens (the extension defaults `diffEditor.codeLens` to on; an explicit
