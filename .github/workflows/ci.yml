@@ -65,30 +65,6 @@ jobs:
       - name: The baked task table must match its source
         run: git diff --exit-code -- python/aeth_devkit/_tasks_generated.py
 
-  # esbuild strips types without checking them, so `typecheck` is the only type check.
-  extension:
-    name: VS Code extension
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: vscode-extension
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-          cache: npm
-          cache-dependency-path: vscode-extension/package-lock.json
-
-      - run: npm ci
-
-      - run: npm run typecheck
-
-      - run: npm test
-
-      - run: npm run build
-
   wheel:
     name: Wheel build
     runs-on: windows-latest

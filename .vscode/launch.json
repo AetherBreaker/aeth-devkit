@@ -19,13 +19,6 @@
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONSAFEPATH": "1"
             }
-        },
-        {
-            "name": "VS Code extension (dev host)",
-            "type": "extensionHost",
-            "request": "launch",
-            "args": ["--extensionDevelopmentPath=${workspaceFolder}/vscode-extension"],
-            "outFiles": ["${workspaceFolder}/vscode-extension/dist/**/*.js"]
         }
     ]
 }

@@ -63,6 +63,10 @@ design exists. Check items off in place; delete them once released.
       ...) was meant to go through the same review (raised 2026-09-06).
 - [ ] VS Code extension: support `code-insiders` and `cursor` launchers (each has its own
       URI scheme, `argv.json` location and extensions dir); only `code` works today.
+- [ ] devkit-vscode: a stronger release workflow. Today a pushed `vN` tag builds, tests,
+      packages and publishes; there is no version-bump command, no changelog, and nothing
+      waits for or verifies the release the way `devkit release` does for wheels. Consider a
+      `devkit release`-shaped flow for non-wheel artefacts.
 - [ ] After the first `vscode-extension-v1` release: delete `.vscode/extension/` and
       `install.ps1` from aeth_ext and aeth_ext-2, and the
       `~/.vscode/extensions/local.[drekker-]add-to-runtime-base-*` junction (setup-project
