@@ -495,3 +495,30 @@ fn no_commit_keeps_an_uncommitted_dockerfile_edit_on_top_of_the_refresh() {
   );
   assert_eq!(subjects(&root)[0], "docker", "nothing committed");
 }
+
+#[test]
+fn an_overlapping_compose_edit_aborts_before_the_dockerfile_refresh_is_committed() {
+  let (_d, root) = docker_fixture("FROM old\n", Some("1.4.0"));
+  // The user edited the very line the pin wants to change, while the Dockerfile has drifted.
+  std::fs::write(root.join("compose.yaml"), COMPOSE.replace("1.0.0", "9.9.9")).unwrap();
+  let (_site, dirs) = installed("1.4.0", "FROM new {python_dir}\n");
+  let r = happy_runner();
+  let idx = StubIndexClient {
+    versions: vec!["2.0.0".into()],
+  };
+  let err = run(
+    &args(&root),
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &dirs,
+    },
+  )
+  .unwrap_err()
+  .to_string();
+  assert!(err.contains("overlap"), "{err}");
+  // Neither commit was made and the Dockerfile was not touched: the two land together or not at all.
+  assert_eq!(subjects(&root), ["docker", "init"]);
+  assert_eq!(std::fs::read_to_string(root.join("docker/Dockerfile")).unwrap(), "FROM old\n");
+  assert!(!pushed(&r));
+}

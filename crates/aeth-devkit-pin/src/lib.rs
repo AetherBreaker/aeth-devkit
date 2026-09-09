@@ -191,6 +191,24 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
     }
   }
 
+  let message = format!("chore: pin {package} to {display}");
+  let pinned_text = tree::apply_edits(&base_text, &edits);
+  // The compose merge is decided before the Dockerfile refresh commits anything, so an
+  // overlap aborts with nothing written: the two commits land together or not at all.
+  let compose_merge = if !edits.is_empty() && will_commit && dirty {
+    // Commit the pin against HEAD's copy; the user's uncommitted edits ride on top. Their
+    // copy is taken in repository form (clean filters applied), not the raw file: on a
+    // `core.autocrlf=true` checkout the raw bytes are CRLF against an LF base, and the
+    // merge would then flag the pinned line as an overlapping edit.
+    let base = head.as_deref().unwrap();
+    let current = git::worktree_blob(&root, &rel)?.with_context(|| format!("{rel} vanished during the run"))?;
+    let merged = git::merge_file(&root, &current.bytes, base, pinned_text.as_bytes())?
+      .context("your uncommitted compose changes overlap the pinned lines; commit or revert them first")?;
+    Some((current, merged))
+  } else {
+    None
+  };
+
   // --- The Dockerfile first: its own commit, ahead of the pin's. ---
   if let Some(refresh) = refresh {
     apply_refresh(&root, refresh, will_commit)?;
@@ -205,18 +223,7 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
     return Ok(ExitCode::SUCCESS);
   }
 
-  let message = format!("chore: pin {package} to {display}");
-  let pinned_text = tree::apply_edits(&base_text, &edits);
-
-  if will_commit && dirty {
-    // Commit the pin against HEAD's copy; the user's uncommitted edits ride on top.
-    let base = head.unwrap();
-    // The user's copy in repository form (clean filters applied), not the raw file: on a
-    // `core.autocrlf=true` checkout the raw bytes are CRLF against an LF `base`, and the
-    // merge would then flag the pinned line as an overlapping edit.
-    let current = git::worktree_blob(&root, &rel)?.with_context(|| format!("{rel} vanished during the run"))?;
-    let merged = git::merge_file(&root, &current.bytes, &base, pinned_text.as_bytes())?
-      .context("your uncommitted compose changes overlap the pinned lines; commit or revert them first")?;
+  if let Some((current, merged)) = compose_merge {
     let mode = git::head_mode(&root, &rel)?.unwrap_or_else(|| "100644".into());
     let sha = git::hash_object(&root, pinned_text.as_bytes())?;
     git::commit_files_on_head(
