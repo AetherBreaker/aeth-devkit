@@ -1,8 +1,8 @@
-//! Getting a compatible extension into VS Code: the newest `vscode-extension-vN` release
-//! is fetched from GitHub (the repo is public; a `GH_TOKEN`/`GITHUB_TOKEN` in the
-//! environment is sent only for the higher rate limit, and dropped if rejected) and handed to
-//! `code --install-extension`. A fresh install is live at once; an upgrade over a loaded
-//! extension needs a window reload, which the caller reports and stops on.
+//! Getting a compatible extension into VS Code: the newest `vN` release of the extension's
+//! own repository is fetched from GitHub (the repo is public; a `GH_TOKEN`/`GITHUB_TOKEN`
+//! in the environment is sent only for the higher rate limit, and dropped if rejected) and
+//! handed to `code --install-extension`. A fresh install is live at once; an upgrade over a
+//! loaded extension needs a window reload, which the caller reports and stops on.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -14,8 +14,11 @@ use aeth_devkit_core::process::Runner;
 
 use super::protocol::{EXTENSION_ID, MIN_EXTENSION_VERSION};
 
-pub const REPO: &str = "AetherBreaker/aeth-devkit";
-pub const TAG_PREFIX: &str = "vscode-extension-v";
+/// The extension's repository. Build 1 was `vscode-extension-v1` on `AetherBreaker/aeth-devkit`
+/// and stays published there; numbering continued in the new repository from `v2`.
+pub const REPO: &str = "AetherBreaker/devkit-vscode";
+/// Tags are `vN` with an integer `N`; anything else after the prefix is ignored.
+pub const TAG_PREFIX: &str = "v";
 
 pub fn refs_url() -> String {
   format!("https://api.github.com/repos/{REPO}/git/matching-refs/tags/{TAG_PREFIX}")
@@ -126,7 +129,8 @@ impl Fetch for StubFetch {
   }
 }
 
-/// The highest `N` among `refs/tags/vscode-extension-vN` in a matching-refs response.
+/// The highest `N` among `refs/tags/vN` in a matching-refs response, integer `N` only (a
+/// `v1.0.0` is not one and is skipped).
 pub fn latest_tag_number(refs_json: &str) -> Result<Option<u32>> {
   let refs: Vec<serde_json::Value> = serde_json::from_str(refs_json).context("parsing the extension tag list")?;
   Ok(
@@ -217,7 +221,8 @@ mod tests {
   use aeth_devkit_core::process::RecordingRunner;
 
   const LIST: &[&str] = &["--list-extensions"];
-  const REFS: &str = r#"[{"ref":"refs/tags/vscode-extension-v1"},{"ref":"refs/tags/vscode-extension-v3"},{"ref":"refs/tags/vscode-extension-v2"},{"ref":"refs/tags/vscode-extension-vX"}]"#;
+  const REFS: &str =
+    r#"[{"ref":"refs/tags/v1"},{"ref":"refs/tags/v3"},{"ref":"refs/tags/v2"},{"ref":"refs/tags/vX"},{"ref":"refs/tags/v1.0.0"}]"#;
 
   fn fetch_with_refs() -> StubFetch {
     let mut f = StubFetch::default();
@@ -239,7 +244,7 @@ mod tests {
     assert!(latest_tag_number("nope").is_err());
     assert_eq!(
       vsix_url(3),
-      "https://github.com/AetherBreaker/aeth-devkit/releases/download/vscode-extension-v3/aeth-devkit-vscode-3.vsix"
+      "https://github.com/AetherBreaker/devkit-vscode/releases/download/v3/aeth-devkit-vscode-3.vsix"
     );
   }
 
@@ -315,7 +320,7 @@ mod tests {
     assert!(why(ensure(&r, &offline, cache.path(), true)).contains("no body"));
 
     let mut old = StubFetch::default();
-    old.bodies.insert(refs_url(), r#"[{"ref":"refs/tags/vscode-extension-v0"}]"#.into());
+    old.bodies.insert(refs_url(), r#"[{"ref":"refs/tags/v0"}]"#.into());
     assert!(why(ensure(&r, &old, cache.path(), true)).contains("no compatible"));
 
     let failing = RecordingRunner::new(0);

@@ -15,7 +15,8 @@ use crate::docker::static_files::normalize_newlines;
 
 /// Bumped only when the request or response shape changes.
 pub const PROTOCOL: u32 = 1;
-/// The first extension build (`N` of `vscode-extension-vN`) that speaks [`PROTOCOL`].
+/// The first extension build (`N` of release `vN` in `AetherBreaker/devkit-vscode`; build 1 was
+/// `vscode-extension-v1` on `aeth-devkit`) that speaks [`PROTOCOL`].
 pub const MIN_EXTENSION_VERSION: u32 = 1;
 pub const EXTENSION_ID: &str = "aeth.aeth-devkit";
 
