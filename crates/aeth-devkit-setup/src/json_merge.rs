@@ -532,12 +532,12 @@ mod hooks_tests {
   fn tpl() -> Value {
     json!({
       "PreToolUse": [
-        {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "\"$D/devkit\" hook pre-edit-protect", "shell": "bash"}]}
+        {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "\"$D/devkit-hook\" pre-edit-protect", "shell": "bash"}]}
       ],
       "Stop": [
         {"hooks": [
-          {"type": "command", "command": "\"$D/devkit\" hook stop-ruff", "shell": "bash", "timeout": 30},
-          {"type": "command", "command": "\"$D/devkit\" hook stop-pyright", "shell": "bash", "timeout": 60}
+          {"type": "command", "command": "\"$D/devkit-hook\" stop-ruff", "shell": "bash", "timeout": 30},
+          {"type": "command", "command": "\"$D/devkit-hook\" stop-pyright", "shell": "bash", "timeout": 60}
         ]}
       ]
     })
@@ -570,7 +570,7 @@ mod hooks_tests {
     merge_hooks(&mut target, &tpl(), &mut log);
     assert_eq!(target["Stop"][0]["hooks"].as_array().unwrap().len(), 2);
     assert_eq!(target["Stop"][0]["hooks"][0]["timeout"], 30);
-    assert_eq!(target["Stop"][0]["hooks"][0]["command"], "\"$D/devkit\" hook stop-ruff");
+    assert_eq!(target["Stop"][0]["hooks"][0]["command"], "\"$D/devkit-hook\" stop-ruff");
     assert!(log.iter().any(|l| l.contains("stop-ruff")), "{log:?}");
   }
 
@@ -635,14 +635,14 @@ mod hooks_tests {
     merge_hooks(&mut target, &tpl(), &mut log);
     let stop = target["Stop"][0]["hooks"].as_array().unwrap();
     assert_eq!(stop.len(), 2, "{stop:?}");
-    assert_eq!(stop[0]["command"], "\"$D/devkit\" hook stop-ruff");
-    assert_eq!(stop[1]["command"], "\"$D/devkit\" hook stop-pyright");
+    assert_eq!(stop[0]["command"], "\"$D/devkit-hook\" stop-ruff");
+    assert_eq!(stop[1]["command"], "\"$D/devkit-hook\" stop-pyright");
   }
 
   #[test]
   fn claude_settings_merges_hooks_by_key_and_the_rest_deeply() {
-    let template = r#"{"permissions": {"allow": ["WebSearch"]}, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "devkit hook stop-ruff", "timeout": 30}]}]}}"#;
-    let original = r#"{"permissions": {"allow": ["Bash(git diff *)"]}, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "devkit hook stop-ruff", "timeout": 99}]}]}}"#;
+    let template = r#"{"permissions": {"allow": ["WebSearch"]}, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "devkit-hook stop-ruff", "timeout": 30}]}]}}"#;
+    let original = r#"{"permissions": {"allow": ["Bash(git diff *)"]}, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "devkit-hook stop-ruff", "timeout": 99}]}]}}"#;
     let mut log = vec![];
     let out = merge_claude_settings(Some(original), template, &mut log).unwrap();
     let v: Value = serde_json::from_str(&out).unwrap();
@@ -681,7 +681,7 @@ mod hooks_tests {
     // `"Write|Edit"` is the template's `"Edit|Write"`; a per-group merge saw them as
     // different and added a second group, so both the user's hook and ours fired.
     let mut target = json!({"PreToolUse": [
-      {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "\"$D/devkit\" hook pre-edit-protect", "shell": "bash"}]}
+      {"matcher": "Write|Edit", "hooks": [{"type": "command", "command": "\"$D/devkit-hook\" pre-edit-protect", "shell": "bash"}]}
     ]});
     let mut log = vec![];
     merge_hooks(&mut target, &tpl(), &mut log);
@@ -718,7 +718,7 @@ mod hooks_tests {
       merge_hooks(&mut target, &tpl(), &mut log);
       let stop = target["Stop"][0]["hooks"].as_array().unwrap();
       assert_eq!(stop.len(), 2, "must migrate in place, not duplicate: {cmd} -> {stop:?}");
-      assert_eq!(stop[0]["command"], "\"$D/devkit\" hook stop-ruff", "{cmd}");
+      assert_eq!(stop[0]["command"], "\"$D/devkit-hook\" stop-ruff", "{cmd}");
     }
   }
 

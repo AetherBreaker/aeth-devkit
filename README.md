@@ -12,20 +12,18 @@ plus the `devkit` CLI (Rust) they call.
 | `poe release [-f] [--dry-run] [bump …] ["notes"]`                 | `devkit release`               | Bump version, commit, tag, push, create the GitHub release, then wait for the release workflow to build and publish; rolls back on failure.                                                                                                                                                                             |
 | `poe docker-pin [-V VER] [--dry-run] [--no-commit] [--no-push]`   | `devkit docker-pin`            | Pin the compose file's `GIT_TAG` / `PACKAGE_VERSION` to a released version of the project, commit, and push.                                                                                                                                                  |
 | `poe release-and-pin [-f] [--dry-run] [bump …] ["notes"]`         | `devkit release-and-pin`       | `devkit release` then `devkit docker-pin` with the freshly released version, in-process.                                                                                                                                                                      |
-| —                                                                 | `devkit complete`              | Shell completion for `poe` served from Rust (~13 ms per Tab instead of ~200 ms). `devkit complete install --powershell --bash` wires it into `$PROFILE` and the bash completion files. Uses whichever `devkit` is on PATH at Tab time, which an activated venv provides; no global install required. |
 | `poe rescind-release`                                             | `scripts/rescind-release.sh`   | Undo a release.                                                                                                                                                                                                                                               |
 
 `devkit --help` lists the Rust subcommands. Each lives in its own crate under `crates/`;
 `cargo run -p aeth-devkit-lock -- --help` runs one command's dev binary without linking the
 others.
 
-**Update check.** `setup-project`, `lock`, `release` and `complete install` end with a
-`note:` on stderr when the running `devkit` is older than the latest stable release on the
+**Update check.** Every command ends with a `note:` on stderr when the running `devkit` is older than the latest stable release on the
 project's `[[tool.uv.index]]` entry for `aeth-devkit`, naming the fix (`uv tool upgrade
 aeth-devkit`, or `devkit lock` when running from a project `.venv`). The index is queried at
 most once a day and the answer cached at `%LOCALAPPDATA%\aeth-devkit\update-check.json`
 (`~/.cache/aeth-devkit/` elsewhere; `DEVKIT_UPDATE_CACHE=<file>` relocates it). Failures are
-silent. `DEVKIT_NO_UPDATE_CHECK=1` disables the check; the Tab-completion data path never runs it.
+silent. `DEVKIT_NO_UPDATE_CHECK=1` disables the check.
 
 ## Feature reference (Rust commands)
 
@@ -51,14 +49,14 @@ second run is a byte-for-byte no-op.
   differs from HEAD's: commit it, then rerun.
 - **pyproject merge** - Comment-preserving deep merge of the template into
   `pyproject.toml` — scalars replace, arrays union, dependency arrays match by normalized
-  package name so pins upgrade in place, `if-dep` / `if-docker` markers gate conditional
-  tables. Managed keys: the dev dependency
+  package name so pins upgrade in place, `if-dep` / `if-docker` / `if-docker-services`
+  markers above a table header or a key-value line gate that table or key. Managed keys: the dev dependency
   group, `tool.coverage`, `tool.docker`, `tool.mypy.cache_dir`, `tool.poe.include_script`,
   `tool.pyright` (incl. `executionEnvironments`), `tool.pytest`, `tool.ruff` — incl.
   `lint.isort.known-first-party = ["{package}"]` and the import headings — and `tool.tombi`.
 - **Migrations** - `poe_tasks:tasks` include_script → `aeth_devkit:tasks`; drops
   `tool.ruff.extend` / `tool.pyright.extends` pointing at a parent pyproject; rewrites
-  legacy `.claude/hooks/*.py` hook commands to `devkit hook` in place.
+  legacy `.claude/hooks/*.py` and `devkit hook` hook commands to `devkit-hook` in place.
 - **VS Code config** - `settings.json` + `extensions.json` deep JSON merge (plus Rust
   overlay); `launch.json` created from template or patched (`envFile` + `PYTHON*` env vars
   on Python launch configs only); `tasks.json` patched only (`PYTHONPYCACHEPREFIX`).
@@ -88,6 +86,11 @@ second run is a byte-for-byte no-op.
   `settings.local.json` (absolute env paths + hook commands). Hook merge keeps exactly one
   entry per devkit hook, updates it in place, and leaves user hooks alone. `.mcp.json`:
   adds missing servers, never edits ones the project already defines.
+- **Hooks and completion** - Every project gets `devkit-claude-hooks` and
+  `devkit-poe-complete` in its dev group at the newest release the running devkit accepts
+  (the same floor-and-lock step as `devkit-container`); the hook lines in
+  `.claude/settings.local.json` call the venv's `devkit-hook`, and the run ends with
+  `devkit-complete install` for the shells on `PATH`, reporting what changed.
 - **Docker** - Runs whenever `[tool.docker].services` lists at least one compose service.
   `docker/Dockerfile` is created when missing; when present and different — ignoring CRLF/LF, and
   written back in the file's own line endings — a unified diff is printed and
@@ -126,8 +129,9 @@ second run is a byte-for-byte no-op.
   requirement means the newest release the running devkit accepts (see **Devkit
   packages**). YAML templates gate blocks with `# setup-project: if-<name>` / `if-no-<name>` …
   `end` markers (`publish-index`, `aeth-ext`).
-- **Devkit packages** - For Docker projects, `devkit-container` is added when missing, locked
-  with `uv lock --upgrade-package` under the constraint `aeth-devkit==<the running version>`,
+- **Devkit packages** - `devkit-claude-hooks` and `devkit-poe-complete` (every project, dev
+  group) and `devkit-container` (Docker projects, `[project].dependencies`) are added when
+  missing, locked with `uv lock --upgrade-package` under the constraint `aeth-devkit==<the running version>`,
   and installed with `uv sync --frozen`; the floor written to `pyproject.toml` is the version
   uv chose (for a plain name or a `>=` requirement locked from an index; anything else is
   left as written with a note), followed by a plain `uv lock` so the lock's metadata records
@@ -330,52 +334,15 @@ Args: identical to `devkit release` (all of them forward verbatim).
 - **Waits for CI** - `--no-wait` is refused: the pin's completeness preflight needs the
   artefacts the workflow publishes, and `Released` already means the workflow finished.
 
-### `devkit complete`
+### `devkit-claude-hooks` and `devkit-poe-complete`
 
-Subcommands: `query` (the per-Tab request, called by the shims), `tasks [DIR]` and `args
-<TASK> [DIR]` (retained for shims installed by an older devkit), `script
---powershell|--bash`, `install --powershell --bash [--dry-run]`; global `--no-cache`.
-
-- **Fast data path** - Serves poe's completion from Rust (~13 ms warm vs poe's ~200 ms).
-- **Thin shims** - Each shell installs a ~50-line shim that forwards the command line to
-  `devkit complete query` and acts on a directory/file sentinel; all the logic (task
-  location, global options, choices, positional indexing) lives in one Rust engine rather
-  than in two near-duplicate shell scripts. The shells still do their own path completion,
-  keeping their own quoting rules.
-- **Task resolution** - Mirrors poe's: `[tool.poe.tasks]`, recursive `include` files
-  (env-var expansion, cycle guard), hidden `_` tasks skipped, first definition wins;
-  `include_script` is executed against the venv python directly, skipping poe's startup.
-- **Caching** - Fingerprint cache at `.cache/devkit-completions.json` (devkit version +
-  each source's mtime/size); a corrupt cache is a miss, and the data subcommands never
-  exit non-zero — a failing completer would break the shell.
-- **No global install needed** - The shims call `devkit` only at Tab time, so an activated
-  venv's copy is used. A global install is only wanted if you want completion in shells
-  where no venv is activated.
-- **Install** - Writes the PowerShell shim to `~/.local/share/devkit/poe-completion.ps1`
-  and puts one permanent, content-free line in `$PROFILE` that dot-sources it (also
-  removing poe's own slow registration, and any previous devkit line); writes the bash
-  completion files for Git Bash and Linux; refuses to overwrite files it didn't generate;
-  idempotent.
-- **Self-repair** - Each request carries a shim version. A shim older than the binary is
-  rewritten in place (atomically) for the next shell, while the current request is still
-  answered.
-- **Shells** - PowerShell and bash only.
-
-### `devkit hook`
-
-Five Claude Code hooks, registered by `setup-project` in `.claude/settings.local.json`.
-Payload on stdin, at most one JSON line on stdout, always exits 0 — every failure path
-degrades to silence, and the update check never runs on this path.
-
-- **`pre-edit-protect`** - Denies Edit/Write to `.env` and `uv.lock`, matched on the
-  basename with Windows name normalization.
-- **`pre-bash-protect-deps`** - Denies `uv add|remove|lock` via a quote-aware command
-  tokenizer (handles wrappers, env-var prefixes, `bash -c` recursion, and uv's
-  value-taking global flags — not a regex).
-- **Stop hooks** - Re-report tool failures as `additionalContext`: `stop-ruff` (`--fix
-  --unfixable F401`) scoped to the branch diff, `stop-pyright` project-wide on purpose,
-  `stop-clean` (`poe clean`); venv binaries preferred over `uv run`; output capped at
-  4000 chars; `stop_hook_active` loop guard.
+The Claude Code hooks (`devkit-hook <name>`) and the poe shell completion
+(`devkit-complete`) live in their own repositories, `AetherBreaker/devkit-claude-hooks` and
+`AetherBreaker/devkit-poe-complete`, released as wheels on SFTPyPI. `setup-project` installs
+both into every project and wires them in (see **Hooks and completion** above); their READMEs
+describe the hooks and the completion engine. `devkit hook` and `devkit complete` were removed
+in 13.0.0: a project whose venv takes that devkit before `setup-project` has rewritten its
+hook lines gets a usage error from every hook until `poe setup-project` runs.
 
 ## Using it in a project
 

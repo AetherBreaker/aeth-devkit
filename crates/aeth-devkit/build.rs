@@ -210,7 +210,7 @@ fn main() {
   // and rust-analyzer watch; an unconditional write would bump the mtime on every build, a
   // watcher would see the change and trigger another check, and round it goes. Because the
   // output is a pure function of `_tasks_source.py`, the steady state here is zero writes.
-  // It also keeps `aeth-devkit-complete`'s completion cache — keyed on mtime — valid.
+  // It also keeps `devkit-complete`'s completion cache — keyed on mtime — valid.
   //
   // Compared as bytes: reading as a String would hide a line-ending difference that `write`
   // would then bake in, making every build look like a change.

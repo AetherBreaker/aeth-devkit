@@ -15,7 +15,6 @@
   pep440_rs  = "0.7.3"
   regex      = "1.13.1"
   serde      = "1.0.229"
-  shell-words = "1.1.0"
   similar    = "3.2.0"
   serde_json = { version = "1.0.151", features = ["preserve_order"] }
   tempfile   = "3.27.0"
@@ -27,8 +26,6 @@
   aeth-devkit-lock  = { path = "crates/aeth-devkit-lock" }
   aeth-devkit-release = { path = "crates/aeth-devkit-release" }
   aeth-devkit-pin   = { path = "crates/aeth-devkit-pin" }
-  aeth-devkit-complete = { path = "crates/aeth-devkit-complete" }
-  aeth-devkit-hooks = { path = "crates/aeth-devkit-hooks" }
 
 [profile.release]
   strip       = true
