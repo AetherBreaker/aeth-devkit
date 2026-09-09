@@ -48,6 +48,12 @@ pub struct ProjectContext {
   /// sources them from the same index. The conventional name stands in when no source names
   /// one; a name no `[[tool.uv.index]]` declares surfaces as uv's own error at lock time.
   pub devkit_index: String,
+  /// `[tool.devkit].release-workflow`: `false` opts the project out of the devkit release
+  /// workflow, for a repository whose artefact is not a wheel and releases through a
+  /// `release.yml` of its own (the VS Code extension). Default `true`. The first setting
+  /// in `[tool.devkit]`, the table the split spec reserves for devkit-level project
+  /// settings; the template seeds nothing there.
+  pub release_workflow: bool,
 }
 
 /// The index name assumed for devkit's packages when the project declares no source for
@@ -151,6 +157,21 @@ impl ProjectContext {
 
     let devkit_index =
       aeth_devkit_core::pyproject::source_index_name(&doc, "aeth-devkit").unwrap_or_else(|| DEFAULT_DEVKIT_INDEX.to_string());
+    // A value that cannot mean anything is an error, like `[tool.docker].services`: read as
+    // `true` it would silently install a workflow the project meant to keep out.
+    let release_workflow = match doc
+      .get("tool")
+      .and_then(|t| t.get("devkit"))
+      .and_then(|d| d.get("release-workflow"))
+    {
+      None => true,
+      Some(item) => item.as_bool().with_context(|| {
+        format!(
+          "[tool.devkit].release-workflow must be true or false, got {}",
+          item.to_string().trim()
+        )
+      })?,
+    };
 
     Ok(Self {
       root,
@@ -168,6 +189,7 @@ impl ProjectContext {
       has_rust,
       publish_index,
       devkit_index,
+      release_workflow,
     })
   }
 
@@ -387,5 +409,30 @@ mod publish_index_detection {
     );
     let err = ProjectContext::discover(dir.path()).unwrap_err().to_string();
     assert!(err.contains("A, B"), "{err}");
+  }
+}
+
+#[cfg(test)]
+mod devkit_settings {
+  use super::*;
+
+  #[test]
+  fn release_workflow_is_on_unless_tool_devkit_turns_it_off() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("pyproject.toml"), "[project]\nname = \"p\"\n").unwrap();
+    assert!(ProjectContext::discover(dir.path()).unwrap().release_workflow);
+    std::fs::write(
+      dir.path().join("pyproject.toml"),
+      "[project]\nname = \"p\"\n\n[tool.devkit]\nrelease-workflow = false\n",
+    )
+    .unwrap();
+    assert!(!ProjectContext::discover(dir.path()).unwrap().release_workflow);
+    std::fs::write(
+      dir.path().join("pyproject.toml"),
+      "[project]\nname = \"p\"\n\n[tool.devkit]\nrelease-workflow = \"no\"\n",
+    )
+    .unwrap();
+    let err = ProjectContext::discover(dir.path()).unwrap_err().to_string();
+    assert!(err.contains("release-workflow"), "{err}");
   }
 }

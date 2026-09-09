@@ -203,6 +203,7 @@ mod tests {
       has_rust: false,
       publish_index: None,
       devkit_index: "SFTPyPI".into(),
+      release_workflow: true,
     }
   }
 

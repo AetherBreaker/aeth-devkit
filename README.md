@@ -81,6 +81,9 @@ second run is a byte-for-byte no-op.
   first install prints a `note:` with the secret names or the trusted-publisher
   registration values. The `devkit-container` package is not part of this workflow: it has
   its own repository and releases (see **`devkit-container`** below).
+  A repository whose artefact is not a wheel sets `[tool.devkit] release-workflow = false`
+  and keeps a `release.yml` of its own (the VS Code extension); setup-project then writes
+  nothing there.
 - **Claude config** - `.claude/settings.json` (shared, no machine-specific paths) vs
   `settings.local.json` (absolute env paths + hook commands). Hook merge keeps exactly one
   entry per devkit hook, updates it in place, and leaves user hooks alone. `.mcp.json`:
