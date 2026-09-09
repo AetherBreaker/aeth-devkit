@@ -4,8 +4,9 @@ Date: 2026-09-08, revised the same day after review against the code. Status: de
 discussion; each numbered step in section 7 gets its own implementation plan, written in a separate
 session. Nothing in it is provisional.
 
-The wireguard mode for `devkit-container` has its own spec,
-`2026-09-08-container-wireguard-mode-design.md`, which lands after step 1 of this one. The
+The wireguard mode for `devkit-container` has its own spec, which lands after step 1 of this
+one and lives with the crate:
+`devkit-container/docs/superpowers/specs/2026-09-08-container-wireguard-mode-design.md`. The
 consuming project's view is `ScheduledReportAggregator/docs/superpowers/specs/2026-09-08-wireguard-db-access-design.md`.
 
 ## 1. Why
