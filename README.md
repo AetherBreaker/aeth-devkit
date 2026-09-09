@@ -18,12 +18,13 @@ plus the `devkit` CLI (Rust) they call.
 `cargo run -p aeth-devkit-lock -- --help` runs one command's dev binary without linking the
 others.
 
-**Update check.** Every command ends with a `note:` on stderr when the running `devkit` is older than the latest stable release on the
-project's `[[tool.uv.index]]` entry for `aeth-devkit`, naming the fix (`uv tool upgrade
-aeth-devkit`, or `devkit lock` when running from a project `.venv`). The index is queried at
-most once a day and the answer cached at `%LOCALAPPDATA%\aeth-devkit\update-check.json`
-(`~/.cache/aeth-devkit/` elsewhere; `DEVKIT_UPDATE_CACHE=<file>` relocates it). Failures are
-silent. `DEVKIT_NO_UPDATE_CHECK=1` disables the check.
+**Update check.** Every command ends with a `note:` on stderr when the running `devkit` is
+older than the latest stable release on the project's `[[tool.uv.index]]` entry for
+`aeth-devkit`, naming the fix (`uv tool upgrade aeth-devkit`, or `devkit lock` when running
+from a project `.venv`). The index is queried at most once a day and the answer cached at
+`%LOCALAPPDATA%\aeth-devkit\update-check.json` (`~/.cache/aeth-devkit/` elsewhere;
+`DEVKIT_UPDATE_CACHE=<file>` relocates it). Failures are silent. `DEVKIT_NO_UPDATE_CHECK=1`
+disables the check.
 
 ## Feature reference (Rust commands)
 
