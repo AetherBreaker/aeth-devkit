@@ -474,11 +474,11 @@ fn matches_key(entry: &Value, key: &str) -> bool {
 fn hook_key(entry: &Value) -> Option<String> {
   let cmd = entry.get("command")?.as_str()?;
   let words: Vec<&str> = cmd.split_whitespace().collect();
-  let is_hook_bin = |w: &str| {
+  let binary = words.iter().position(|w| {
     let base = w.trim_matches(['"', '\'']).rsplit(['/', '\\']).next().unwrap_or("");
     base == "devkit-hook" || base == "devkit-hook.exe"
-  };
-  if let Some(i) = words.iter().position(|w| is_hook_bin(w)) {
+  });
+  if let Some(i) = binary {
     return words.get(i + 1).map(|w| w.to_string());
   }
   let (_, rest) = cmd.split_once(" hook ")?;
