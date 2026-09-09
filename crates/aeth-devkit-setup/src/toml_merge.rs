@@ -63,7 +63,6 @@ fn renumber_tables(table: &mut Table, next: &mut isize) {
 /// file, so this is a devkit bug surfaced at the first run, not a user error.
 fn check_markers(template: &Table, path: &str) -> Result<()> {
   for (key, item) in template.iter() {
-    let Item::Table(t) = item else { continue };
     let child = if path.is_empty() {
       key.to_string()
     } else {
@@ -72,10 +71,12 @@ fn check_markers(template: &Table, path: &str) -> Result<()> {
     for line in marker_lines(template, key) {
       let known = line == IF_DOCKER_MARKER || line == IF_DOCKER_SERVICES_MARKER || line.starts_with(IF_DEP_MARKER);
       if line.starts_with(MARKER) && !known {
-        bail!("pyproject template: unknown marker `# {line}` above [{child}]");
+        bail!("pyproject template: unknown marker `# {line}` above {child}");
       }
     }
-    check_markers(t, &child)?;
+    if let Item::Table(t) = item {
+      check_markers(t, &child)?;
+    }
   }
   Ok(())
 }
@@ -86,6 +87,21 @@ struct Merger<'a> {
 }
 
 impl Merger<'_> {
+  /// Whether the marker above `key` in `template` keeps it out of this project: `if-dep X`
+  /// without the dependency, `if-docker` without Docker (or its files), `if-docker-services`
+  /// without services. Applies to table headers and key-value lines alike.
+  fn gated_off(&self, template: &Table, key: &str) -> bool {
+    if let Some(dep) = conditional_dep(template, key)
+      && !self.ctx.has_dependency(&dep)
+    {
+      return true;
+    }
+    if conditional_docker(template, key) && !(self.ctx.has_docker || self.ctx.docker_files) {
+      return true;
+    }
+    marker_lines(template, key).iter().any(|l| l == IF_DOCKER_SERVICES_MARKER) && !self.ctx.has_docker
+  }
+
   fn merge_table(&mut self, target: &mut Table, template: &Table, path: &str) {
     for (key, titem) in template.iter() {
       let child = if path.is_empty() {
@@ -93,15 +109,7 @@ impl Merger<'_> {
       } else {
         format!("{path}.{key}")
       };
-      if let Some(dep) = conditional_dep(template, key)
-        && !self.ctx.has_dependency(&dep)
-      {
-        continue;
-      }
-      if conditional_docker(template, key) && !(self.ctx.has_docker || self.ctx.docker_files) {
-        continue;
-      }
-      if marker_lines(template, key).iter().any(|l| l == IF_DOCKER_SERVICES_MARKER) && !self.ctx.has_docker {
+      if self.gated_off(template, key) {
         continue;
       }
       let tkey = template.key(key).expect("iterating template keys").clone();
@@ -125,12 +133,17 @@ impl Merger<'_> {
               target.insert_formatted(&tkey, Item::Table(t));
             } else {
               // A brand-new leaf table: copy it so the template's formatting (indentation,
-              // alignment, comments) is preserved — minus the `setup-project:` markers,
-              // which are instructions *to* this merger. Shipping one would leave a comment
-              // in the project's pyproject.toml that reads like a live directive but is
-              // only ever honoured on the template side.
+              // alignment, comments) is preserved — minus the keys the markers gate off
+              // for this project and the marker lines themselves, the same treatment the
+              // key-by-key merge below gives an existing table.
               let mut fresh = ttable.clone();
-              strip_marker_comments(&mut fresh);
+              strip_marker_lines(fresh.decor_mut());
+              for key in ttable.iter().map(|(k, _)| k).filter(|k| self.gated_off(ttable, k)) {
+                fresh.remove(key);
+              }
+              for (mut key, _) in fresh.iter_mut() {
+                strip_marker_lines(key.leaf_decor_mut());
+              }
               scrub_latest_table(&mut fresh);
               target.insert_formatted(&tkey, Item::Table(fresh));
               self.log.push(format!("added [{child}]"));
@@ -145,7 +158,7 @@ impl Merger<'_> {
           if !ttable.is_implicit() && sub.is_implicit() {
             sub.set_implicit(false);
             *sub.decor_mut() = ttable.decor().clone();
-            strip_marker_comments(sub);
+            strip_marker_lines(sub.decor_mut());
             self.log.push(format!("added [{child}]"));
           }
           self.merge_table(sub, ttable, &child);
@@ -160,12 +173,15 @@ impl Merger<'_> {
     let key = tkey.get();
     match target.get_mut(key) {
       None => {
-        // Carry the template key's decor (indentation) so the new line matches its neighbours.
+        // Carry the template key's decor (indentation) so the new line matches its
+        // neighbours, minus any marker that gated it.
+        let mut key = tkey.clone();
+        strip_marker_lines(key.leaf_decor_mut());
         let mut fresh = tval.clone();
         if let Value::Array(a) = &mut fresh {
           scrub_latest_array(a);
         }
-        target.insert_formatted(tkey, Item::Value(fresh));
+        target.insert_formatted(&key, Item::Value(fresh));
         self.log.push(format!("added {path}"));
       }
       Some(Item::Value(Value::Array(existing))) if tval.is_array() => {
@@ -206,23 +222,21 @@ impl Merger<'_> {
   }
 }
 
-/// Drop the `setup-project:` marker lines from a table's leading comment block, keeping
-/// every other comment (and the blank-line spacing) exactly as the template wrote it.
-fn strip_marker_comments(t: &mut Table) {
-  // Build the replacement prefix *first*. `kept.join` returns an owned `String`, so the
-  // immutable borrow of `t` taken by `decor()` has ended by the time `decor_mut()` needs a
-  // mutable one — doing it in one expression would fail the borrow check.
-  //
-  // `split` on the newline char (not `lines()`) keeps the leading and trailing empty
-  // pieces, so the blank line separating this table from the one above it survives.
-  let cleaned = t
-    .decor()
+/// Drop the `setup-project:` marker lines from a decor's prefix — the comment block above a
+/// table header or a key — keeping the other comments and the blank line above them. The
+/// markers are instructions *to* this merger; shipped, one would read like a live directive
+/// in the project's file while only ever being honoured on the template side.
+fn strip_marker_lines(decor: &mut toml_edit::Decor) {
+  // Build the replacement first: the immutable borrow ends before `set_prefix` needs a
+  // mutable one. `split` on the newline char (not `lines()`) keeps the leading and trailing
+  // empty pieces, so the blank line separating a table from the one above it survives.
+  let cleaned = decor
     .prefix()
     .and_then(|p| p.as_str())
     .filter(|p| p.contains(MARKER))
     .map(|prefix| prefix.split('\n').filter(|l| !is_marker_line(l)).collect::<Vec<_>>().join("\n"));
   if let Some(cleaned) = cleaned {
-    t.decor_mut().set_prefix(cleaned);
+    decor.set_prefix(cleaned);
   }
 }
 
@@ -231,18 +245,18 @@ fn is_marker_line(line: &str) -> bool {
   line.trim().trim_start_matches('#').trim().starts_with(MARKER)
 }
 
-/// The comment lines directly above a template table, with `#` and whitespace stripped.
+/// The comment lines directly above a template table header or key-value line, with `#`
+/// and whitespace stripped.
 fn marker_lines(template: &Table, key: &str) -> Vec<String> {
-  let Some(Item::Table(t)) = template.get(key) else {
-    return Vec::new();
-  };
-  let Some(prefix) = t.decor().prefix().and_then(|p| p.as_str()) else {
-    return Vec::new();
+  let prefix = match template.get(key) {
+    Some(Item::Table(t)) => t.decor().prefix(),
+    Some(_) => template.key(key).and_then(|k| k.leaf_decor().prefix()),
+    None => None,
   };
   prefix
-    .lines()
-    .map(|l| l.trim().trim_start_matches('#').trim().to_string())
-    .collect()
+    .and_then(|p| p.as_str())
+    .map(|p| p.lines().map(|l| l.trim().trim_start_matches('#').trim().to_string()).collect())
+    .unwrap_or_default()
 }
 
 /// `# setup-project: if-dep NAME` in the comment block directly above a template table.
@@ -573,6 +587,22 @@ mod docker_tests {
     }
   }
 
+  #[test]
+  fn a_marker_above_a_value_gates_that_key_only() {
+    let tpl = "[tool.uv.sources]\n  # setup-project: if-docker-services\n  devkit-container = [{ index = \"SFTPyPI\" }]\n  devkit-claude-hooks = [{ index = \"SFTPyPI\" }]\n";
+    let orig = "[project]\n  name = \"p\"\n";
+    let out = merge_pyproject(orig, tpl, &ctx(false), &mut vec![]).unwrap();
+    assert!(out.contains("devkit-claude-hooks = [{ index = \"SFTPyPI\" }]"), "{out}");
+    assert!(!out.contains("devkit-container"), "{out}");
+    assert!(!out.contains("setup-project:"), "the marker is an instruction to the merger: {out}");
+    let out = merge_pyproject(orig, tpl, &ctx(true), &mut vec![]).unwrap();
+    assert!(out.contains("devkit-container = [{ index = \"SFTPyPI\" }]"), "{out}");
+    assert!(!out.contains("setup-project:"), "{out}");
+    let bad = "[tool.uv.sources]\n  # setup-project: if-dockr\n  x = 1\n";
+    let err = merge_pyproject(orig, bad, &ctx(false), &mut vec![]).unwrap_err().to_string();
+    assert!(err.contains("unknown marker") && err.contains("tool.uv.sources.x"), "{err}");
+  }
+
   const TPL: &str = "[tool.pyright]\n  strict = true\n\n# setup-project: if-docker\n[tool.docker]\n  mkdirs = []\n";
 
   #[test]
@@ -630,7 +660,7 @@ mod docker_tests {
     )
     .unwrap_err()
     .to_string();
-    assert!(err.contains("if-docker-service") && err.contains("[tool.x]"), "{err}");
+    assert!(err.contains("if-docker-service") && err.contains("tool.x"), "{err}");
   }
 
   #[test]

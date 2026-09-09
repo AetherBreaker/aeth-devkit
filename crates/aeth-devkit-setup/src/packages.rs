@@ -39,21 +39,34 @@ pub const CONTAINER: DevkitPackage = DevkitPackage {
   import_name: "devkit_container",
 };
 
+/// The Claude Code hooks: `devkit-hook <name>`, wired into `.claude/settings.local.json`
+/// by the settings template.
+pub const HOOKS: DevkitPackage = DevkitPackage {
+  name: "devkit-claude-hooks",
+  import_name: "devkit_claude_hooks",
+};
+
+/// poe shell completion: `devkit-complete`, whose shims the run installs (step 15).
+pub const COMPLETE: DevkitPackage = DevkitPackage {
+  name: "devkit-poe-complete",
+  import_name: "devkit_poe_complete",
+};
+
 /// devkit itself, for the lookups that read its own package data (the templates).
 pub const DEVKIT: DevkitPackage = DevkitPackage {
   name: "aeth-devkit",
   import_name: "aeth_devkit",
 };
 
-/// The devkit packages this project should carry. Only the container so far; the templates,
-/// hooks and completion packages join in later split steps. The container's condition is
-/// `[tool.docker].services`, the same `if-docker-services` gate the template adds the
-/// dependency under, so a dependency the merge adds is always one this step locks and
-/// installs. A project never carries itself, so each satellite repo can be devkit-managed
-/// without depending on its own name.
+/// The devkit packages this project should carry: the hooks and the completion for every
+/// project, the container for Docker projects (the templates package joins in split step 4).
+/// The container's condition is `[tool.docker].services`, the same `if-docker-services` gate
+/// the template adds the dependency under, so a dependency the merge adds is always one this
+/// step locks and installs. A project never carries itself, so each satellite repo can be
+/// devkit-managed without depending on its own name.
 pub fn active(ctx: &ProjectContext) -> Vec<&'static DevkitPackage> {
   let own = normalize_dist_name(&ctx.name);
-  let mut out = Vec::new();
+  let mut out = vec![&HOOKS, &COMPLETE];
   if ctx.has_docker {
     out.push(&CONTAINER);
   }
@@ -424,26 +437,28 @@ source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+s
   }
 
   #[test]
-  fn the_container_is_active_only_for_docker_projects() {
+  fn hooks_and_completion_are_always_active_the_container_only_with_docker() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-      dir.path().join("pyproject.toml"),
-      "[project]\nname = \"p\"\n[tool.docker]\nservices = [\"p\"]\n",
-    )
-    .unwrap();
-    let ctx = crate::context::ProjectContext::discover(dir.path()).unwrap();
-    assert_eq!(active(&ctx).iter().map(|p| p.name).collect::<Vec<_>>(), vec!["devkit-container"]);
-    std::fs::write(dir.path().join("pyproject.toml"), "[project]\nname = \"p\"\n").unwrap();
-    let ctx = crate::context::ProjectContext::discover(dir.path()).unwrap();
-    assert!(active(&ctx).is_empty());
-    // The container repo itself has no reason to depend on its own wheel.
-    std::fs::write(
-      dir.path().join("pyproject.toml"),
-      "[project]\nname = \"devkit_container\"\n[tool.docker]\nservices = [\"x\"]\n",
-    )
-    .unwrap();
-    let ctx = crate::context::ProjectContext::discover(dir.path()).unwrap();
-    assert!(active(&ctx).is_empty(), "a project never carries itself");
+    let names = |pyproject: &str| {
+      std::fs::write(dir.path().join("pyproject.toml"), pyproject).unwrap();
+      let ctx = crate::context::ProjectContext::discover(dir.path()).unwrap();
+      active(&ctx).iter().map(|p| p.name).collect::<Vec<_>>()
+    };
+    assert_eq!(
+      names("[project]\nname = \"p\"\n"),
+      vec!["devkit-claude-hooks", "devkit-poe-complete"]
+    );
+    assert_eq!(
+      names("[project]\nname = \"p\"\n[tool.docker]\nservices = [\"p\"]\n"),
+      vec!["devkit-claude-hooks", "devkit-poe-complete", "devkit-container"]
+    );
+    // A satellite never carries itself, under any spelling of its name.
+    assert_eq!(names("[project]\nname = \"devkit-claude-hooks\"\n"), vec!["devkit-poe-complete"]);
+    assert_eq!(names("[project]\nname = \"Devkit_Poe_Complete\"\n"), vec!["devkit-claude-hooks"]);
+    assert_eq!(
+      names("[project]\nname = \"devkit_container\"\n[tool.docker]\nservices = [\"x\"]\n"),
+      vec!["devkit-claude-hooks", "devkit-poe-complete"]
+    );
   }
 
   #[test]

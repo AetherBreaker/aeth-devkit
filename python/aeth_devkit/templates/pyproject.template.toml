@@ -19,7 +19,12 @@
   # sets --strict-config, which turns a missing plugin into a hard failure, so a bare `pytest`
   # errors out without pytest-cov (addopts passes --cov) and pytest-asyncio (asyncio_mode).
   # mypy is deliberately absent -- [tool.mypy] is `if-dep mypy` gated and stays opt-in.
+  # devkit-claude-hooks and devkit-poe-complete are the Claude Code hooks and the poe
+  # completion binaries setup-project wires in; their floors follow the newest release the
+  # installed devkit accepts (spec 4.0).
   dev = [
+    "devkit-claude-hooks>={latest}",
+    "devkit-poe-complete>={latest}",
     "poethepoet>=0.46.0",
     "pyright>=1.1.411",
     "pytest>=8.0",
@@ -240,6 +245,8 @@
     key-value-equals-sign-alignment = true
     trailing-comment-alignment      = true
 
-# setup-project: if-docker-services
 [tool.uv.sources]
-  devkit-container = [{ index = "{devkit_index}" }]
+  # setup-project: if-docker-services
+  devkit-container    = [{ index = "{devkit_index}" }]
+  devkit-claude-hooks = [{ index = "{devkit_index}" }]
+  devkit-poe-complete = [{ index = "{devkit_index}" }]

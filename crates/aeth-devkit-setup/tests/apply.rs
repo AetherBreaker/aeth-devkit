@@ -35,13 +35,19 @@ fn run(root: &Path, dry_run: bool) -> anyhow::Result<aeth_devkit_setup::changes:
   runner.script("gh", &["api"], 0, "v1.1.0\n");
   let index = aeth_devkit_core::index::StubIndexClient { versions: vec![] };
   let mut map = std::collections::HashMap::new();
-  map.insert(
-    "devkit_container".to_string(),
-    aeth_devkit_setup::packages::Installed {
-      dir: fixtures().join("docker"),
-      version: "1.4.0".into(),
-    },
-  );
+  for (name, version) in [
+    ("devkit_container", "1.4.0"),
+    ("devkit_claude_hooks", "1.0.0"),
+    ("devkit_poe_complete", "1.0.0"),
+  ] {
+    map.insert(
+      name.to_string(),
+      aeth_devkit_setup::packages::Installed {
+        dir: fixtures().join("docker"),
+        version: version.into(),
+      },
+    );
+  }
   let venv = aeth_devkit_setup::packages::StubVenv(map);
   let deps = aeth_devkit_setup::Deps {
     docker: aeth_devkit_setup::docker::Deps {
@@ -76,16 +82,17 @@ fn make_project() -> tempfile::TempDir {
   write(root, ".gitignore", &fs::read_to_string(fx.join("gitignore-custom")).unwrap());
   write(root, ".env", &fs::read_to_string(fx.join("env")).unwrap());
   write(root, "src/imap_report_collector/__init__.py", "");
-  // As uv would have left it: the package step's recorded `uv lock` rewrites nothing.
-  write(
-    root,
-    "uv.lock",
-    &format!(
-      "version = 1\n\n[[package]]\nname = \"aeth-devkit\"\nversion = \"{}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-container\"\nversion = \"1.4.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n",
-      aeth_devkit_setup::packages::RUNNING_DEVKIT
-    ),
-  );
+  write(root, "uv.lock", &devkit_lock());
   dir
+}
+
+/// A lock as uv leaves it with every devkit package at the version the stub venv holds, so
+/// the package step's recorded `uv lock` has nothing to change and the sync is skipped.
+fn devkit_lock() -> String {
+  format!(
+    "version = 1\n\n[[package]]\nname = \"aeth-devkit\"\nversion = \"{}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-claude-hooks\"\nversion = \"1.0.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-poe-complete\"\nversion = \"1.0.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-container\"\nversion = \"1.4.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n",
+    aeth_devkit_setup::packages::RUNNING_DEVKIT
+  )
 }
 
 #[test]
@@ -220,6 +227,7 @@ fn uv_init_gitignore_is_replaced_and_mypy_is_conditional() {
     "[project]\n  name = \"demo-app\"\n  version = \"0.1.0\"\n  dependencies = []\n\n[dependency-groups]\n  dev = [\"mypy>=1\"]\n",
   );
   write(root, ".gitignore", &fs::read_to_string(fixtures().join("gitignore-uv")).unwrap());
+  write(root, "uv.lock", &devkit_lock());
   let changes = run(root, false).unwrap();
   let gi = read(root, ".gitignore");
   assert!(!gi.contains("project-specific"), "{gi}");
@@ -246,6 +254,7 @@ fn mixed_rust_python_project_uses_python_dir_and_rust_overlays() {
   write(root, "src/main.rs", "fn main() {}\n");
   write(root, "python/mixed_tool/__init__.py", "");
   write(root, ".gitignore", "# custom\nsecrets/\n");
+  write(root, "uv.lock", &devkit_lock());
   run(root, false).unwrap();
 
   let py = read(root, "pyproject.toml");
@@ -285,6 +294,7 @@ fn plain_python_project_gets_no_rust_overlays() {
     "[project]\n  name = \"plain\"\n  version = \"0.1.0\"\n  dependencies = []\n",
   );
   write(root, "src/plain/__init__.py", "");
+  write(root, "uv.lock", &devkit_lock());
   run(root, false).unwrap();
   assert!(read(root, "pyproject.toml").contains("src       = [\"./src\", \"../*/src\", \"../*/python\"]"));
   assert!(!read(root, ".vscode/extensions.json").contains("rust-analyzer"));
@@ -1049,13 +1059,19 @@ fn a_committing_run_resyncs_the_venv_to_the_lock_the_user_gets_back() {
     });
     let index = aeth_devkit_core::index::StubIndexClient { versions: vec![] };
     let mut map = std::collections::HashMap::new();
-    map.insert(
-      "devkit_container".to_string(),
-      aeth_devkit_setup::packages::Installed {
-        dir: fixtures().join("docker"),
-        version: "1.4.0".into(),
-      },
-    );
+    for (name, version) in [
+      ("devkit_container", "1.4.0"),
+      ("devkit_claude_hooks", "1.0.0"),
+      ("devkit_poe_complete", "1.0.0"),
+    ] {
+      map.insert(
+        name.to_string(),
+        aeth_devkit_setup::packages::Installed {
+          dir: fixtures().join("docker"),
+          version: version.into(),
+        },
+      );
+    }
     let venv = aeth_devkit_setup::packages::StubVenv(map);
     let deps = aeth_devkit_setup::Deps {
       docker: aeth_devkit_setup::docker::Deps {
