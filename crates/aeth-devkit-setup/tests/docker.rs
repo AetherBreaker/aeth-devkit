@@ -41,6 +41,15 @@ fn project(services: &[&str], origin: &str) -> tempfile::TempDir {
     ),
   );
   write(root, "src/demo_app/__init__.py", "");
+  // As uv would have left it: the package step's recorded `uv lock` rewrites nothing.
+  write(
+    root,
+    "uv.lock",
+    &format!(
+      "version = 1\n\n[[package]]\nname = \"aeth-devkit\"\nversion = \"{}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-container\"\nversion = \"1.4.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n",
+      aeth_devkit_setup::packages::RUNNING_DEVKIT
+    ),
+  );
   aeth_devkit_core::git::init_test_repo(root);
   let out = std::process::Command::new("git")
     .current_dir(root)

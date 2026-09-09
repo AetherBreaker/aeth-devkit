@@ -62,14 +62,18 @@ pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps:
   changes.keep_previews = deps.docker.reviewer.is_some();
 
   // 1. pyproject.toml
+  let pyproject_template = templates::load(templates_dir, "pyproject.toml", ctx, templates::Escape::Toml)?;
   {
     let path = ctx.root.join("pyproject.toml");
     let original = std::fs::read_to_string(&path).context("reading pyproject.toml")?;
-    let template = templates::load(templates_dir, "pyproject.toml", ctx, templates::Escape::Toml)?;
     let mut log = Vec::new();
-    let merged = toml_merge::merge_pyproject(&original, &template, ctx, &mut log)?;
+    let merged = toml_merge::merge_pyproject(&original, &pyproject_template, ctx, &mut log)?;
     changes.record(&path, &original, &merged, log)?;
   }
+
+  // 1b. The devkit packages (spec 4.0): list, lock under the running devkit, sync. Before
+  //     the Docker step, which renders the Dockerfile from the installed container package.
+  packages::advance(ctx, deps, dry_run, &packages::latest_requested(&pyproject_template), &mut changes)?;
 
   // 2. .vscode/settings.json and extensions.json — deep merge, plus a Rust overlay
   //    (`vscode/<name>.rust.json`) for projects that also contain a crate.

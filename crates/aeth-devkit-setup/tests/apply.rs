@@ -70,6 +70,15 @@ fn make_project() -> tempfile::TempDir {
   write(root, ".gitignore", &fs::read_to_string(fx.join("gitignore-custom")).unwrap());
   write(root, ".env", &fs::read_to_string(fx.join("env")).unwrap());
   write(root, "src/imap_report_collector/__init__.py", "");
+  // As uv would have left it: the package step's recorded `uv lock` rewrites nothing.
+  write(
+    root,
+    "uv.lock",
+    &format!(
+      "version = 1\n\n[[package]]\nname = \"aeth-devkit\"\nversion = \"{}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-container\"\nversion = \"1.4.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n",
+      aeth_devkit_setup::packages::RUNNING_DEVKIT
+    ),
+  );
   dir
 }
 
