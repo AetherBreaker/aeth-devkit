@@ -1102,6 +1102,12 @@ fn a_project_that_opts_out_keeps_its_own_release_workflow() {
   assert!(!changes.managed.iter().any(|p| p.ends_with("release.yml")), "{:?}", changes.managed);
   // The pyproject merge must carry the switch through, or the second run would replace the file.
   assert!(read(root, "pyproject.toml").contains("release-workflow = false"));
-  run(root, false).unwrap();
+  let again = run(root, false).unwrap();
+  assert!(
+    again.is_empty(),
+    "second run should be a no-op, got:
+{}",
+    again.report(root)
+  );
   assert_eq!(read(root, ".github/workflows/release.yml"), own);
 }

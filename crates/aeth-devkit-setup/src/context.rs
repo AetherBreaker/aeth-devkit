@@ -52,13 +52,16 @@ pub struct ProjectContext {
   /// workflow, for a repository whose artefact is not a wheel and releases through a
   /// `release.yml` of its own (the VS Code extension). Default `true`. The first setting
   /// in `[tool.devkit]`, the table the split spec reserves for devkit-level project
-  /// settings; the template seeds nothing there.
+  /// settings; the template seeds nothing there, and a key devkit does not know is an error.
   pub release_workflow: bool,
 }
 
 /// The index name assumed for devkit's packages when the project declares no source for
 /// `aeth-devkit` itself.
 pub const DEFAULT_DEVKIT_INDEX: &str = "SFTPyPI";
+
+/// Every key `[tool.devkit]` may hold; anything else is refused (see `discover`).
+pub const DEVKIT_KEYS: &[&str] = &["release-workflow"];
 
 impl ProjectContext {
   pub fn discover(root: &Path) -> Result<Self> {
@@ -157,13 +160,26 @@ impl ProjectContext {
 
     let devkit_index =
       aeth_devkit_core::pyproject::source_index_name(&doc, "aeth-devkit").unwrap_or_else(|| DEFAULT_DEVKIT_INDEX.to_string());
-    // A value that cannot mean anything is an error, like `[tool.docker].services`: read as
-    // `true` it would silently install a workflow the project meant to keep out.
-    let release_workflow = match doc
-      .get("tool")
-      .and_then(|t| t.get("devkit"))
-      .and_then(|d| d.get("release-workflow"))
-    {
+    // `[tool.devkit]` is devkit's own table, so a key it does not know is a typo or a newer
+    // devkit's setting, and silence would read as the default either way: a misspelt
+    // `release_workflow = false` taken as `true` would install a workflow the project meant to
+    // keep out. A value that cannot mean anything is an error for the same reason, like
+    // `[tool.docker].services`.
+    let devkit = doc.get("tool").and_then(|t| t.get("devkit"));
+    if let Some(table) = devkit {
+      let table = table
+        .as_table_like()
+        .ok_or_else(|| anyhow!("[tool.devkit] must be a table, got {}", table.type_name()))?;
+      let unknown: Vec<&str> = table.iter().map(|(k, _)| k).filter(|k| !DEVKIT_KEYS.contains(k)).collect();
+      if !unknown.is_empty() {
+        bail!(
+          "[tool.devkit] has unknown key(s) {}; this devkit knows {}",
+          unknown.join(", "),
+          DEVKIT_KEYS.join(", ")
+        );
+      }
+    }
+    let release_workflow = match devkit.and_then(|d| d.get("release-workflow")) {
       None => true,
       Some(item) => item.as_bool().with_context(|| {
         format!(
@@ -434,5 +450,30 @@ mod devkit_settings {
     .unwrap();
     let err = ProjectContext::discover(dir.path()).unwrap_err().to_string();
     assert!(err.contains("release-workflow"), "{err}");
+    // A misspelt key is refused rather than read as the default.
+    std::fs::write(
+      dir.path().join("pyproject.toml"),
+      "[project]
+name = \"p\"
+
+[tool.devkit]
+release_workflow = false
+",
+    )
+    .unwrap();
+    let err = ProjectContext::discover(dir.path()).unwrap_err().to_string();
+    assert!(err.contains("unknown key") && err.contains("release_workflow"), "{err}");
+    std::fs::write(
+      dir.path().join("pyproject.toml"),
+      "[project]
+name = \"p\"
+
+[tool]
+devkit = 1
+",
+    )
+    .unwrap();
+    let err = ProjectContext::discover(dir.path()).unwrap_err().to_string();
+    assert!(err.contains("must be a table"), "{err}");
   }
 }
