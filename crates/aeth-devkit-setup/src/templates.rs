@@ -179,7 +179,8 @@ pub fn installed_package_dir(import_name: &str) -> Option<PathBuf> {
 /// that interpreter cannot be spawned (e.g. `python.exe` on Unix) or cannot import it.
 pub fn package_dir_via(python: &Path, import_name: &str) -> Option<PathBuf> {
   let code = format!("import {import_name}, os; print(os.path.dirname({import_name}.__file__))");
-  let out = Command::new(python).args(["-c", &code]).output().ok()?;
+  // `-X utf8`: a piped stdout is otherwise the ANSI code page, which mangles a non-ASCII path.
+  let out = Command::new(python).args(["-X", "utf8", "-c", &code]).output().ok()?;
   let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
   (out.status.success() && p.is_dir()).then_some(p)
 }

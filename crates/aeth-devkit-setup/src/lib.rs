@@ -159,8 +159,8 @@ pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps:
     changes.record_optional(&path, original.as_deref(), &merged, log)?;
   }
 
-  // 8b. Docker: templated docker/ files replaced whole and the compose file edited in
-  //     place, each behind consent (see `docker`).
+  // 8b. Docker: the Dockerfile from the installed container package replaced whole and the
+  //     compose file edited in place, each behind consent (see `docker`).
   if ctx.has_docker {
     docker::apply(ctx, templates_dir, deps, &mut changes)?;
   }

@@ -142,7 +142,14 @@ fn without_the_container_package_the_dockerfile_is_skipped_with_a_note() {
   };
   let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
   let changes = aeth_devkit_setup::run_with(&ctx, &templates(), true, &deps(docker, &index, &dirs)).unwrap();
-  assert!(!root.join("docker/Dockerfile").exists());
+  // A dry run records what it would write, so the file list is the evidence: no Dockerfile,
+  // but the rest of the Docker step (the compose file) still ran.
+  assert!(
+    !changes.files.iter().any(|f| f.path.ends_with("Dockerfile")),
+    "{}",
+    changes.report(root)
+  );
+  assert!(changes.files.iter().any(|f| f.path.ends_with("compose.yaml") && f.created));
   assert!(
     changes
       .notes

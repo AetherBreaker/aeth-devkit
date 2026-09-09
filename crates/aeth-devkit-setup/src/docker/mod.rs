@@ -1,5 +1,6 @@
-//! Docker standardisation: templated `docker/` files replaced whole and the compose file
-//! edited in place — each only with the user's consent, given per file or once for all.
+//! Docker standardisation: the Dockerfile (from the installed container package) replaced
+//! whole and the compose file edited in place — each only with the user's consent, given per
+//! file or once for all.
 
 pub mod compose_rules;
 pub mod hunks;

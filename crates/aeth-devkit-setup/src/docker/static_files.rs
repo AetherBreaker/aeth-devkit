@@ -14,8 +14,8 @@ use crate::vscode::protocol::Proposal;
 
 /// The files under `docker/` this step owns, by target name (the compose file has its own
 /// rule-based flow). One list, so `git::committable` stages exactly what is written here:
-/// a file added to the templates but not to this list would be replaced without the
-/// HEAD-reset every other managed file gets, then left out of the commit.
+/// a file rendered here but not on this list would be replaced without the HEAD-reset
+/// every other managed file gets, then left out of the commit.
 pub const TARGETS: &[&str] = &["Dockerfile"];
 
 /// The template's file name inside the installed `devkit_container` package.
@@ -61,7 +61,7 @@ pub fn apply(ctx: &ProjectContext, packages: &dyn PackageDirs, consent: &Consent
     // means a dry run on a project that has not adopted it yet.
     let Some(rendered) = render(ctx, packages)? else {
       changes.notes.push(format!(
-        "{rel} was not rendered: devkit-container is not installed in this venv yet; a plain run adds it and renders on the next run."
+        "{rel} was not rendered: devkit-container is not installed in this venv yet; a plain run installs it and renders the file."
       ));
       if let Some(original) = &original {
         changes.record_optional(&path, Some(original), original, vec![])?;
