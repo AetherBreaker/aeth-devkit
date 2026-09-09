@@ -112,6 +112,7 @@ impl Merger<'_> {
               // only ever honoured on the template side.
               let mut fresh = ttable.clone();
               strip_marker_comments(&mut fresh);
+              scrub_latest_table(&mut fresh);
               target.insert_formatted(&tkey, Item::Table(fresh));
               self.log.push(format!("added [{child}]"));
               continue;
@@ -130,18 +131,13 @@ impl Merger<'_> {
     let key = tkey.get();
     match target.get_mut(key) {
       None => {
-        if tval.is_array() && (path.starts_with("dependency-groups.") || path == "project.dependencies") {
-          // A fresh array built through the same union, so a `{latest}` entry lands as a
-          // bare name here too instead of the literal placeholder.
-          let mut arr = Array::new();
-          let added = union_dependencies(&mut arr, tval.as_array().unwrap());
-          target.insert_formatted(tkey, Item::Value(Value::Array(arr)));
-          self.log.push(format!("added {path}: {}", added.join(", ")));
-        } else {
-          // Carry the template key's decor (indentation) so the new line matches its neighbours.
-          target.insert_formatted(tkey, Item::Value(tval.clone()));
-          self.log.push(format!("added {path}"));
+        // Carry the template key's decor (indentation) so the new line matches its neighbours.
+        let mut fresh = tval.clone();
+        if let Value::Array(a) = &mut fresh {
+          scrub_latest_array(a);
         }
+        target.insert_formatted(tkey, Item::Value(fresh));
+        self.log.push(format!("added {path}"));
       }
       Some(Item::Value(Value::Array(existing))) if tval.is_array() => {
         if path == "tool.poe.include_script" {
@@ -291,6 +287,32 @@ fn union_array(existing: &mut Array, template: &Array) -> Vec<String> {
   added
 }
 
+/// The template's `name>={latest}` entries in an array copied into a project as is, made
+/// bare names: what the union does for an existing array (see [`union_dependencies`]), so
+/// the placeholder never reaches a project file whichever path adds the array.
+fn scrub_latest_array(arr: &mut Array) {
+  for i in 0..arr.len() {
+    let Some(spec) = arr.get(i).and_then(Value::as_str) else { continue };
+    if spec.contains(LATEST) {
+      let mut bare = Value::from(dependency_name(spec));
+      *bare.decor_mut() = arr.get(i).unwrap().decor().clone();
+      arr.replace(i, bare);
+    }
+  }
+}
+
+/// [`scrub_latest_array`] over every array in a table copied whole, sub-tables included
+/// (`[dependency-groups]` holds one array per group).
+fn scrub_latest_table(t: &mut Table) {
+  for (_, item) in t.iter_mut() {
+    match item {
+      Item::Value(Value::Array(a)) => scrub_latest_array(a),
+      Item::Table(sub) => scrub_latest_table(sub),
+      _ => {}
+    }
+  }
+}
+
 /// Dependency arrays: match by package name; replace the specifier, else append. A
 /// [`LATEST`] specifier is the exception: the project's own floor stays, and a missing
 /// package is added by bare name for `packages::advance` to pin.
@@ -302,8 +324,9 @@ fn union_dependencies(existing: &mut Array, template: &Array) -> Vec<String> {
     let pos = existing.iter().position(|e| e.as_str().is_some_and(|s| dependency_name(s) == name));
     if spec.contains(LATEST) {
       if pos.is_none() {
-        push_like_last(existing, Value::from(name.clone()));
-        added.push(name);
+        let bare = Value::from(name);
+        added.push(display(&bare));
+        push_like_last(existing, bare);
       }
       continue;
     }
@@ -412,6 +435,13 @@ mod tests {
       out.contains("\"devkit-container\"") && !out.contains("{latest}"),
       "no array yet: {out}"
     );
+    // Whole tables copied from the template are scrubbed too, sub-tables included, and the
+    // template's layout survives.
+    let tpl = "[project]\n  dependencies = [\"devkit-container>={latest}\"]\n[dependency-groups]\n  dev = [\n    \"ruff>=0.15\",\n    \"devkit-templates>={latest}\",\n  ]\n";
+    let out = merge_pyproject("[tool.x]\n  y = 1\n", tpl, &ctx(&[]), &mut log).unwrap();
+    assert!(out.contains("dependencies = [\"devkit-container\"]"), "{out}");
+    assert!(out.contains("    \"devkit-templates\",\n"), "layout kept, name bare: {out}");
+    assert!(!out.contains("{latest}"), "{out}");
   }
 
   #[test]
