@@ -35,26 +35,10 @@ pub struct Deps<'a> {
   pub venv: &'a dyn packages::Venv,
 }
 
-/// Apply every template to the project at `root` with real collaborators and no
-/// terminal: Docker drift is shown but kept (or merely recorded on a dry run).
-pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> {
-  let deps = Deps {
-    docker: docker::Deps {
-      runner: &aeth_devkit_core::process::SystemRunner,
-      prompt: &aeth_devkit_core::prompt::StdinPrompt,
-      reviewer: None,
-      mode: if dry_run { docker::Mode::DryRun } else { docker::Mode::KeepAll },
-    },
-    index: &aeth_devkit_core::index::HttpIndexClient::default(),
-    venv: &packages::SystemVenv,
-  };
-  run_with(&ProjectContext::discover(root)?, templates_dir, dry_run, &deps)
-}
-
-/// [`run`] with injectable collaborators (see [`Deps`]) and a context the caller
-/// discovered — before `git::stage_bases` when committing, which resets `pyproject.toml`
-/// to HEAD; `cli` refuses a `[tool.docker].services` that differs between the two rather
-/// than merge on one and switch on the other.
+/// Apply every template to the project with the given collaborators (see [`Deps`]) and a
+/// context the caller discovered — before `git::stage_bases` when committing, which resets
+/// `pyproject.toml` to HEAD; `cli` refuses a `[tool.docker].services` that differs between
+/// the two rather than merge on one and switch on the other.
 /// Returns the collected change log; nothing is written when `dry_run` is set.
 pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps: &Deps) -> Result<Changes> {
   let mut changes = Changes::new(dry_run);

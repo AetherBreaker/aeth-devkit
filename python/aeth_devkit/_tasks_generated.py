@@ -135,7 +135,7 @@ _RAW = {'env': {},
                                      '.env and VS Code, inlined ruff/pyright config, '
                                      '.gitignore/.gitattributes/.dockerignore). Idempotent. Extra args are '
                                      'passed to devkit setup-project: --dry-run, --check, --no-commit, '
-                                     '--replace-docker, --templates-dir PATH.',
+                                     '-y/--yes, --templates-dir PATH.',
                              'cmd': 'devkit setup-project'}}}
 
 

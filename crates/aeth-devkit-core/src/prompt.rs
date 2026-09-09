@@ -61,8 +61,60 @@ impl Prompt for StdinPrompt {
     let mut line = String::new();
     let _w = Waiting::begin();
     // `lock()` takes the stdin handle once for the whole read instead of per byte.
-    std::io::stdin().lock().read_line(&mut line).context("reading answer from stdin")?;
+    let read = std::io::stdin().lock().read_line(&mut line).context("reading answer from stdin")?;
+    // End of input (Ctrl-D, or a pipe that ran dry) is not an answer: a run whose input
+    // stops mid-way is cancelled, never finished on defaults nobody chose.
+    if read == 0 {
+      bail!("standard input ended before {question:?} was answered; cancelled");
+    }
     Ok(line.trim().to_string())
+  }
+}
+
+/// Whether standard input exists to answer a prompt from: a terminal, a pipe or a file.
+/// False for a closed descriptor and for the null device, the shapes a headless launch
+/// leaves a process with; neither can ever carry an answer.
+pub fn stdin_present() -> bool {
+  #[cfg(unix)]
+  {
+    use std::os::fd::AsFd as _;
+    use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+    // `try_clone_to_owned` dups fd 0, which fails with EBADF when it is closed.
+    let Ok(fd) = std::io::stdin().as_fd().try_clone_to_owned() else {
+      return false;
+    };
+    let Ok(meta) = std::fs::File::from(fd).metadata() else {
+      return false;
+    };
+    let null = std::fs::metadata("/dev/null").ok();
+    !(meta.file_type().is_char_device() && null.is_some_and(|n| n.rdev() == meta.rdev()))
+  }
+  #[cfg(windows)]
+  {
+    use std::os::windows::io::AsRawHandle as _;
+    // Two kernel32 calls std does not surface; declared here rather than pulling in
+    // `windows-sys` for them.
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+      fn GetFileType(handle: *mut std::ffi::c_void) -> u32;
+      fn GetConsoleMode(handle: *mut std::ffi::c_void, mode: *mut u32) -> i32;
+    }
+    const FILE_TYPE_UNKNOWN: u32 = 0;
+    const FILE_TYPE_CHAR: u32 = 2;
+    let handle = std::io::stdin().as_raw_handle();
+    // No handle at all (a detached or GUI-subsystem launch), or the invalid sentinel.
+    if handle.is_null() || handle as isize == -1 {
+      return false;
+    }
+    match unsafe { GetFileType(handle) } {
+      FILE_TYPE_UNKNOWN => false,
+      // A character device is the console or `NUL`; only the console has a console mode.
+      FILE_TYPE_CHAR => {
+        let mut mode = 0u32;
+        unsafe { GetConsoleMode(handle, &mut mode) != 0 }
+      }
+      _ => true,
+    }
   }
 }
 

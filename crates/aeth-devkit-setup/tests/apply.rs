@@ -26,10 +26,10 @@ fn read(root: &Path, rel: &str) -> String {
   fs::read_to_string(root.join(rel)).unwrap()
 }
 
-/// [`aeth_devkit_setup::run`] with the Docker step's `gh` tag lookup answered locally (the
-/// fixture lists a service, so a first run would otherwise hit GitHub, and fail without a
-/// token in CI), no index answers, and the fixture copy of the container package's template
-/// standing in for the venv.
+/// `run_with` accepting every proposal, with the Docker step's `gh` tag lookup answered
+/// locally (the fixture lists a service, so a first run would otherwise hit GitHub, and
+/// fail without a token in CI), no index answers, and the fixture copy of the container
+/// package's template standing in for the venv.
 fn run(root: &Path, dry_run: bool) -> anyhow::Result<aeth_devkit_setup::changes::Changes> {
   let runner = aeth_devkit_core::process::RecordingRunner::new(0);
   runner.script("gh", &["api"], 0, "v1.1.0\n");
@@ -57,7 +57,7 @@ fn run(root: &Path, dry_run: bool) -> anyhow::Result<aeth_devkit_setup::changes:
       mode: if dry_run {
         aeth_devkit_setup::docker::Mode::DryRun
       } else {
-        aeth_devkit_setup::docker::Mode::KeepAll
+        aeth_devkit_setup::docker::Mode::Yes
       },
     },
     index: &index,
@@ -415,7 +415,7 @@ fn an_uncommitted_services_change_cancels_a_committing_run() {
       dry_run: false,
       check: false,
       no_commit: false,
-      replace_docker: false,
+      yes: false,
       vscode: false,
       no_vscode: true,
     })
@@ -471,16 +471,17 @@ fn tool_docker_is_seeded_only_where_docker_files_exist() {
 }
 
 #[test]
-fn a_headless_run_is_refused_unless_it_is_a_dry_run_or_check() {
+fn a_run_without_standard_input_is_refused_unless_nothing_will_be_asked() {
   let super_run = run;
-  // Only a real process has a non-tty stdin, so this goes through the binary. `--check`
-  // on the fixture drifts (exit 1) and a plain run is refused before touching anything
-  // (exit 2, the error exit); `--no-commit` and `--replace-docker` are refused the same.
+  // Only a real process can lack stdin, so this goes through the binary with the null
+  // device (no answer can ever come from it). A plain run and `--no-commit` are refused
+  // before touching anything (exit 2, the error exit); `-y` gets past the gate, shown
+  // here on a root with no pyproject so the run fails on that instead, hermetically.
   let dir = make_project();
   let root = dir.path();
   let before = read(root, "pyproject.toml");
   let exe = env!("CARGO_BIN_EXE_devkit-setup");
-  let run = |flags: &[&str]| {
+  let run = |root: &Path, flags: &[&str]| {
     let out = std::process::Command::new(exe)
       .arg("--root")
       .arg(root)
@@ -492,24 +493,34 @@ fn a_headless_run_is_refused_unless_it_is_a_dry_run_or_check() {
       .unwrap();
     (out.status.code(), String::from_utf8_lossy(&out.stderr).into_owned())
   };
-  for flags in [
-    &[][..],
-    &["--no-commit"],
-    &["--replace-docker"],
-    &["--no-commit", "--replace-docker"],
-  ] {
-    let (code, err) = run(flags);
+  for flags in [&[][..], &["--no-commit"]] {
+    let (code, err) = run(root, flags);
     assert_eq!(code, Some(2), "{flags:?}: {err}");
-    assert!(err.contains("only --dry-run or --check are allowed"), "{flags:?}: {err}");
+    assert!(err.contains("no standard input") && err.contains("-y/--yes"), "{flags:?}: {err}");
   }
   assert_eq!(read(root, "pyproject.toml"), before, "nothing touched");
+  let empty = tempfile::tempdir().unwrap();
+  let (code, err) = run(empty.path(), &["-y"]);
+  assert_eq!(code, Some(2), "{err}");
+  assert!(err.contains("pyproject.toml") && !err.contains("no standard input"), "{err}");
+  // A pipe is input: the same empty root fails the same way, past the gate.
+  let out = std::process::Command::new(exe)
+    .arg("--root")
+    .arg(empty.path())
+    .arg("--templates-dir")
+    .arg(templates())
+    .stdin(std::process::Stdio::piped())
+    .output()
+    .unwrap();
+  let err = String::from_utf8_lossy(&out.stderr);
+  assert!(err.contains("pyproject.toml") && !err.contains("no standard input"), "{err}");
   // Set up once (in-process, no network), then the headless dry forms are accepted: clean
   // is 0, a deleted managed file is drift (1 for --check, still 0 for --dry-run).
   super_run(root, false).unwrap();
-  assert_eq!(run(&["--check"]).0, Some(0));
+  assert_eq!(run(root, &["--check"]).0, Some(0));
   fs::remove_file(root.join(".dockerignore")).unwrap();
-  assert_eq!(run(&["--check"]).0, Some(1), "drift is still reported");
-  assert_eq!(run(&["--dry-run"]).0, Some(0));
+  assert_eq!(run(root, &["--check"]).0, Some(1), "drift is still reported");
+  assert_eq!(run(root, &["--dry-run"]).0, Some(0));
   assert!(!root.join(".dockerignore").exists(), "dry forms write nothing");
 }
 
@@ -563,7 +574,7 @@ fn check_fails_on_a_compose_file_the_engine_cannot_edit() {
     dry_run: !check,
     check,
     no_commit: true,
-    replace_docker: false,
+    yes: false,
     vscode: false,
     no_vscode: true,
   };
@@ -1078,7 +1089,7 @@ fn a_committing_run_resyncs_the_venv_to_the_lock_the_user_gets_back() {
         runner: &runner,
         prompt: &aeth_devkit_core::prompt::ScriptedPrompt::new(&[]),
         reviewer: None,
-        mode: aeth_devkit_setup::docker::Mode::KeepAll,
+        mode: aeth_devkit_setup::docker::Mode::Yes,
       },
       index: &index,
       venv: &venv,

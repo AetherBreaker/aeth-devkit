@@ -22,12 +22,13 @@ use crate::vscode::protocol::{Proposal, Response, Reviewer};
 /// How consent questions are answered for this run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-  /// A terminal is attached: ask per file.
+  /// Standard input is attached: ask per file.
   Ask,
-  /// `--replace-docker`, or the user answered `replace all`.
+  /// The user answered `replace all`: the shown diffs that follow are replaced, an add is
+  /// still asked.
   ReplaceAll,
-  /// No terminal and no flag: show diffs, change nothing.
-  KeepAll,
+  /// `--yes`: every proposal accepted, nothing asked.
+  Yes,
   /// `--dry-run` / `--check`: every intended edit is recorded, nothing is asked or written.
   DryRun,
 }
@@ -80,7 +81,6 @@ pub struct Consent<'a> {
   prompt: &'a dyn Prompt,
   reviewer: Cell<Option<&'a dyn Reviewer>>,
   mode: Cell<Mode>,
-  declined_silently: Cell<bool>,
 }
 
 impl<'a> Consent<'a> {
@@ -89,7 +89,6 @@ impl<'a> Consent<'a> {
       prompt,
       reviewer: Cell::new(reviewer),
       mode: Cell::new(mode),
-      declined_silently: Cell::new(false),
     }
   }
 
@@ -97,20 +96,15 @@ impl<'a> Consent<'a> {
   /// present, then the terminal. `dismissed` falls back to the terminal for this file
   /// only; an error or a malformed answer retires the reviewer for the run.
   ///
-  /// `offer_replace_all` is whether `replace all` (and so `--replace-docker`) is offered
-  /// for and covers this proposal. Adding a listed-but-absent service is never
-  /// pre-answered: a typo in pyproject must not grow the compose file without someone
-  /// reading the service name, so `--replace-docker` still asks for it. `KeepAll` (a bare
-  /// `run` with no terminal; the binaries refuse that up front) keeps it with the run's
-  /// note, like everything else.
+  /// `offer_replace_all` is whether a typed `replace all` is offered for and covers this
+  /// proposal. Adding a listed-but-absent service is not: a typo in pyproject must not grow
+  /// the compose file without someone reading the service name. `--yes` accepts it like
+  /// everything else, since that flag is the user's blanket answer.
   pub fn decide(&self, p: &Proposal, offer_replace_all: bool) -> Result<Decision> {
     match self.mode.get() {
-      Mode::DryRun => return Ok(Decision::Replace), // an intended edit, shown like every other
+      // A dry run's intended edit, shown like every other; `--yes` needs no diff read.
+      Mode::DryRun | Mode::Yes => return Ok(Decision::Replace),
       Mode::ReplaceAll if offer_replace_all => return Ok(Decision::Replace),
-      Mode::KeepAll => {
-        self.declined_silently.set(true);
-        return Ok(Decision::Keep);
-      }
       Mode::Ask | Mode::ReplaceAll => {}
     }
     if let Some(r) = self.reviewer.get() {
@@ -149,11 +143,6 @@ impl<'a> Consent<'a> {
     self.reviewer.set(None);
     println!("note: VS Code review unavailable ({why}); using the terminal prompt for the rest of the run.");
   }
-
-  /// A change was kept only because nobody could be asked.
-  pub fn kept_silently(&self) -> bool {
-    self.declined_silently.get()
-  }
 }
 
 /// A partial answer with every hunk is a replace and with none a keep, so the report and
@@ -180,13 +169,7 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, deps: &crate::Deps, cha
   let docker = &deps.docker;
   let consent = Consent::new(docker.prompt, docker.reviewer, docker.mode);
   static_files::apply(ctx, deps.venv, &consent, changes)?;
-  compose(ctx, templates_dir, docker.runner, &consent, changes)?;
-  if consent.kept_silently() {
-    changes
-      .notes
-      .push("Some Docker changes needed a confirmation no terminal could give and were skipped.".into());
-  }
-  Ok(())
+  compose(ctx, templates_dir, docker.runner, &consent, changes)
 }
 
 /// The compose file: created whole from the scaffold when absent; otherwise one diff per
@@ -375,7 +358,7 @@ mod consent_tests {
   }
 
   #[test]
-  fn dry_run_and_keep_all_never_ask() {
+  fn dry_run_yes_and_replace_all_never_ask() {
     let p = ScriptedPrompt::new(&[]);
     let dry = Consent::new(&p, None, Mode::DryRun);
     assert_eq!(dry.decide(&proposal("a"), true).unwrap(), Decision::Replace);
@@ -384,12 +367,25 @@ mod consent_tests {
       Decision::Replace,
       "an add is intended drift too"
     );
-    let keep = Consent::new(&p, None, Mode::KeepAll);
-    assert_eq!(keep.decide(&proposal("a"), true).unwrap(), Decision::Keep);
-    assert!(keep.kept_silently());
+    let yes = Consent::new(&p, None, Mode::Yes);
+    assert_eq!(yes.decide(&proposal("a"), true).unwrap(), Decision::Replace);
+    assert_eq!(
+      yes.decide(&proposal("add b"), false).unwrap(),
+      Decision::Replace,
+      "--yes covers an add"
+    );
     let all = Consent::new(&p, None, Mode::ReplaceAll);
     assert_eq!(all.decide(&proposal("a"), true).unwrap(), Decision::Replace);
     assert!(p.asked.borrow().is_empty());
+  }
+
+  #[test]
+  fn running_out_of_answers_is_an_error_not_a_keep() {
+    // The scripted stand-in for stdin ending: the run cancels rather than defaulting.
+    let p = ScriptedPrompt::new(&["replace"]);
+    let c = Consent::new(&p, None, Mode::Ask);
+    assert_eq!(c.decide(&proposal("a"), true).unwrap(), Decision::Replace);
+    assert!(c.decide(&proposal("b"), true).is_err());
   }
 
   #[test]
@@ -401,7 +397,6 @@ mod consent_tests {
     assert_eq!(all.decide(&proposal("add a"), false).unwrap(), Decision::Keep);
     assert_eq!(all.decide(&proposal("file"), true).unwrap(), Decision::Replace);
     assert_eq!(p.asked.borrow().len(), 1, "only the add asked");
-    assert!(!all.kept_silently(), "a human answered");
     let ask = Consent::new(&p, None, Mode::Ask);
     assert_eq!(ask.decide(&proposal("add b"), false).unwrap(), Decision::Replace);
     assert_eq!(
@@ -410,10 +405,6 @@ mod consent_tests {
       "still asked after replace all"
     );
     assert_eq!(p.asked.borrow().len(), 3);
-    // With nobody to ask, the add is skipped like any other kept-silently change.
-    let keep = Consent::new(&p, None, Mode::KeepAll);
-    assert_eq!(keep.decide(&proposal("add d"), false).unwrap(), Decision::Keep);
-    assert!(keep.kept_silently());
   }
 
   #[test]

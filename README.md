@@ -35,11 +35,13 @@ only once they migrate to Rust. -->
 ### `devkit setup-project`
 
 Flags: `--root`, `--templates-dir` (or `DEVKIT_TEMPLATES`), `--dry-run`, `--check`
-(dry-run that exits 1 on drift), `--no-commit`, `--replace-docker`. Prompts only before
-replacing a Docker file (see **Docker** below); otherwise no prompts. Without a terminal on
-stdin only `--dry-run`/`--check` are accepted; anything else is refused up front, since a
-headless run can neither answer a prompt nor commit on someone's behalf. Idempotent — a
-second run is a byte-for-byte no-op.
+(dry-run that exits 1 on drift), `--no-commit`, `-y`/`--yes`. Prompts only before
+replacing a Docker file (see **Docker** below); otherwise no prompts. `-y` accepts every
+proposal without asking. The prompts read stdin, a terminal or a pipe alike; if the input
+ends before a question is answered the run is cancelled (exit 2, the changes rolled back
+when committing), never finished on defaults. A run with no stdin at all (a closed handle
+or the null device) is refused up front unless nothing will be asked: `-y`, `--dry-run`
+or `--check`. Idempotent — a second run is a byte-for-byte no-op.
 
 - **Project discovery** - Detects the package name and layout (`src/` vs `python/`), Rust
   (`Cargo.toml` enables the Rust overlays), Docker (`[tool.docker].services` non-empty
@@ -116,9 +118,9 @@ second run is a byte-for-byte no-op.
   Dockerfile is rendered from the installed `devkit-container` package; the package step
   (below) installs and advances it first, and a dry run on a project that has not adopted it
   yet notes that instead of rendering.
-  `--replace-docker` answers `replace all` up front; adding a listed-but-absent service is
-  always asked, never pre-answered. `--dry-run`/`--check` print everything and count Docker
-  drift. Inside a VS Code terminal the diff opens in the editor instead (see **VS Code
+  `-y` accepts everything up front, an add included; a typed `replace all` covers the
+  shown diffs that follow, and adding a listed-but-absent service is still asked.
+  `--dry-run`/`--check` print everything and count Docker drift. Inside a VS Code terminal the diff opens in the editor instead (see **VS Code
   extension**). `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to
   delete, never removed.
 - **Placeholders** - `{project_root}`, `{package}`, `{python_dir}`, `{hook_bin}`,
@@ -303,7 +305,7 @@ is `vscode-extension-v1` on this repository and stays published.
 
 When `devkit setup-project` runs in a VS Code terminal (`TERM_PROGRAM=vscode`; force with
 `--vscode`, disable with `--no-vscode`) with stdin a terminal and neither `--check` nor
-`--replace-docker`, it installs the newest compatible extension if none is present (a
+`-y`, it installs the newest compatible extension if none is present (a
 one-off `code --install-extension`; an upgrade over a running one exits 2 asking you to
 reload the window and run again), adds itself to `enable-proposed-api` in `~/.vscode/argv.json`
 (restart VS Code once; this enables the floating Replace/Keep button), and then opens
