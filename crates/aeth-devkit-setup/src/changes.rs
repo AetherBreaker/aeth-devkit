@@ -38,8 +38,10 @@ pub struct Changes {
   /// changed outside the project. Never written.
   pub notes: Vec<String>,
   /// `warning:` lines (stderr): a managed file devkit deliberately left whole because the
-  /// project's layout puts it out of reach, not because anything is wrong with it. Never
-  /// written; `--check` passes, so a supported layout cannot fail a pipeline forever.
+  /// project's layout puts it out of reach, not because anything is wrong with it, or a step
+  /// outside the project (the index refresh, the completion install) that failed without
+  /// invalidating the run. Never written; `--check` passes, so a supported layout cannot
+  /// fail a pipeline forever.
   pub warnings: Vec<String>,
   /// `problem:` lines: drift the run saw in a file it manages but could not edit (a compose
   /// shape the engine does not model). Never written, never committed; `--check` fails on

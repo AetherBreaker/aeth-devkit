@@ -26,11 +26,9 @@ pub fn shells_on(path: &OsStr) -> Shells {
   }
 }
 
-/// The venv's `devkit-complete`, in the environment the package step syncs (the
-/// `UV_PROJECT_ENVIRONMENT` rule `packages::SystemVenv` follows).
+/// The `devkit-complete` in the environment the package step syncs.
 pub fn binary(root: &Path) -> Option<PathBuf> {
-  let env = std::env::var_os("UV_PROJECT_ENVIRONMENT").map_or_else(|| PathBuf::from(".venv"), PathBuf::from);
-  let env = if env.is_absolute() { env } else { root.join(env) };
+  let env = crate::packages::environment(root);
   ["Scripts/devkit-complete.exe", "bin/devkit-complete"]
     .iter()
     .map(|rel| env.join(rel))
@@ -62,11 +60,14 @@ pub fn install(root: &Path, binary: &Path, shells: Shells, runner: &dyn Runner, 
       } else {
         "shell completion"
       };
-      let before = changes.notes.len();
+      let mut changed = false;
       for line in out.stdout.lines().filter_map(|l| l.strip_prefix("  - ")) {
+        // A file the installer declined to overwrite ("left … alone") is listed beside
+        // what it wrote: standing advice, not a change to open a new shell for.
+        changed |= !line.starts_with("left ");
         changes.notes.push(format!("{prefix}: {line}"));
       }
-      if !dry_run && changes.notes.len() > before {
+      if !dry_run && changed {
         changes
           .notes
           .push("shell completion changed: open a new shell for it to take effect".into());
@@ -187,6 +188,22 @@ mod tests {
     assert_eq!(
       changes.notes,
       vec!["shell completion would change: created C:/home/bash_completion.d/poe.bash"]
+    );
+
+    let r = RecordingRunner::new(0);
+    r.script(
+      &bin.to_string_lossy(),
+      &["install"],
+      0,
+      "Changed:\n  - left C:/home/bash_completion.d/poe.bash alone: not a generated file (remove it by hand to replace it)\n",
+    );
+    let mut changes = Changes::new(false);
+    install(root.path(), &bin, shells, &r, false, &mut changes);
+    assert_eq!(
+      changes.notes.len(),
+      1,
+      "a declined file is advice, not a change: {:?}",
+      changes.notes
     );
 
     let r = RecordingRunner::new(0);

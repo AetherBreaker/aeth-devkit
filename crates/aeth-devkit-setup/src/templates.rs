@@ -117,14 +117,20 @@ pub fn gate(text: &str, enabled: &dyn Fn(&str) -> bool) -> String {
   out
 }
 
-/// How a hook line invokes `devkit-hook`: the venv's own console script when one exists
-/// (quoted, and via `$CLAUDE_PROJECT_DIR` so the file stays valid if the repo moves), else
-/// `uv run devkit-hook`. The direct path skips `uv run`'s ~140 ms environment check on
-/// every hook invocation.
+/// How a hook line invokes `devkit-hook`: the project environment's own console script when
+/// one exists (quoted; via `$CLAUDE_PROJECT_DIR` when the environment is inside the project,
+/// so the file stays valid if the repo moves), else `uv run devkit-hook`. The direct path
+/// skips `uv run`'s ~140 ms environment check on every hook invocation.
 fn hook_bin(root: &Path) -> String {
-  for rel in [".venv/Scripts/devkit-hook.exe", ".venv/bin/devkit-hook"] {
-    if root.join(rel).is_file() {
-      return format!("\"$CLAUDE_PROJECT_DIR/{rel}\"");
+  let env = crate::packages::environment(root);
+  for rel in ["Scripts/devkit-hook.exe", "bin/devkit-hook"] {
+    let bin = env.join(rel);
+    if bin.is_file() {
+      let shown = match bin.strip_prefix(root) {
+        Ok(inside) => format!("$CLAUDE_PROJECT_DIR/{}", inside.display()),
+        Err(_) => bin.display().to_string(),
+      };
+      return format!("\"{}\"", shown.replace('\\', "/"));
     }
   }
   "uv run devkit-hook".to_string()

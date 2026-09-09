@@ -51,8 +51,9 @@ second run is a byte-for-byte no-op.
 - **pyproject merge** - Comment-preserving deep merge of the template into
   `pyproject.toml` — scalars replace, arrays union, dependency arrays match by normalized
   package name so pins upgrade in place, `if-dep` / `if-docker` / `if-docker-services`
-  markers above a table header or a key-value line gate that table or key. Managed keys: the dev dependency
-  group, `tool.coverage`, `tool.docker`, `tool.mypy.cache_dir`, `tool.poe.include_script`,
+  markers above a table header or a key-value line gate that table or key; a project never
+  gets its own package. Managed keys: the dev dependency group, `tool.coverage`,
+  `tool.docker`, `tool.mypy.cache_dir`, `tool.poe.include_script`,
   `tool.pyright` (incl. `executionEnvironments`), `tool.pytest`, `tool.ruff` — incl.
   `lint.isort.known-first-party = ["{package}"]` and the import headings — and `tool.tombi`.
 - **Migrations** - `poe_tasks:tasks` include_script → `aeth_devkit:tasks`; drops
@@ -132,8 +133,9 @@ second run is a byte-for-byte no-op.
   `end` markers (`publish-index`, `aeth-ext`).
 - **Devkit packages** - `devkit-claude-hooks` and `devkit-poe-complete` (every project, dev
   group) and `devkit-container` (Docker projects, `[project].dependencies`) are added when
-  missing, locked with `uv lock --upgrade-package` under the constraint `aeth-devkit==<the running version>`,
-  and installed with `uv sync --frozen`; the floor written to `pyproject.toml` is the version
+  missing, locked with `uv lock --upgrade-package` under the constraint
+  `aeth-devkit==<the running version>`, and installed with `uv sync --frozen`; the floor
+  written to `pyproject.toml` is the version
   uv chose (for a plain name or a `>=` requirement locked from an index; anything else is
   left as written with a note), followed by a plain `uv lock` so the lock's metadata records
   it. A floor no release can meet with this devkit stops the run with "run `devkit lock`"; a

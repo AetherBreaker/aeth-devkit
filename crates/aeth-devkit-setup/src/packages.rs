@@ -59,10 +59,12 @@ pub const DEVKIT: DevkitPackage = DevkitPackage {
 };
 
 /// The devkit packages this project should carry: the hooks and the completion for every
-/// project, the container for Docker projects. The container's condition is `[tool.docker].services`, the same `if-docker-services` gate
-/// the template adds the dependency under, so a dependency the merge adds is always one this
-/// step locks and installs. A project never carries itself, so each satellite repo can be
-/// devkit-managed without depending on its own name.
+/// project, the container for Docker projects. The container's condition is
+/// `[tool.docker].services`, the same `if-docker-services` gate the template adds the
+/// dependency under, so a dependency the merge adds is always one this step locks and
+/// installs. A project never carries itself (the merge drops its own `{latest}` entry and
+/// source, this list drops it here), so each satellite repo can be devkit-managed without
+/// depending on its own name.
 pub fn active(ctx: &ProjectContext) -> Vec<&'static DevkitPackage> {
   let own = normalize_dist_name(&ctx.name);
   let mut out = vec![&HOOKS, &COMPLETE];
@@ -88,16 +90,23 @@ pub trait Venv {
 }
 
 /// The project's own environment: `UV_PROJECT_ENVIRONMENT` when set (relative to the
-/// project root, as uv reads it), else `<root>/.venv`. That is where the locked package
-/// lives whichever devkit binary is running: the venv's, `target/debug`'s or a tool
-/// install's. No fallback to the interpreter beside the binary or on PATH, because those
-/// can answer from another environment with a version the project's lock does not name.
+/// project root, as uv reads it), else `<root>/.venv`. Where the locked packages live
+/// whichever devkit binary is running (the venv's, `target/debug`'s or a tool install's),
+/// so where every step looks for a devkit binary: the probe below, the hook lines, the
+/// completion install.
+pub fn environment(root: &Path) -> PathBuf {
+  let env = std::env::var_os("UV_PROJECT_ENVIRONMENT").map_or_else(|| PathBuf::from(".venv"), PathBuf::from);
+  if env.is_absolute() { env } else { root.join(env) }
+}
+
+/// Answers from [`environment`]'s interpreter. No fallback to the interpreter beside the
+/// binary or on PATH, because those can answer from another environment with a version the
+/// project's lock does not name.
 pub struct SystemVenv;
 
 impl Venv for SystemVenv {
   fn installed(&self, root: &Path, package: &DevkitPackage) -> Option<Installed> {
-    let env = std::env::var_os("UV_PROJECT_ENVIRONMENT").map_or_else(|| PathBuf::from(".venv"), PathBuf::from);
-    let env = if env.is_absolute() { env } else { root.join(env) };
+    let env = environment(root);
     ["Scripts/python.exe", "bin/python"]
       .iter()
       .find_map(|rel| probe(&env.join(rel), package))
@@ -200,7 +209,7 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
     && v != RUNNING_DEVKIT
   {
     let message = format!(
-      "uv.lock pins aeth-devkit {v} but this devkit is {RUNNING_DEVKIT}; run `uv sync --frozen` so the venv matches the lock (or commit a uv.lock you already moved), then rerun setup-project"
+      "uv.lock pins aeth-devkit {v} but this devkit is {RUNNING_DEVKIT}; run `uv sync --frozen` so the venv matches the lock (or commit a uv.lock you already moved), then rerun setup-project; to move the project to this devkit instead, run `devkit lock` first"
     );
     if !dry_run {
       bail!(message);
@@ -234,6 +243,13 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
     // noise, and the `╰─▶` lines after it are the reason the user needs.
     if let Some(at) = stderr.find("No solution found") {
       let reason = stderr[at..].lines().map(str::trim).collect::<Vec<_>>().join("\n  ");
+      // The same headline covers a package the index does not have at all, which no
+      // `devkit lock` can fix: the project's sources or index are pointing elsewhere.
+      if reason.contains("was not found in the package registry") {
+        bail!(
+          "a devkit package is not on the project's index:\n  {reason}\ncheck that [tool.uv.sources] and [[tool.uv.index]] name the index that publishes it"
+        );
+      }
       bail!(
         "a devkit package's floor cannot be met by the running devkit {RUNNING_DEVKIT}:\n  {reason}\nrun `devkit lock`, then rerun setup-project"
       );
