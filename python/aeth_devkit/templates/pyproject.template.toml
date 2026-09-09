@@ -40,9 +40,20 @@
     output = ".cache/coverage.lcov"
 
 # setup-project: if-docker
+[project]
+  # The image-side helper (build-time queries and the entrypoint). `{latest}` is the newest
+  # release the installed devkit accepts; setup-project locks it and renders docker/Dockerfile
+  # from the template in that same wheel.
+  dependencies = ["devkit-container>={latest}"]
+
+# setup-project: if-docker
+[tool.uv.sources]
+  devkit-container = [{ index = "SFTPyPI" }]
+
+# setup-project: if-docker
 [tool.docker]
   # Compose services setup-project validates against the standard; the only Docker switch.
-  # Empty = no Docker handling. Side services (wireguard, ...) are simply not listed.
+  # Empty = no Docker handling. Side services are simply not listed.
   services                = []
   # Paths relative to /app the entrypoint guarantees exist, are backed by a bind mount (the
   # path itself or an ancestor) and are owned by nonroot. Sub-paths of a mount are created

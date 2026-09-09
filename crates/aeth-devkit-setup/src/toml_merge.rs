@@ -11,6 +11,12 @@ const MARKER: &str = "setup-project:";
 const IF_DEP_MARKER: &str = "setup-project: if-dep ";
 const IF_DOCKER_MARKER: &str = "setup-project: if-docker";
 
+/// In a template specifier, "the newest release this devkit can use". The merge only makes
+/// sure the package is listed; `packages::advance` writes the real floor once uv has chosen
+/// the version under the running-devkit constraint (spec 4.0), so the placeholder never
+/// reaches a project file.
+pub const LATEST: &str = "{latest}";
+
 pub fn merge_pyproject(original: &str, template: &str, ctx: &ProjectContext, log: &mut Vec<String>) -> Result<String> {
   let mut doc: DocumentMut = original.parse().context("parsing project pyproject.toml")?;
   let tpl: DocumentMut = template.parse().context("parsing template pyproject.toml")?;
@@ -124,9 +130,18 @@ impl Merger<'_> {
     let key = tkey.get();
     match target.get_mut(key) {
       None => {
-        // Carry the template key's decor (indentation) so the new line matches its neighbours.
-        target.insert_formatted(tkey, Item::Value(tval.clone()));
-        self.log.push(format!("added {path}"));
+        if tval.is_array() && (path.starts_with("dependency-groups.") || path == "project.dependencies") {
+          // A fresh array built through the same union, so a `{latest}` entry lands as a
+          // bare name here too instead of the literal placeholder.
+          let mut arr = Array::new();
+          let added = union_dependencies(&mut arr, tval.as_array().unwrap());
+          target.insert_formatted(tkey, Item::Value(Value::Array(arr)));
+          self.log.push(format!("added {path}: {}", added.join(", ")));
+        } else {
+          // Carry the template key's decor (indentation) so the new line matches its neighbours.
+          target.insert_formatted(tkey, Item::Value(tval.clone()));
+          self.log.push(format!("added {path}"));
+        }
       }
       Some(Item::Value(Value::Array(existing))) if tval.is_array() => {
         if path == "tool.poe.include_script" {
@@ -276,13 +291,22 @@ fn union_array(existing: &mut Array, template: &Array) -> Vec<String> {
   added
 }
 
-/// Dependency arrays: match by package name; replace the specifier, else append.
+/// Dependency arrays: match by package name; replace the specifier, else append. A
+/// [`LATEST`] specifier is the exception: the project's own floor stays, and a missing
+/// package is added by bare name for `packages::advance` to pin.
 fn union_dependencies(existing: &mut Array, template: &Array) -> Vec<String> {
   let mut added = Vec::new();
   for v in template.iter() {
     let Some(spec) = v.as_str() else { continue };
     let name = dependency_name(spec);
     let pos = existing.iter().position(|e| e.as_str().is_some_and(|s| dependency_name(s) == name));
+    if spec.contains(LATEST) {
+      if pos.is_none() {
+        push_like_last(existing, Value::from(name.clone()));
+        added.push(name);
+      }
+      continue;
+    }
     match pos {
       Some(i) => {
         let cur = existing.get(i).unwrap();
@@ -364,6 +388,30 @@ mod tests {
       has_rust: false,
       publish_index: None,
     }
+  }
+
+  #[test]
+  fn a_latest_specifier_keeps_the_project_floor_and_adds_a_bare_name() {
+    let tpl = "[project]\n  dependencies = [\"devkit-container>={latest}\", \"requests>=2\"]\n";
+    let mut log = vec![];
+    let out = merge_pyproject(
+      "[project]\n  name = \"p\"\n  dependencies = [\"devkit-container>=1.2.0\"]\n",
+      tpl,
+      &ctx(&[]),
+      &mut log,
+    )
+    .unwrap();
+    assert!(out.contains("\"devkit-container>=1.2.0\""), "kept: {out}");
+    assert!(!out.contains("{latest}"), "{out}");
+    assert!(out.contains("\"requests>=2\""));
+    let out = merge_pyproject("[project]\n  name = \"p\"\n  dependencies = []\n", tpl, &ctx(&[]), &mut log).unwrap();
+    assert!(out.contains("\"devkit-container\""), "bare name: {out}");
+    assert!(!out.contains("{latest}"), "{out}");
+    let out = merge_pyproject("[project]\n  name = \"p\"\n", tpl, &ctx(&[]), &mut log).unwrap();
+    assert!(
+      out.contains("\"devkit-container\"") && !out.contains("{latest}"),
+      "no array yet: {out}"
+    );
   }
 
   #[test]

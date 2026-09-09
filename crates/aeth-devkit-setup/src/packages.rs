@@ -96,6 +96,28 @@ pub fn locked_registry_version(lock: &str, name: &str) -> Option<String> {
   entry.get("version")?.as_str().map(str::to_string)
 }
 
+/// The requirements a rendered pyproject template marks `{latest}`, by normalised name, so
+/// `advance` knows whose floor to write after locking.
+pub fn latest_requested(template: &str) -> Vec<String> {
+  let Ok(doc) = template.parse::<DocumentMut>() else {
+    return Vec::new();
+  };
+  let mut arrays: Vec<&toml_edit::Array> = Vec::new();
+  if let Some(a) = doc.get("project").and_then(|p| p.get("dependencies")).and_then(Item::as_array) {
+    arrays.push(a);
+  }
+  if let Some(groups) = doc.get("dependency-groups").and_then(Item::as_table_like) {
+    arrays.extend(groups.iter().filter_map(|(_, v)| v.as_array()));
+  }
+  arrays
+    .iter()
+    .flat_map(|a| a.iter())
+    .filter_map(|v| v.as_str())
+    .filter(|s| s.contains(crate::toml_merge::LATEST))
+    .map(crate::context::dependency_name)
+    .collect()
+}
+
 /// The installed version of the package at `package_dir`, read from the
 /// `<import_name>-<version>.dist-info` directory beside it. No interpreter call: the
 /// directory name is the metadata.
@@ -178,6 +200,13 @@ source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+s
     .unwrap();
     let ctx = crate::context::ProjectContext::discover(dir.path()).unwrap();
     assert!(active(&ctx).is_empty(), "a project never carries itself");
+  }
+
+  #[test]
+  fn latest_requested_lists_the_placeholder_requirements() {
+    let tpl = "[project]\n  dependencies = [\"devkit-container>={latest}\", \"requests>=2\"]\n[dependency-groups]\n  dev = [\"Devkit_Templates>={latest}\"]\n";
+    assert_eq!(latest_requested(tpl), vec!["devkit-container", "devkit-templates"]);
+    assert!(latest_requested("[tool.x]\n").is_empty());
   }
 
   #[test]
