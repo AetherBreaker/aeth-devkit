@@ -191,7 +191,7 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
     && v != RUNNING_DEVKIT
   {
     let message = format!(
-      "uv.lock pins aeth-devkit {v} but this devkit is {RUNNING_DEVKIT}; run `uv sync` so the venv matches the lock (or commit a uv.lock you already moved), then rerun setup-project"
+      "uv.lock pins aeth-devkit {v} but this devkit is {RUNNING_DEVKIT}; run `uv sync --frozen` so the venv matches the lock (or commit a uv.lock you already moved), then rerun setup-project"
     );
     if !dry_run {
       bail!(message);
