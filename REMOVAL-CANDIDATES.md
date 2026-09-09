@@ -24,4 +24,16 @@ the repository they live in, the evidence, and what removal would cost.
 
 ## aeth-devkit
 
-- (entries added as Part B proceeds)
+- **`legacy_hook_key` and `matches_key`** (`crates/aeth-devkit-setup/src/json_merge.rs`):
+  recognise the pre-Rust `.claude/hooks/<name>.py` script lines (several path spellings) so
+  the hook merge updates them in place. Every devkit-managed project has been through
+  `setup-project` since the Rust hooks arrived (August 2026), so the branch has nothing left to
+  migrate; `hook_key` alone (both `devkit-hook` and the old `devkit hook` spelling) covers
+  what exists. Removal cost: a project that skipped every run since then would get a second
+  hook entry beside its Python one, visible in the diff review.
+- **Two Docker gates, `if-docker` and `if-docker-services`** (`toml_merge.rs`,
+  `pyproject.template.toml`): `if-docker` merges `[tool.docker]` when the project has
+  services *or* Docker files; `if-docker-services` gates the container dependency and its
+  source on services alone. One template table uses the first, two entries the second. If
+  "Docker files without services" stops being a state worth supporting (it already produces a
+  warning every run), one gate would do.
