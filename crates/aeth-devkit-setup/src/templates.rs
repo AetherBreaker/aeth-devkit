@@ -31,7 +31,7 @@ pub fn template_file_name(target: &str) -> String {
 }
 
 /// Read a template (by its target name, e.g. `pyproject.toml`) and substitute
-/// `{project_root}` / `{package}` / `{python_dir}` / `{devkit_bin}` / `{publish_index}` /
+/// `{project_root}` / `{package}` / `{python_dir}` / `{hook_bin}` / `{publish_index}` /
 /// `{publish_index_key}` / `{devkit_index}` / `{git_repo}`. `{git_tag}` and `{service}` are
 /// deliberately left in place for the Docker scaffold, which fills them per block, and
 /// `{latest}` for the pyproject merger.
@@ -63,7 +63,7 @@ pub fn substitute(text: &str, ctx: &ProjectContext, escape: Escape) -> String {
     .replace("{project_root}", &esc(&root))
     .replace("{package}", &esc(&ctx.package))
     .replace("{python_dir}", &esc(&ctx.python_dir))
-    .replace("{devkit_bin}", &esc(&devkit_bin(&ctx.root)))
+    .replace("{hook_bin}", &esc(&hook_bin(&ctx.root)))
     .replace("{publish_index}", &esc(ctx.publish_index.as_deref().unwrap_or("")))
     .replace(
       "{publish_index_key}",
@@ -117,17 +117,17 @@ pub fn gate(text: &str, enabled: &dyn Fn(&str) -> bool) -> String {
   out
 }
 
-/// How a hook should invoke `devkit`: the venv's own console script when one exists
-/// (quoted, and via `$CLAUDE_PROJECT_DIR` so the file stays valid if the repo moves),
-/// else `uv run devkit`. The direct path skips `uv run`'s ~140 ms environment check on
+/// How a hook line invokes `devkit-hook`: the venv's own console script when one exists
+/// (quoted, and via `$CLAUDE_PROJECT_DIR` so the file stays valid if the repo moves), else
+/// `uv run devkit-hook`. The direct path skips `uv run`'s ~140 ms environment check on
 /// every hook invocation.
-fn devkit_bin(root: &Path) -> String {
-  for rel in [".venv/Scripts/devkit.exe", ".venv/bin/devkit"] {
+fn hook_bin(root: &Path) -> String {
+  for rel in [".venv/Scripts/devkit-hook.exe", ".venv/bin/devkit-hook"] {
     if root.join(rel).is_file() {
       return format!("\"$CLAUDE_PROJECT_DIR/{rel}\"");
     }
   }
-  "uv run devkit".to_string()
+  "uv run devkit-hook".to_string()
 }
 
 /// Resolve the templates directory: explicit flag, env var, the Python package next to
@@ -187,7 +187,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod devkit_bin_tests {
+mod hook_bin_tests {
   use super::*;
   use std::collections::HashSet;
 
@@ -213,22 +213,22 @@ mod devkit_bin_tests {
   }
 
   #[test]
-  fn devkit_bin_falls_back_to_uv_run_without_a_venv() {
+  fn hook_bin_falls_back_to_uv_run_without_a_venv() {
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(
-      substitute("{devkit_bin} hook x", &ctx(dir.path()), Escape::None),
-      "uv run devkit hook x"
+      substitute("{hook_bin} pre-edit-protect", &ctx(dir.path()), Escape::None),
+      "uv run devkit-hook pre-edit-protect"
     );
   }
 
   #[test]
-  fn devkit_bin_uses_the_venv_script_quoted_and_json_escaped() {
+  fn hook_bin_uses_the_venv_script_quoted_and_json_escaped() {
     let dir = tempfile::tempdir().unwrap();
     let bin = dir.path().join(".venv").join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(bin.join("devkit"), "").unwrap();
-    let out = substitute(r#""cmd": "{devkit_bin} hook x""#, &ctx(dir.path()), Escape::Json);
-    assert_eq!(out, r#""cmd": "\"$CLAUDE_PROJECT_DIR/.venv/bin/devkit\" hook x""#);
+    std::fs::write(bin.join("devkit-hook"), "").unwrap();
+    let out = substitute(r#""cmd": "{hook_bin} stop-ruff""#, &ctx(dir.path()), Escape::Json);
+    assert_eq!(out, r#""cmd": "\"$CLAUDE_PROJECT_DIR/.venv/bin/devkit-hook\" stop-ruff""#);
   }
 }
 

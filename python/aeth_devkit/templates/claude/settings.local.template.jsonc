@@ -9,7 +9,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "{devkit_bin} hook pre-edit-protect",
+                        "command": "{hook_bin} pre-edit-protect",
                         "shell": "bash"
                     }
                 ]
@@ -19,7 +19,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "{devkit_bin} hook pre-bash-protect-deps",
+                        "command": "{hook_bin} pre-bash-protect-deps",
                         "shell": "bash"
                     }
                 ]
@@ -30,19 +30,19 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "{devkit_bin} hook stop-ruff",
+                        "command": "{hook_bin} stop-ruff",
                         "shell": "bash",
                         "timeout": 30
                     },
                     {
                         "type": "command",
-                        "command": "{devkit_bin} hook stop-pyright",
+                        "command": "{hook_bin} stop-pyright",
                         "shell": "bash",
                         "timeout": 60
                     },
                     {
                         "type": "command",
-                        "command": "{devkit_bin} hook stop-clean",
+                        "command": "{hook_bin} stop-clean",
                         "shell": "bash",
                         "timeout": 30
                     }
