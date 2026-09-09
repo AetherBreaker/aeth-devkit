@@ -104,9 +104,10 @@ second run is a byte-for-byte no-op.
   any `problem:`, since a listed service declares the file managed. A compose file with no
   top-level `services:` key is a `warning:` on stderr instead and does not fail `--check`:
   an `include:`-only aggregator is a supported Compose layout whose services live in the
-  included files, and writing one here would conflict with them rather than override. A
-  Dockerfile whose `container-v<N>` pin cannot be filled because devkit's releases could
-  not be read (no `gh`, offline) is a `problem:` too and is left unwritten.
+  included files, and writing one here would conflict with them rather than override. The
+  Dockerfile is rendered from the installed `devkit-container` package; the package step
+  (below) installs and advances it first, and a dry run on a project that has not adopted it
+  yet notes that instead of rendering.
   `--replace-docker` answers `replace all` up front; adding a listed-but-absent service is
   always asked, never pre-answered. `--dry-run`/`--check` print everything and count Docker
   drift. Inside a VS Code terminal the diff opens in the editor instead (see **VS Code
@@ -116,11 +117,16 @@ second run is a byte-for-byte no-op.
   `{publish_index}`, `{publish_index_key}`, `{git_repo}` with per-format escaping;
   `{devkit_bin}` prefers the venv binary over `uv run devkit`; `{git_tag}` (latest stable
   remote tag, resolved lazily, falling back to `v<pyproject version>` with a note) and
-  `{service}` are filled per compose scaffold block; `{container_version}` in the
-  Dockerfile keeps the project's existing `container-v<N>` pin and resolves a missing one
-  to devkit's newest `container-v*` tag (`1` with a note before any exists; a failed
-  lookup is a `problem:`). YAML templates gate blocks with `# setup-project: if-<name>` / `if-no-<name>` …
+  `{service}` are filled per compose scaffold block; `{latest}` in a pyproject template
+  requirement means the newest release the running devkit accepts (see **Devkit
+  packages**). YAML templates gate blocks with `# setup-project: if-<name>` / `if-no-<name>` …
   `end` markers (`publish-index`, `aeth-ext`).
+- **Devkit packages** - For Docker projects, `devkit-container` is added when missing, locked
+  with `uv lock --upgrade-package` under the constraint `aeth-devkit==<the running version>`,
+  and installed with `uv sync --frozen`; the floor written to `pyproject.toml` is the version
+  uv chose. A floor no release can meet with this devkit stops the run with "run `devkit
+  lock`"; a newer release on the index that needs a newer devkit is a warning. `uv.lock` is
+  committed with the run. Devkit itself is never upgraded here; that is `devkit lock`'s job.
 - **Post-apply** - `tombi format` on pyproject (non-fatal), then a quiet auto-commit of
   exactly the changed files (`Standardize project configuration with devkit`, per-file
   body; never env files or `settings.local.json`) via the machinery shared with `lock` and
@@ -245,6 +251,10 @@ no push), `--no-push`, `-c/--compose-file`, `--root`.
   `PACKAGE_VERSION` written normalized. Already-pinned everywhere is a clean no-op.
 - **Behind-origin preflight** - When pushing: fetch, require an upstream, refuse to edit
   while behind origin.
+- **Dockerfile refresh** - Before pinning, the committed `docker/Dockerfile` is compared with
+  the template of the locked `devkit-container` (the venv is synced first if it lags
+  `uv.lock`) and replaced, without a prompt, in its own commit when it differs
+  (`chore(docker): refresh Dockerfile from devkit-container <ver>`).
 - **Commit & push** - Commits exactly the compose file (`chore: pin <package> to <ver>`),
   pathspec-limited so other staged work stays out; pushes the current branch. A dirty
   compose file gets the pin committed against HEAD's copy through a scratch index and the
@@ -254,35 +264,13 @@ no push), `--no-push`, `-c/--compose-file`, `--root`.
 
 ### `devkit-container`
 
-A separate static binary (crate `aeth-devkit-container`) that the templated Dockerfile
-downloads at build time. It has its own release stream: `.github/workflows/devkit-container.yml`
-runs on every devkit release and, when `crates/aeth-devkit-container/` or `Cargo.lock`
-changed since the previous `container-v<N>` tag, publishes `container-v<N+1>` with the
-assets `devkit-container-x86_64-unknown-linux-musl` and
-`devkit-container-x86_64-pc-windows-msvc.exe`. A Dockerfile therefore pins a container
-build, not a devkit version, so a devkit release alone never changes what it builds
-against; setup-project fills a missing pin (the newest `container-v*` tag, or `1` with a
-note before the first container release exists) and never advances an existing one (that
-is a future command's job, see TODO.md). No Python runs in the image outside the app itself.
-
-- `app-extra` - prints `--extra app` when `[project.optional-dependencies].app` exists.
-- `readme` - prints `project.readme` (string or `{ file = … }` form).
-- `run` - the entrypoint (Linux only). Must be root. Resolves the single `run-app-*`
-  script in `[project.scripts]`; checks every `[tool.docker].required_persisted_dirs`
-  entry is backed by a bind mount (the path or an ancestor below `/app`, per
-  `/proc/self/mountinfo`) and refuses to start otherwise; `mkdir -p` + recursive chown to
-  `999:999`; `setgroups([])`, `setgid`, `setuid`; `exec /app/.venv/bin/<script>`. `/app`
-  itself stays root-owned: the app writes only to its mounted dirs or temp dirs. Entries
-  that are empty, `.`, `..`, absolute or escape `/app` are errors; a table still carrying
-  `chown_paths`/`mkdirs` (with or without `required_persisted_dirs`) is refused with the
-  migration hint. Flags `--pyproject`, `--app-root`, `--mountinfo` exist for tests.
-
-The smoke test (`cargo test -p aeth-devkit-container --test docker_smoke -- --ignored`;
-CI runs it on Linux) builds the template Dockerfile around a scratch app with the
-entrypoint cross-built from the checkout (`rustup target add x86_64-unknown-linux-musl`),
-starts it on a named volume and checks the app's own report: PID 1, uid/gid 999, `/app`
-read-only, the persisted dirs created, owned and writable, the venv, the `app` extra and
-the wheel install; a run without the volume or as non-root is refused first.
+Lives in its own repository, `AetherBreaker/devkit-container`, and is distributed as a wheel on
+SFTPyPI. `setup-project` adds it to `[project].dependencies` of every project with
+`[tool.docker].services`, locks it to the newest release this devkit accepts, and renders
+`docker/Dockerfile` from the `devkit_container/template.Dockerfile` in the project's venv, so
+the Dockerfile and the entrypoint the image installs are always the same version.
+`docker-pin` refreshes a Dockerfile that drifted from the locked version before it pins. See
+that repository's README for the binary's subcommands and the `[tool.docker]` schema.
 
 ### VS Code extension
 

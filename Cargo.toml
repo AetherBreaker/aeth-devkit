@@ -29,7 +29,6 @@
   aeth-devkit-release = { path = "crates/aeth-devkit-release" }
   aeth-devkit-pin   = { path = "crates/aeth-devkit-pin" }
   aeth-devkit-complete = { path = "crates/aeth-devkit-complete" }
-  aeth-devkit-container = { path = "crates/aeth-devkit-container" }
   aeth-devkit-hooks = { path = "crates/aeth-devkit-hooks" }
 
 [profile.release]
