@@ -1,8 +1,9 @@
-//! Getting a compatible extension into VS Code: the newest `vN` release of the extension's
-//! own repository is fetched from GitHub (the repo is public; a `GH_TOKEN`/`GITHUB_TOKEN`
-//! in the environment is sent only for the higher rate limit, and dropped if rejected) and
-//! handed to `code --install-extension`. A fresh install is live at once; an upgrade over a
-//! loaded extension needs a window reload, which the caller reports and stops on.
+//! Getting a compatible extension into VS Code: the newest published `vN` release of the
+//! extension's own repository is fetched from GitHub (the repo is public; a
+//! `GH_TOKEN`/`GITHUB_TOKEN` in the environment is sent only for the higher rate limit, and
+//! dropped if rejected) and handed to `code --install-extension`. A fresh install is live at
+//! once; an upgrade over a loaded extension needs a window reload, which the caller reports
+//! and stops on.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,11 +18,14 @@ use super::protocol::{EXTENSION_ID, MIN_EXTENSION_VERSION};
 /// The extension's repository. Build 1 was `vscode-extension-v1` on `AetherBreaker/aeth-devkit`
 /// and stays published there; numbering continued in the new repository from `v2`.
 pub const REPO: &str = "AetherBreaker/devkit-vscode";
-/// Tags are `vN` with an integer `N`; anything else after the prefix is ignored.
+/// Release tags are `vN` with an integer `N`; anything else after the prefix is ignored.
 pub const TAG_PREFIX: &str = "v";
 
-pub fn refs_url() -> String {
-  format!("https://api.github.com/repos/{REPO}/git/matching-refs/tags/{TAG_PREFIX}")
+/// The release list, not the tag list: the extension's workflow builds *after* a `vN` tag is
+/// pushed, so a tag can exist for minutes (or, after a failed run, until someone re-runs it)
+/// with nothing to download. A release with its asset is the only thing worth installing.
+pub fn releases_url() -> String {
+  format!("https://api.github.com/repos/{REPO}/releases?per_page=100")
 }
 
 pub fn vsix_url(n: u32) -> String {
@@ -129,16 +133,20 @@ impl Fetch for StubFetch {
   }
 }
 
-/// The highest `N` among `refs/tags/vN` in a matching-refs response, integer `N` only (a
-/// `v1.0.0` is not one and is skipped).
-pub fn latest_tag_number(refs_json: &str) -> Result<Option<u32>> {
-  let refs: Vec<serde_json::Value> = serde_json::from_str(refs_json).context("parsing the extension tag list")?;
+/// The highest `N` among the published releases tagged `vN` (integer `N` only: a `v1.0.0` is
+/// not one) that carry `aeth-devkit-vscode-N.vsix`. Drafts and prereleases do not count, so a
+/// build can be published for a look without every fresh install picking it up.
+pub fn latest_release_number(releases_json: &str) -> Result<Option<u32>> {
+  let releases: Vec<serde_json::Value> = serde_json::from_str(releases_json).context("parsing the extension release list")?;
   Ok(
-    refs
+    releases
       .iter()
-      .filter_map(|r| r["ref"].as_str())
-      .filter_map(|r| r.strip_prefix("refs/tags/")?.strip_prefix(TAG_PREFIX))
-      .filter_map(|n| n.parse().ok())
+      .filter(|r| !r["draft"].as_bool().unwrap_or(false) && !r["prerelease"].as_bool().unwrap_or(false))
+      .filter_map(|r| {
+        let n: u32 = r["tag_name"].as_str()?.strip_prefix(TAG_PREFIX)?.parse().ok()?;
+        let asset = format!("aeth-devkit-vscode-{n}.vsix");
+        r["assets"].as_array()?.iter().any(|a| a["name"] == asset.as_str()).then_some(n)
+      })
       .max(),
   )
 }
@@ -201,7 +209,7 @@ pub fn ensure_extension(
   if !install {
     bail!("the devkit VS Code extension is not installed (a run without --dry-run installs it)");
   }
-  let latest = latest_tag_number(&fetch.get_text(&refs_url())?)?;
+  let latest = latest_release_number(&fetch.get_text(&releases_url())?)?;
   let Some(n) = latest.filter(|n| *n >= MIN_EXTENSION_VERSION) else {
     bail!("no compatible devkit VS Code extension release exists yet (need build {MIN_EXTENSION_VERSION})");
   };
@@ -221,12 +229,22 @@ mod tests {
   use aeth_devkit_core::process::RecordingRunner;
 
   const LIST: &[&str] = &["--list-extensions"];
-  const REFS: &str =
-    r#"[{"ref":"refs/tags/v1"},{"ref":"refs/tags/v3"},{"ref":"refs/tags/v2"},{"ref":"refs/tags/vX"},{"ref":"refs/tags/v1.0.0"}]"#;
+  // Published builds 1, 2 and 3; then what must not count: a non-integer tag, a version-shaped
+  // tag whose leading integer would win, a draft, a prerelease, and a release without its asset.
+  const RELEASES: &str = r#"[
+    {"tag_name":"v1","draft":false,"prerelease":false,"assets":[{"name":"aeth-devkit-vscode-1.vsix"}]},
+    {"tag_name":"v3","draft":false,"prerelease":false,"assets":[{"name":"aeth-devkit-vscode-3.vsix"}]},
+    {"tag_name":"v2","draft":false,"prerelease":false,"assets":[{"name":"aeth-devkit-vscode-2.vsix"}]},
+    {"tag_name":"vX","draft":false,"prerelease":false,"assets":[{"name":"aeth-devkit-vscode-X.vsix"}]},
+    {"tag_name":"v10.0.0","draft":false,"prerelease":false,"assets":[{"name":"aeth-devkit-vscode-10.vsix"}]},
+    {"tag_name":"v4","draft":true,"prerelease":false,"assets":[{"name":"aeth-devkit-vscode-4.vsix"}]},
+    {"tag_name":"v5","draft":false,"prerelease":true,"assets":[{"name":"aeth-devkit-vscode-5.vsix"}]},
+    {"tag_name":"v6","draft":false,"prerelease":false,"assets":[{"name":"aeth-devkit-vscode-6.vsix.sha256"}]}
+  ]"#;
 
-  fn fetch_with_refs() -> StubFetch {
+  fn fetch_with_releases() -> StubFetch {
     let mut f = StubFetch::default();
-    f.bodies.insert(refs_url(), REFS.into());
+    f.bodies.insert(releases_url(), RELEASES.into());
     f
   }
 
@@ -239,9 +257,9 @@ mod tests {
   fn parses_installed_version_and_tag_numbers() {
     assert_eq!(installed_version("ms-python.python@2024.1.0\nAeth.aeth-devkit@3.0.0\n"), Some(3));
     assert_eq!(installed_version("ms-python.python@2024.1.0\n"), None);
-    assert_eq!(latest_tag_number(REFS).unwrap(), Some(3));
-    assert_eq!(latest_tag_number("[]").unwrap(), None);
-    assert!(latest_tag_number("nope").is_err());
+    assert_eq!(latest_release_number(RELEASES).unwrap(), Some(3));
+    assert_eq!(latest_release_number("[]").unwrap(), None);
+    assert!(latest_release_number("nope").is_err());
     assert_eq!(
       vsix_url(3),
       "https://github.com/AetherBreaker/devkit-vscode/releases/download/v3/aeth-devkit-vscode-3.vsix"
@@ -288,7 +306,7 @@ mod tests {
   fn installs_the_newest_release_when_absent() {
     let r = RecordingRunner::new(0);
     r.script("code", LIST, 0, "ms-python.python@2024.1.0\n");
-    let f = fetch_with_refs();
+    let f = fetch_with_releases();
     let cache = tempfile::tempdir().unwrap();
     assert!(!ensure(&r, &f, cache.path(), true).unwrap());
     let vsix = cache.path().join("vsix").join("aeth-devkit-vscode-3.vsix");
@@ -303,14 +321,14 @@ mod tests {
     let r = RecordingRunner::new(0);
     r.script("code", LIST, 0, "aeth.aeth-devkit@0.0.0\n");
     let cache = tempfile::tempdir().unwrap();
-    assert!(ensure(&r, &fetch_with_refs(), cache.path(), true).unwrap());
+    assert!(ensure(&r, &fetch_with_releases(), cache.path(), true).unwrap());
   }
 
   #[test]
   fn dry_run_never_installs_and_failures_are_unavailable() {
     let r = RecordingRunner::new(0);
     r.script("code", LIST, 0, "");
-    let f = fetch_with_refs();
+    let f = fetch_with_releases();
     let cache = tempfile::tempdir().unwrap();
     let why = |r: Result<bool>| format!("{:#}", r.unwrap_err());
     assert!(why(ensure(&r, &f, cache.path(), false)).contains("not installed"));
@@ -320,7 +338,10 @@ mod tests {
     assert!(why(ensure(&r, &offline, cache.path(), true)).contains("no body"));
 
     let mut old = StubFetch::default();
-    old.bodies.insert(refs_url(), r#"[{"ref":"refs/tags/v0"}]"#.into());
+    old.bodies.insert(
+      releases_url(),
+      r#"[{"tag_name":"v0","draft":false,"prerelease":false,"assets":[{"name":"aeth-devkit-vscode-0.vsix"}]}]"#.into(),
+    );
     assert!(why(ensure(&r, &old, cache.path(), true)).contains("no compatible"));
 
     let failing = RecordingRunner::new(0);

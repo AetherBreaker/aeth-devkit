@@ -401,7 +401,10 @@ mod tests {
     let old = RecordingRunner::new(0);
     old.script(&code(tmp.path()), &["--list-extensions"], 0, "aeth.aeth-devkit@0.0.0\n");
     let mut f = StubFetch::default();
-    f.bodies.insert(install::refs_url(), r#"[{"ref":"refs/tags/v1"}]"#.into());
+    f.bodies.insert(
+      install::releases_url(),
+      r#"[{"tag_name":"v1","draft":false,"prerelease":false,"assets":[{"name":"aeth-devkit-vscode-1.vsix"}]}]"#.into(),
+    );
     assert!(matches!(prepare(&o, &old, &f), Prepared::ReloadNeeded));
   }
 
