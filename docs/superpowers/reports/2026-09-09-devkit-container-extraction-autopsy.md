@@ -108,7 +108,7 @@ imports `ProjectContext`, `docker::static_files::{render, normalize_newlines}`,
 `context::services_key` and `packages`. `pin::Deps { runner, index }` became
 `{ runner, index, venv }`. The spec accepted this edge on the grounds that inside one workspace
 it costs nothing; both reviews noted it is what let setup-project's configuration rules leak
-into the pin path, which 2.3 below describes.
+into the pin path, which 2.2 below describes.
 
 ```
 BEFORE                                AFTER
