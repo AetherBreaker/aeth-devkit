@@ -5,6 +5,14 @@ design exists. Check items off in place; delete them once released.
 
 ## setup-project
 
+- [ ] Completion shell detection follows the launching shell's `PATH`: from PowerShell,
+      Git Bash's `bash.exe` (`Gitin`, not on `PATH`) is not seen, so bash completion is
+      only installed from a Git Bash run, silently. Probe Git's install directory too, or say
+      which shells were skipped.
+- [ ] Marker validation and stripping reach a brand-new table's top-level keys only; a
+      `# setup-project:` marker nested inside a sub-table of a table the project lacks, or
+      inside a template array, would ship into the project's file. No template line does
+      this today.
 - [ ] Sister-project Docker migration (after the aeth-devkit major that lands the
       `devkit-container` split, PR #16): in each of aeth_ext, IMAPReportCollector,
       ScheduledInvoiceProcessor, ScheduledReportAggregator — add
