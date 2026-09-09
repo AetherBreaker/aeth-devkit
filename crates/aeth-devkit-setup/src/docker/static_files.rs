@@ -156,6 +156,7 @@ mod tests {
       has_rust: true,
       publish_index: None,
       devkit_index: "SFTPyPI".into(),
+      release_workflow: true,
     };
     assert_eq!(render(&ctx, &venv).unwrap().unwrap(), "RUN mv /tmp/repo/python /app/python\n");
     assert_eq!(render(&ctx, &crate::packages::StubVenv::default()).unwrap(), None);

@@ -208,6 +208,7 @@ mod devkit_bin_tests {
       has_rust: false,
       publish_index: None,
       devkit_index: "SFTPyPI".into(),
+      release_workflow: true,
     }
   }
 
@@ -253,6 +254,7 @@ mod publish_index_tests {
       has_rust: false,
       publish_index: publish_index.map(str::to_string),
       devkit_index: "SFTPyPI".into(),
+      release_workflow: true,
     }
   }
 
@@ -299,6 +301,7 @@ mod docker_placeholder_tests {
       has_rust: false,
       publish_index: None,
       devkit_index: "SFTPyPI".into(),
+      release_workflow: true,
       name: "proj".into(),
       version: Some("1.2.3".into()),
       origin: origin.map(str::to_string),

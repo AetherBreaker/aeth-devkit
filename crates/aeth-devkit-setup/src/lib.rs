@@ -196,8 +196,11 @@ pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps:
   //      project-specific beyond the placeholders, so drift is replaced and reported. The
   //      one manual step — credentials — is announced whenever the devkit workflow displaces
   //      something else (nothing, or a workflow the project wrote): that is when its
-  //      secret / trusted-publisher requirement arrives.
-  {
+  //      secret / trusted-publisher requirement arrives. `[tool.devkit].release-workflow =
+  //      false` skips all of it: that project's `release.yml` is its own (a vsix, say), and
+  //      the file is neither written nor listed as managed. Nothing is deleted on the way
+  //      out; a project that opts out later keeps whatever copy it has.
+  if ctx.release_workflow {
     let path = ctx.root.join(".github").join("workflows").join("release.yml");
     let template_name = if ctx.has_rust {
       "github/workflows/release.rust.yml"

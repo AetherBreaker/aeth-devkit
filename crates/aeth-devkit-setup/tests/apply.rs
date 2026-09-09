@@ -1081,3 +1081,23 @@ fn a_committing_run_resyncs_the_venv_to_the_lock_the_user_gets_back() {
     assert_eq!(sync_calls, syncs, "user_edit={user_edit}: {:?}", runner.calls_for("uv"));
   }
 }
+
+#[test]
+fn a_project_that_opts_out_keeps_its_own_release_workflow() {
+  // The extension repository releases a vsix from a workflow of its own at the same path;
+  // with the switch off, setup-project neither replaces it nor announces publishing secrets.
+  let dir = make_project();
+  let root = dir.path();
+  let own = "name: Release\non:\n  push:\n    tags: [\"v*\"]\n";
+  write(root, ".github/workflows/release.yml", own);
+  let py = read(root, "pyproject.toml");
+  write(
+    root,
+    "pyproject.toml",
+    &format!("{py}\n[tool.devkit]\n  release-workflow = false\n"),
+  );
+  let changes = run(root, false).unwrap();
+  assert_eq!(read(root, ".github/workflows/release.yml"), own);
+  assert!(!changes.notes.iter().any(|n| n.contains("release workflow")), "{:?}", changes.notes);
+  assert!(!changes.managed.iter().any(|p| p.ends_with("release.yml")), "{:?}", changes.managed);
+}
