@@ -34,8 +34,7 @@ pub fn template_file_name(target: &str) -> String {
 /// Read a template (by its target name, e.g. `pyproject.toml`) and substitute
 /// `{project_root}` / `{package}` / `{python_dir}` / `{devkit_bin}` / `{publish_index}` /
 /// `{publish_index_key}` / `{git_repo}`. `{git_tag}` and `{service}` are deliberately left
-/// in place for the Docker scaffold, which fills them per block, as is
-/// `{container_version}` for the Dockerfile step, which reads the project's pin first.
+/// in place for the Docker scaffold, which fills them per block.
 pub fn load(templates_dir: &Path, name: &str, ctx: &ProjectContext, escape: Escape) -> Result<String> {
   let path = templates_dir.join(template_file_name(name));
   let text = std::fs::read_to_string(&path).with_context(|| format!("reading template {}", path.display()))?;
@@ -167,24 +166,22 @@ fn existing_dir(p: PathBuf, what: &str) -> Result<PathBuf> {
 
 /// Where the Python interpreter that lives alongside this binary (the venv's `Scripts/` or
 /// `bin/`) has `import_name` installed: the package directory, or `None` when it is not
-/// importable there.
+/// importable there. The right lookup for devkit's own package data; a project's packages
+/// live in the project's venv (see `packages::SystemPackageDirs`).
 pub fn installed_package_dir(import_name: &str) -> Option<PathBuf> {
   let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-  let candidates = [exe_dir.join("python.exe"), exe_dir.join("python"), PathBuf::from("python")];
+  [exe_dir.join("python.exe"), exe_dir.join("python"), PathBuf::from("python")]
+    .iter()
+    .find_map(|py| package_dir_via(py, import_name))
+}
+
+/// `import_name`'s package directory as the interpreter at `python` sees it; `None` when
+/// that interpreter cannot be spawned (e.g. `python.exe` on Unix) or cannot import it.
+pub fn package_dir_via(python: &Path, import_name: &str) -> Option<PathBuf> {
   let code = format!("import {import_name}, os; print(os.path.dirname({import_name}.__file__))");
-  for py in candidates {
-    // A candidate that cannot be spawned (e.g. `python.exe` on Unix) must not end the search.
-    let Ok(out) = Command::new(&py).args(["-c", &code]).output() else {
-      continue;
-    };
-    if out.status.success() {
-      let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-      if p.is_dir() {
-        return Some(p);
-      }
-    }
-  }
-  None
+  let out = Command::new(python).args(["-c", &code]).output().ok()?;
+  let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+  (out.status.success() && p.is_dir()).then_some(p)
 }
 
 #[cfg(test)]
@@ -330,11 +327,11 @@ mod docker_placeholder_tests {
   #[test]
   fn docker_placeholders_substitute_except_the_lazy_ones() {
     let out = substitute(
-      "{container_version} {git_repo} {git_tag} {service} {python_dir}",
+      "{git_repo} {git_tag} {service} {python_dir}",
       &ctx(Some("https://github.com/o/r.git")),
       Escape::None,
     );
-    assert_eq!(out, "{container_version} https://github.com/o/r.git {git_tag} {service} src");
+    assert_eq!(out, "https://github.com/o/r.git {git_tag} {service} src");
   }
 
   #[test]

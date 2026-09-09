@@ -1,6 +1,6 @@
 //! The devkit packages `setup-project` keeps current in a project (spec section 4.0): which
 //! they are, where the venv keeps them, and what the lock says about them. The advancing
-//! itself lives in [`advance`], added in a later task.
+//! itself lives in `advance`, added in a later task.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,7 +35,7 @@ pub fn active(ctx: &ProjectContext) -> Vec<&'static DevkitPackage> {
   if ctx.has_docker {
     out.push(&CONTAINER);
   }
-  out.retain(|p| p.name != own);
+  out.retain(|p| normalize_dist_name(p.name) != own);
   out
 }
 
@@ -45,12 +45,19 @@ pub trait PackageDirs {
   fn dir(&self, import_name: &str) -> Option<PathBuf>;
 }
 
-/// Asks the interpreter next to this binary (see `templates::installed_package_dir`).
-pub struct SystemPackageDirs;
+/// Asks the project's own venv (`<root>/.venv`), which is where the locked package lives
+/// whichever devkit binary is running: the venv's, `target/debug`'s or a tool install's. No
+/// fallback to the interpreter beside the binary or on PATH, because those can answer from
+/// another environment with a version the project's lock does not name.
+pub struct SystemPackageDirs {
+  pub root: PathBuf,
+}
 
 impl PackageDirs for SystemPackageDirs {
   fn dir(&self, import_name: &str) -> Option<PathBuf> {
-    crate::templates::installed_package_dir(import_name)
+    [".venv/Scripts/python.exe", ".venv/bin/python"]
+      .iter()
+      .find_map(|rel| crate::templates::package_dir_via(&self.root.join(rel), import_name))
   }
 }
 

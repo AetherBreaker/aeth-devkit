@@ -26,22 +26,30 @@ fn read(root: &Path, rel: &str) -> String {
   fs::read_to_string(root.join(rel)).unwrap()
 }
 
-/// A project resembling IMAPReportCollector with aeth_ext's VS Code files.
-/// [`aeth_devkit_setup::run`] with the Docker step's `gh` lookups answered locally: the
-/// fixture lists a service and ships no Dockerfile, so the container-pin lookup would
-/// otherwise hit GitHub on every first run (and fail without a token in CI).
+/// [`aeth_devkit_setup::run`] with the Docker step's `gh` tag lookup answered locally (the
+/// fixture lists a service, so a first run would otherwise hit GitHub, and fail without a
+/// token in CI), no index answers, and the fixture copy of the container package's template
+/// standing in for the venv.
 fn run(root: &Path, dry_run: bool) -> anyhow::Result<aeth_devkit_setup::changes::Changes> {
   let runner = aeth_devkit_core::process::RecordingRunner::new(0);
-  runner.script("gh", &["api"], 0, "container-v4\ncontainer-v3\n");
-  let deps = aeth_devkit_setup::docker::Deps {
-    runner: &runner,
-    prompt: &aeth_devkit_core::prompt::ScriptedPrompt::new(&[]),
-    reviewer: None,
-    mode: if dry_run {
-      aeth_devkit_setup::docker::Mode::DryRun
-    } else {
-      aeth_devkit_setup::docker::Mode::KeepAll
+  runner.script("gh", &["api"], 0, "v1.1.0\n");
+  let index = aeth_devkit_core::index::StubIndexClient { versions: vec![] };
+  let mut map = std::collections::HashMap::new();
+  map.insert("devkit_container".to_string(), fixtures().join("docker"));
+  let dirs = aeth_devkit_setup::packages::StubPackageDirs(map);
+  let deps = aeth_devkit_setup::Deps {
+    docker: aeth_devkit_setup::docker::Deps {
+      runner: &runner,
+      prompt: &aeth_devkit_core::prompt::ScriptedPrompt::new(&[]),
+      reviewer: None,
+      mode: if dry_run {
+        aeth_devkit_setup::docker::Mode::DryRun
+      } else {
+        aeth_devkit_setup::docker::Mode::KeepAll
+      },
     },
+    index: &index,
+    packages: &dirs,
   };
   let ctx = aeth_devkit_setup::context::ProjectContext::discover(root)?;
   aeth_devkit_setup::run_with(&ctx, &templates(), dry_run, &deps)

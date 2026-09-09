@@ -1,17 +1,14 @@
-//! Whole-file replacement of the templated `docker/` files (everything except the compose
-//! file), shown as a diff and applied only on consent. Files the template stopped
-//! shipping are reported, never deleted.
+//! Whole-file replacement of `docker/Dockerfile`, rendered from the template inside the
+//! installed `devkit_container` package, shown as a diff and applied only on consent.
+//! Leftovers of the old shell entrypoint are reported, never deleted.
 
-use std::path::Path;
-
-use aeth_devkit_core::github;
-use aeth_devkit_core::process::Runner;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use similar::TextDiff;
 
 use crate::changes::Changes;
 use crate::context::ProjectContext;
 use crate::docker::Consent;
+use crate::packages::PackageDirs;
 use crate::templates;
 use crate::vscode::protocol::Proposal;
 
@@ -21,27 +18,19 @@ use crate::vscode::protocol::Proposal;
 /// HEAD-reset every other managed file gets, then left out of the commit.
 pub const TARGETS: &[&str] = &["Dockerfile"];
 
-/// The repository whose `container-v<N>` releases ship the entrypoint binary the
-/// Dockerfile fetches; the tag stream is devkit's, whatever project is being set up.
-pub const DEVKIT_REPO: &str = "AetherBreaker/aeth-devkit";
+/// The template's file name inside the installed `devkit_container` package.
+pub const TEMPLATE_FILE: &str = "template.Dockerfile";
 
-/// The `N` of a `container-v<N>` pin in a Dockerfile's download URL, if it has one.
-/// Comment lines are skipped so a commented-out `ADD` above the live one is not the pin.
-pub fn pinned_container_version(dockerfile: &str) -> Option<u64> {
-  let re = regex::Regex::new(r"releases/download/container-v(\d+)/").expect("static regex");
-  dockerfile
-    .lines()
-    .filter(|l| !l.trim_start().starts_with('#'))
-    .find_map(|l| re.captures(l).and_then(|c| c[1].parse().ok()))
-}
-
-/// The newest `container-v*` tag on devkit's repository, `None` before the first
-/// container release. A lookup error is an error: guessing a pin here would write a real
-/// but possibly stale tag that no later run revisits (an existing pin is kept as is, and
-/// advancing it is a separate command's job, see TODO.md).
-fn newest_container_version(runner: &dyn Runner, root: &Path) -> Result<Option<u64>> {
-  let tags = github::list_tags(runner, root, DEVKIT_REPO)?;
-  Ok(tags.iter().filter_map(|t| t.strip_prefix("container-v")?.parse::<u64>().ok()).max())
+/// The Dockerfile as the installed devkit-container renders it for this project, or `None`
+/// when the package is not in the venv. The version rendered is the version the image will
+/// install, because both come from the same locked package.
+pub fn render(ctx: &ProjectContext, packages: &dyn PackageDirs) -> Result<Option<String>> {
+  let Some(dir) = packages.dir(crate::packages::CONTAINER.import_name) else {
+    return Ok(None);
+  };
+  let path = dir.join(TEMPLATE_FILE);
+  let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+  Ok(Some(templates::substitute(&text, ctx, templates::Escape::None)))
 }
 
 /// The text as diffed and as VS Code shows it: LF line endings, no byte-order mark. Neither
@@ -63,56 +52,24 @@ pub fn unified_diff(rel: &str, old: &str, new: &str) -> String {
     .to_string()
 }
 
-pub fn apply(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, consent: &Consent, changes: &mut Changes) -> Result<()> {
+pub fn apply(ctx: &ProjectContext, packages: &dyn PackageDirs, consent: &Consent, changes: &mut Changes) -> Result<()> {
   for target in TARGETS {
     let rel = format!("docker/{target}");
-    let mut rendered = templates::load(templates_dir, &rel, ctx, templates::Escape::None)?;
     let path = ctx.root.join("docker").join(target);
     let original = crate::read_optional(&path)?;
-    // `{container_version}`: the file's own pin when it carries the template's URL shape
-    // (no `gh` on a routine run); otherwise devkit's newest container tag, or `1` before
-    // the first container release exists. That provisional pin is only worth a note if
-    // the file is actually written below, so the note waits.
-    let mut provisional = None;
-    if rendered.contains("{container_version}") {
-      // A Dockerfile that fetches the binary through some other URL shape (a mirror, an
-      // ARG) reads as unpinned, so the template's own pin replaces it in the diff below.
-      // Said out loud: silently swapping someone's pin inside a whole-file diff is the
-      // one part of that diff they are least likely to look for.
-      if original
-        .as_deref()
-        .is_some_and(|o| o.contains("devkit-container") && pinned_container_version(o).is_none())
-      {
-        changes.notes.push(format!(
-          "{rel} fetches devkit-container through a URL devkit does not recognise, so the template's own `container-v<N>` pin is offered in its place; keep the file to stay on yours."
-        ));
+    // On a plain run the package step has already installed the package, so `None` here
+    // means a dry run on a project that has not adopted it yet.
+    let Some(rendered) = render(ctx, packages)? else {
+      changes.notes.push(format!(
+        "{rel} was not rendered: devkit-container is not installed in this venv yet; a plain run adds it and renders on the next run."
+      ));
+      if let Some(original) = &original {
+        changes.record_optional(&path, Some(original), original, vec![])?;
       }
-      let version = match original.as_deref().and_then(pinned_container_version) {
-        Some(n) => n,
-        None => match newest_container_version(runner, &ctx.root) {
-          Ok(Some(n)) => n,
-          Ok(None) => {
-            provisional = Some(
-              "devkit-container pinned to container-v1 provisionally (no container-v* tag on the devkit repository yet); the next devkit release creates that tag.",
-            );
-            1
-          }
-          Err(e) => {
-            changes.problems.push(format!(
-              "{rel} was left alone: devkit's container releases could not be read to pin one ({e:#}); rerun with `gh` working."
-            ));
-            if let Some(original) = &original {
-              changes.record_optional(&path, Some(original), original, vec![])?;
-            }
-            continue;
-          }
-        },
-      };
-      rendered = rendered.replace("{container_version}", &version.to_string());
-    }
+      continue;
+    };
     let Some(original) = original else {
       changes.record_optional(&path, None, &rendered, vec!["created from template".into()])?;
-      changes.notes.extend(provisional.map(str::to_string));
       continue;
     };
     if normalize_newlines(&original) == normalize_newlines(&rendered) {
@@ -131,10 +88,7 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, co
     let decision = consent.decide(&proposal, true)?;
     let detail = decision.detail("replaced with the devkit template");
     match decision.text(&proposal) {
-      Some(text) => {
-        changes.record_optional(&path, Some(&original), &text, vec![detail])?;
-        changes.notes.extend(provisional.map(str::to_string));
-      }
+      Some(text) => changes.record_optional(&path, Some(&original), &text, vec![detail])?,
       None => {
         changes.record_optional(&path, Some(&original), &original, vec![])?;
         println!("Kept {rel}.");
@@ -172,50 +126,32 @@ mod tests {
   }
 
   #[test]
-  fn the_pin_is_read_from_a_live_download_url_only() {
-    assert_eq!(
-      pinned_container_version("ADD https://x/releases/download/container-v12/devkit-container-x86_64-unknown-linux-musl /app/d\n"),
-      Some(12)
-    );
-    assert_eq!(
-      pinned_container_version("ADD https://x/releases/download/v9.0.0/devkit-container /app/d\n"),
-      None
-    );
-    assert_eq!(
-      pinned_container_version(
-        "# ADD https://x/releases/download/container-v2/d /app/d\nADD https://x/releases/download/container-v5/d /app/d\n"
-      ),
-      Some(5),
-      "a commented-out ADD is not the pin"
-    );
-  }
-
-  #[test]
-  fn the_newest_container_tag_is_numeric_and_a_lookup_failure_is_an_error() {
-    use aeth_devkit_core::process::RecordingRunner;
-    let root = std::path::Path::new(".");
-    let r = RecordingRunner::new(0);
-    r.script("gh", &["api"], 0, "v9.1.0\ncontainer-v3\ncontainer-v10\nv9.0.0\n");
-    assert_eq!(newest_container_version(&r, root).unwrap(), Some(10), "numeric, not lexical");
-    let args = &r.calls_for("gh")[0];
-    assert!(args.iter().any(|a| a == "repos/AetherBreaker/aeth-devkit/tags"), "{args:?}");
-    let r = RecordingRunner::new(0);
-    r.script("gh", &["api"], 0, "v9.0.0\n");
-    assert_eq!(newest_container_version(&r, root).unwrap(), None);
-    assert!(newest_container_version(&RecordingRunner::new(1), root).is_err());
-  }
-  #[test]
-  fn an_unrecognised_pin_is_named_rather_than_swapped_silently() {
-    // The whole-file diff would show the swap, but not that devkit failed to read the
-    // project's own pin; only a file that fetches the binary at all is worth the note.
-    for (text, noted) in [
-      ("ADD https://mirror/devkit-container-x86_64-unknown-linux-musl /app/d\n", true),
-      ("ADD https://x/releases/download/container-v5/devkit-container /app/d\n", false),
-      ("FROM scratch\n", false),
-    ] {
-      let says = text.contains("devkit-container") && pinned_container_version(text).is_none();
-      assert_eq!(says, noted, "{text}");
-    }
+  fn render_substitutes_python_dir_from_the_installed_package() {
+    let site = tempfile::tempdir().unwrap();
+    let pkg = site.path().join("devkit_container");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join(TEMPLATE_FILE), "RUN mv /tmp/repo/{python_dir} /app/{python_dir}\n").unwrap();
+    let mut map = std::collections::HashMap::new();
+    map.insert("devkit_container".to_string(), pkg);
+    let dirs = crate::packages::StubPackageDirs(map);
+    let ctx = ProjectContext {
+      root: std::path::PathBuf::from("/p"),
+      package: "proj".into(),
+      dependencies: Default::default(),
+      has_docker: true,
+      name: "proj".into(),
+      version: None,
+      origin: None,
+      docker_services: vec!["proj".into()],
+      docker_legacy_keys: vec![],
+      docker_files: false,
+      silence_unlisted_services_warning: false,
+      python_dir: "python".into(),
+      has_rust: true,
+      publish_index: None,
+    };
+    assert_eq!(render(&ctx, &dirs).unwrap().unwrap(), "RUN mv /tmp/repo/python /app/python\n");
+    assert_eq!(render(&ctx, &crate::packages::StubPackageDirs::default()).unwrap(), None);
   }
 
   #[test]

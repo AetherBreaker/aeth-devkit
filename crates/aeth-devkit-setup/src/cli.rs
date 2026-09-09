@@ -145,16 +145,21 @@ pub fn run(args: &Args) -> Result<ExitCode> {
 
   // Apply the templates (plus tombi), putting the user's files back on any failure.
   let apply = |changes: &mut Option<crate::changes::Changes>| -> Result<()> {
-    let deps = crate::docker::Deps {
-      runner: &runner,
-      prompt: &aeth_devkit_core::prompt::StdinPrompt,
-      reviewer: reviewer.as_ref().map(|r| r as &dyn crate::vscode::protocol::Reviewer),
-      mode: match (dry_run, args.replace_docker, tty) {
-        (true, _, _) => crate::docker::Mode::DryRun,
-        (false, true, _) => crate::docker::Mode::ReplaceAll,
-        (false, false, true) => crate::docker::Mode::Ask,
-        (false, false, false) => crate::docker::Mode::KeepAll,
+    let index = aeth_devkit_core::index::HttpIndexClient::with_timeout(std::time::Duration::from_secs(30));
+    let deps = crate::Deps {
+      docker: crate::docker::Deps {
+        runner: &runner,
+        prompt: &aeth_devkit_core::prompt::StdinPrompt,
+        reviewer: reviewer.as_ref().map(|r| r as &dyn crate::vscode::protocol::Reviewer),
+        mode: match (dry_run, args.replace_docker, tty) {
+          (true, _, _) => crate::docker::Mode::DryRun,
+          (false, true, _) => crate::docker::Mode::ReplaceAll,
+          (false, false, true) => crate::docker::Mode::Ask,
+          (false, false, false) => crate::docker::Mode::KeepAll,
+        },
       },
+      index: &index,
+      packages: &crate::packages::SystemPackageDirs { root: root.clone() },
     };
     let mut c = crate::run_with(&ctx, &templates, dry_run, &deps)?;
     if !dry_run {

@@ -173,11 +173,13 @@ fn partial(p: &Proposal, accepted: &[usize]) -> Result<Decision> {
   })
 }
 
-/// Everything Docker: static files first, then the compose file, then advisories.
-pub fn apply(ctx: &ProjectContext, templates_dir: &Path, deps: &Deps, changes: &mut Changes) -> Result<()> {
-  let consent = Consent::new(deps.prompt, deps.reviewer, deps.mode);
-  static_files::apply(ctx, templates_dir, deps.runner, &consent, changes)?;
-  compose(ctx, templates_dir, deps.runner, &consent, changes)?;
+/// Everything Docker: the Dockerfile from the installed container package first, then the
+/// compose file from the templates, then advisories.
+pub fn apply(ctx: &ProjectContext, templates_dir: &Path, deps: &crate::Deps, changes: &mut Changes) -> Result<()> {
+  let docker = &deps.docker;
+  let consent = Consent::new(docker.prompt, docker.reviewer, docker.mode);
+  static_files::apply(ctx, deps.packages, &consent, changes)?;
+  compose(ctx, templates_dir, docker.runner, &consent, changes)?;
   if consent.kept_silently() {
     changes
       .notes
