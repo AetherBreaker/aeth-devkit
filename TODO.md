@@ -5,12 +5,15 @@ design exists. Check items off in place; delete them once released.
 
 ## setup-project
 
-- [ ] Sister-project Docker migration (after the first devkit release that ships
-      `devkit-container`): in each of aeth_ext, IMAPReportCollector, ScheduledInvoiceProcessor,
-      ScheduledReportAggregator — add `[tool.docker].services = ["<service>"]`, commit it, run
-      `poe setup-project` (answer `replace` for the Dockerfile, review the compose diff),
-      fold `chown_paths` into `required_persisted_dirs`, delete `chown_paths`/`mkdirs`,
-      delete `docker/entrypoint.sh` and `docker/scripts/`, then `poe docker-pin`.
+- [ ] Sister-project Docker migration (after the aeth-devkit major that lands the
+      `devkit-container` split, PR #16): in each of aeth_ext, IMAPReportCollector,
+      ScheduledInvoiceProcessor, ScheduledReportAggregator — add
+      `[tool.docker].services = ["<service>"]`, commit it, `poe lock` (takes the new devkit),
+      `poe setup-project` (adds `devkit-container` to the lock and venv; answer `replace` for
+      the Dockerfile, review the compose diff), fold `chown_paths` into
+      `required_persisted_dirs`, delete `chown_paths`/`mkdirs`, delete `docker/entrypoint.sh`
+      and `docker/scripts/`, then `poe docker-pin` and push. Coolify redeploys on the
+      `docker/` change; watch the first build of each pull `devkit-container` from SFTPyPI.
       ScheduledInvoiceProcessor and ScheduledReportAggregator first move `file_holding` /
       `timeclock_playground` to temp dirs (on their own TODO lists, high priority).
 - [ ] IMAPReportCollector: `[tool.docker].mkdirs = [""]` is a data bug (would have chowned
