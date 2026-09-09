@@ -106,7 +106,6 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
   // --- Decide which content to edit: HEAD's copy when we will commit over a dirty file. ---
   let will_commit = !args.no_commit && !args.dry_run;
   let will_push = will_commit && !args.no_push;
-  refresh_dockerfile(&root, deps, args.dry_run, will_commit)?;
   let worktree_text = std::fs::read_to_string(&compose_path).with_context(|| format!("reading {}", compose_path.display()))?;
   let dirty = git::is_dirty(&root, &[&rel])?;
   let head = git::head_blob(&root, &rel)?;
@@ -168,7 +167,10 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
       edits.push(Edit::SetValue { line: t.line, value: new });
     }
   }
-  if edits.is_empty() {
+  // The Dockerfile is judged now but written only after the preflight below, so a refresh
+  // is never left as a local commit when the pin itself cannot proceed.
+  let refresh = dockerfile_drift(&root, deps, args.dry_run)?;
+  if edits.is_empty() && refresh.is_none() {
     println!("Already pinned to {display}. No changes made.");
     return Ok(ExitCode::SUCCESS);
   }
@@ -187,6 +189,20 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
     if behind > 0 {
       bail!("the branch is {behind} commit(s) behind origin; pull first (or pass --no-push)");
     }
+  }
+
+  // --- The Dockerfile first: its own commit, ahead of the pin's. ---
+  if let Some(refresh) = refresh {
+    apply_refresh(&root, refresh, will_commit)?;
+  }
+  if edits.is_empty() {
+    println!("Already pinned to {display}; {rel} unchanged.");
+    if will_push {
+      let branch = git::current_branch(&root)?;
+      git::push_refs(deps.runner, &root, &[&branch])?;
+      println!("Pushed {branch}.");
+    }
+    return Ok(ExitCode::SUCCESS);
   }
 
   let message = format!("chore: pin {package} to {display}");
@@ -237,82 +253,136 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
   Ok(ExitCode::SUCCESS)
 }
 
-/// Before a pin: make the committed Dockerfile match the locked devkit-container's
-/// template. The lock can advance the entrypoint (`poe lock`) while the Dockerfile stays on
+/// A `docker/Dockerfile` that differs from the locked devkit-container's template, decided
+/// by [`dockerfile_drift`] and written by [`apply_refresh`].
+pub struct DockerfileRefresh {
+  rendered: String,
+  locked: String,
+  /// The working copy differs from HEAD (or is untracked), so a write must keep its edits.
+  dirty: bool,
+  head: Option<Vec<u8>>,
+}
+
+/// Before a pin: does the committed Dockerfile match the locked devkit-container's
+/// template? The lock can advance the entrypoint (`poe lock`) while the Dockerfile stays on
 /// the old shape, and a deploy would build the mismatch; this is the last moment before every
-/// deploy. The file is devkit-owned, so drift is replaced without a prompt, in its own commit
-/// ahead of the pin's.
-pub fn refresh_dockerfile(root: &Path, deps: &Deps, dry_run: bool, will_commit: bool) -> Result<()> {
+/// deploy. Read-only apart from syncing a venv that lags the lock, which a dry run only
+/// announces: the template must come from the locked version, or the comparison is against
+/// the wrong file. `None` when the file matches, the project has no Docker services, or the
+/// package is not locked yet.
+pub fn dockerfile_drift(root: &Path, deps: &Deps, dry_run: bool) -> Result<Option<DockerfileRefresh>> {
   let ctx = ProjectContext::discover(root)?;
   if !ctx.has_docker {
-    return Ok(());
+    return Ok(None);
   }
   let lock = std::fs::read_to_string(root.join("uv.lock")).ok();
   let Some(locked) = lock.as_deref().and_then(|l| packages::locked_version(l, packages::CONTAINER.name)) else {
     println!("Dockerfile: devkit-container is not in uv.lock; run setup-project to adopt it. Skipping the refresh.");
-    return Ok(());
+    return Ok(None);
   };
-  // A venv behind the lock would render the wrong version's template.
-  let installed = deps
-    .packages
-    .dir(root, packages::CONTAINER.import_name)
-    .and_then(|d| packages::installed_version(&d));
-  if installed.as_deref() != Some(locked.as_str()) {
-    println!(
-      "Syncing the venv (devkit-container {locked} is locked, {} installed)",
-      installed.as_deref().unwrap_or("nothing")
-    );
+  let installed = |deps: &Deps| {
+    deps
+      .packages
+      .dir(root, packages::CONTAINER.import_name)
+      .and_then(|d| packages::installed_version(&d))
+  };
+  let have = installed(deps);
+  if have.as_deref() != Some(locked.as_str()) {
+    let have = have.as_deref().unwrap_or("nothing");
+    if dry_run {
+      println!(
+        "Dockerfile: devkit-container {locked} is locked but {have} is installed; a real run syncs the venv first and compares then."
+      );
+      return Ok(None);
+    }
+    println!("Syncing the venv (devkit-container {locked} is locked, {have} installed)");
     match deps.runner.run_inherit("uv", &["sync".into(), "--frozen".into()], root)? {
       Some(0) => {}
       Some(code) => bail!("uv sync --frozen exited with {code}"),
       None => bail!("uv sync --frozen was terminated by a signal"),
     }
+    // A sync that left another version in `.venv` would render the wrong template under a
+    // commit message naming the locked one.
+    if installed(deps).as_deref() != Some(locked.as_str()) {
+      bail!(
+        "devkit-container {locked} is locked but `uv sync --frozen` did not put it in .venv; is the project's environment elsewhere (UV_PROJECT_ENVIRONMENT)?"
+      );
+    }
   }
   let Some(rendered) = render(&ctx, deps.packages)? else {
-    bail!("devkit-container {locked} is locked but not importable from this venv after uv sync");
+    bail!("devkit-container {locked} is locked but not importable from this venv");
   };
-  let rel = "docker/Dockerfile".to_string();
-  let path = root.join("docker").join("Dockerfile");
-  let worktree = std::fs::read_to_string(&path).ok();
-  let dirty = git::is_dirty(root, &[&rel])?;
-  let head = git::head_blob(root, &rel)?;
-  // Same choice as the compose pin below: over a dirty file, the commit is made against
-  // HEAD's copy and the user's edits ride on top.
-  let base_text = match (&head, will_commit && dirty) {
+  let rel = "docker/Dockerfile";
+  let worktree = std::fs::read_to_string(root.join(rel)).ok();
+  let dirty = git::is_dirty(root, &[rel])?;
+  let head = git::head_blob(root, rel)?;
+  if dirty && head.is_some() && worktree.is_none() {
+    bail!("{rel} is deleted in the working tree; restore it or commit the deletion first");
+  }
+  // Drift is judged against what a commit would be made on: HEAD's copy when the working
+  // copy carries edits of its own, else the file as it is.
+  let base_text = match (&head, dirty) {
     (Some(h), true) => String::from_utf8(h.clone()).context("docker/Dockerfile at HEAD is not UTF-8")?,
-    _ => worktree.clone().unwrap_or_default(),
+    _ => worktree.unwrap_or_default(),
   };
   if normalize_newlines(&base_text) == normalize_newlines(&rendered) {
     println!("Dockerfile: matches devkit-container {locked}.");
-    return Ok(());
+    return Ok(None);
   }
-  println!("Dockerfile: drifted from devkit-container {locked}; refreshing.");
-  if dry_run {
-    return Ok(());
-  }
-  let message = format!("chore(docker): refresh Dockerfile from devkit-container {locked}");
-  if let (true, Some(base)) = (will_commit && dirty, head) {
+  println!(
+    "Dockerfile: drifted from devkit-container {locked}; {}.",
+    if dry_run { "would be refreshed" } else { "refreshing" }
+  );
+  Ok(Some(DockerfileRefresh {
+    rendered,
+    locked,
+    dirty,
+    head,
+  }))
+}
+
+/// Write the refreshed Dockerfile, in its own commit ahead of the pin's when committing.
+/// The file is devkit-owned, so there is no prompt; the user's uncommitted edits are merged
+/// back on top either way (3-way against HEAD, like the compose pin), and overlapping edits
+/// abort before anything is written.
+pub fn apply_refresh(root: &Path, refresh: DockerfileRefresh, will_commit: bool) -> Result<()> {
+  let rel = "docker/Dockerfile".to_string();
+  let path = root.join("docker").join("Dockerfile");
+  let message = format!("chore(docker): refresh Dockerfile from devkit-container {}", refresh.locked);
+  let DockerfileRefresh { rendered, dirty, head, .. } = refresh;
+  if let (true, Some(base)) = (dirty, head) {
     let current = git::worktree_blob(root, &rel)?.with_context(|| format!("{rel} vanished during the run"))?;
     let merged = git::merge_file(root, &current.bytes, &base, rendered.as_bytes())?
       .context("your uncommitted Dockerfile changes overlap the refreshed lines; commit or revert them first")?;
-    let mode = git::head_mode(root, &rel)?.unwrap_or_else(|| "100644".into());
-    let sha = git::hash_object(root, rendered.as_bytes())?;
-    git::commit_files_on_head(
-      root,
-      &[git::IndexEntry {
-        path: rel.clone(),
-        staged: Some((mode, sha)),
-      }],
-      &message,
-    )?;
+    if will_commit {
+      let mode = git::head_mode(root, &rel)?.unwrap_or_else(|| "100644".into());
+      let sha = git::hash_object(root, rendered.as_bytes())?;
+      git::commit_files_on_head(
+        root,
+        &[git::IndexEntry {
+          path: rel.clone(),
+          staged: Some((mode, sha)),
+        }],
+        &message,
+      )?;
+    }
     git::write_worktree(root, &rel, &merged, current.filtered).with_context(|| format!("writing {}", path.display()))?;
-    println!("Committed the Dockerfile refresh on HEAD; your uncommitted changes to {rel} were kept in the working tree.");
+    println!(
+      "{} your uncommitted changes to {rel} were kept in the working tree.",
+      if will_commit {
+        "Committed the Dockerfile refresh on HEAD;"
+      } else {
+        "Refreshed the Dockerfile;"
+      }
+    );
   } else {
     std::fs::create_dir_all(path.parent().unwrap())?;
     std::fs::write(&path, &rendered).with_context(|| format!("writing {}", path.display()))?;
     if will_commit {
       let hash = git::commit_paths(root, std::slice::from_ref(&rel), &message)?;
       println!("Committed {hash}: {message}");
+    } else {
+      println!("Refreshed {rel}");
     }
   }
   Ok(())
