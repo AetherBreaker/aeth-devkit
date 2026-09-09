@@ -21,7 +21,7 @@
   # mypy is deliberately absent -- [tool.mypy] is `if-dep mypy` gated and stays opt-in.
   # devkit-claude-hooks and devkit-poe-complete are the Claude Code hooks and the poe
   # completion binaries setup-project wires in; their floors follow the newest release the
-  # installed devkit accepts (spec 4.0).
+  # installed devkit accepts.
   dev = [
     "devkit-claude-hooks>={latest}",
     "devkit-poe-complete>={latest}",

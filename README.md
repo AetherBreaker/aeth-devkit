@@ -121,11 +121,11 @@ second run is a byte-for-byte no-op.
   drift. Inside a VS Code terminal the diff opens in the editor instead (see **VS Code
   extension**). `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to
   delete, never removed.
-- **Placeholders** - `{project_root}`, `{package}`, `{python_dir}`, `{devkit_bin}`,
+- **Placeholders** - `{project_root}`, `{package}`, `{python_dir}`, `{hook_bin}`,
   `{publish_index}`, `{publish_index_key}`, `{devkit_index}` (the index the project's
   `aeth-devkit` source names, `SFTPyPI` when there is none), `{git_repo}` with per-format
-  escaping;
-  `{devkit_bin}` prefers the venv binary over `uv run devkit`; `{git_tag}` (latest stable
+  escaping; `{hook_bin}` prefers the project environment's `devkit-hook` over
+  `uv run devkit-hook`; `{git_tag}` (latest stable
   remote tag, resolved lazily, falling back to `v<pyproject version>` with a note) and
   `{service}` are filled per compose scaffold block; `{latest}` in a pyproject template
   requirement means the newest release the running devkit accepts (see **Devkit
