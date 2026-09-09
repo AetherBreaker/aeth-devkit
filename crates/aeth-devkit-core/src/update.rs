@@ -110,7 +110,8 @@ pub const CACHE_ENV: &str = "DEVKIT_UPDATE_CACHE";
 
 /// This user's devkit cache directory: `%LOCALAPPDATA%\aeth-devkit` on Windows, else
 /// `$XDG_CACHE_HOME/aeth-devkit` (default `~/.cache/aeth-devkit`). The VS Code extension
-/// computes the same path, so the two find each other's files without configuration.
+/// (`AetherBreaker/devkit-vscode`, `src/extension.ts`) computes the same path, so the two
+/// find each other's files without configuration.
 pub fn cache_dir() -> Option<PathBuf> {
   // An empty variable counts as unset (the VS Code extension's twin agrees), or the
   // result would be a relative `aeth-devkit`.

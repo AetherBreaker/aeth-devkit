@@ -15,10 +15,12 @@ gh repo clone AetherBreaker/devkit-vscode
 
 ## Publishing credentials
 
-The release workflows read the SFTPyPI credentials from repository secrets, but `poe release`
-and the local index queries read them from `.env`. Copy `aeth-devkit/.env` (never committed)
-into every repository that publishes a wheel, and into `devkit-vscode` as well: it publishes
-no wheel, but devkit's index queries want the credentials there too.
+The release workflows read the SFTPyPI credentials from repository secrets; locally, only the
+`release`, `release-and-pin` and `rescind-release` poe tasks read them, from `.env` (index
+queries and `uv` need none). Copy `aeth-devkit/.env` (never committed) into every other
+repository, `devkit-vscode` included: nothing there needs the credentials, but one `.env` in
+every checkout is the deliberate convention, and its repository secrets are pre-provisioned
+the same way, unused so far.
 
 ```bash
 for r in devkit-container devkit-vscode; do cp aeth-devkit/.env "$r/.env"; done

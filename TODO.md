@@ -67,7 +67,15 @@ design exists. Check items off in place; delete them once released.
       packages and publishes; there is no version-bump command, no changelog, and nothing
       waits for or verifies the release the way `devkit release` does for wheels. Consider a
       `devkit release`-shaped flow for non-wheel artefacts.
-- [ ] After the first `vscode-extension-v1` release: delete `.vscode/extension/` and
+- [ ] `[tool.devkit] release-workflow = false` is honoured by `setup-project` but not yet by the
+      rest of devkit: `git::committable()` still stages `.github/workflows/release.yml` for the
+      run (harmless except in a double-Ctrl-C abort, which drops uncommitted edits to it), and
+      `devkit release` refuses on the missing publish step with advice to run `setup-project`,
+      which cannot help there; it should say the project opts out.
+- [ ] Two devkit settings namespaces coexist: `[tool.setup-project].keep` and `[tool.devkit]`
+      (the table the split spec reserves for devkit-level settings). Reconcile before either
+      gains more keys.
+- [ ] Now that `vscode-extension-v1` has shipped: delete `.vscode/extension/` and
       `install.ps1` from aeth_ext and aeth_ext-2, and the
       `~/.vscode/extensions/local.[drekker-]add-to-runtime-base-*` junction (setup-project
       prints a note while they exist).
