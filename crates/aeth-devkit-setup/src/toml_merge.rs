@@ -3,7 +3,7 @@
 use anyhow::{Context as _, Result, bail};
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
 
-use crate::context::{ProjectContext, dependency_name};
+use crate::context::{ProjectContext, dependency_name, normalize_dist_name};
 
 const ADDED_COMMENT_PREFIX: &str = " # setup-project added: ";
 /// Common prefix of every marker comment, used to strip them all from a table copied whole.
@@ -23,8 +23,23 @@ pub const LATEST: &str = "{latest}";
 
 pub fn merge_pyproject(original: &str, template: &str, ctx: &ProjectContext, log: &mut Vec<String>) -> Result<String> {
   let mut doc: DocumentMut = original.parse().context("parsing project pyproject.toml")?;
-  let tpl: DocumentMut = template.parse().context("parsing template pyproject.toml")?;
+  let mut tpl: DocumentMut = template.parse().context("parsing template pyproject.toml")?;
   check_markers(tpl.as_table(), "")?;
+  // The project's own package is not its own dependency (spec 4.0): a satellite repo is
+  // devkit-managed without resolving its published self beside the editable one. Out of
+  // the template before the merge, so every path that copies an array or a key honours it.
+  let own = normalize_dist_name(&ctx.name);
+  drop_own_package(tpl.as_table_mut(), &own);
+  if let Some(sources) = tpl
+    .get_mut("tool")
+    .and_then(Item::as_table_mut)
+    .and_then(|t| t.get_mut("uv"))
+    .and_then(Item::as_table_mut)
+    .and_then(|t| t.get_mut("sources"))
+    .and_then(Item::as_table_mut)
+  {
+    sources.retain(|k, _| normalize_dist_name(k) != own);
+  }
 
   let mut merger = Merger { ctx, log };
   merger.merge_table(doc.as_table_mut(), tpl.as_table(), "");
@@ -328,6 +343,23 @@ fn union_array(existing: &mut Array, template: &Array) -> Vec<String> {
   added
 }
 
+/// Drop every `{latest}` requirement naming `own` from the template's arrays, wherever they
+/// sit (`[project].dependencies`, each dependency group).
+fn drop_own_package(table: &mut Table, own: &str) {
+  for (_, item) in table.iter_mut() {
+    match item {
+      Item::Value(Value::Array(a)) => {
+        a.retain(|v| {
+          !v.as_str()
+            .is_some_and(|s| s.contains(LATEST) && normalize_dist_name(&dependency_name(s)) == own)
+        });
+      }
+      Item::Table(t) => drop_own_package(t, own),
+      _ => {}
+    }
+  }
+}
+
 /// The template's `name>={latest}` entries in an array copied into a project as is, made
 /// bare names: what the union does for an existing array (see [`union_dependencies`]), so
 /// the placeholder never reaches a project file whichever path adds the array.
@@ -599,6 +631,25 @@ mod docker_tests {
     let bad = "[tool.uv.sources]\n  # setup-project: if-dockr\n  x = 1\n";
     let err = merge_pyproject(orig, bad, &ctx(false), &mut vec![]).unwrap_err().to_string();
     assert!(err.contains("unknown marker") && err.contains("tool.uv.sources.x"), "{err}");
+  }
+
+  #[test]
+  fn a_project_never_gets_its_own_package() {
+    let tpl = "[dependency-groups]\n  dev = [\"devkit-claude-hooks>={latest}\", \"devkit-poe-complete>={latest}\", \"ruff>=0.15\"]\n\n[tool.uv.sources]\n  devkit-claude-hooks = [{ index = \"SFTPyPI\" }]\n  devkit-poe-complete = [{ index = \"SFTPyPI\" }]\n";
+    let mut own = ctx(false);
+    own.name = "Devkit_Claude_Hooks".into();
+    // A project without the tables (both copied whole) and one with them (union and key merge).
+    let fresh = "[project]\n  name = \"Devkit_Claude_Hooks\"\n";
+    let existing = "[project]\n  name = \"Devkit_Claude_Hooks\"\n\n[dependency-groups]\n  dev = [\"maturin>=1.7\"]\n\n[tool.uv.sources]\n  aeth-devkit = [{ index = \"SFTPyPI\" }]\n";
+    for orig in [fresh, existing] {
+      let out = merge_pyproject(orig, tpl, &own, &mut vec![]).unwrap();
+      assert!(!out.contains("devkit-claude-hooks"), "{out}");
+      assert!(
+        out.contains("\"devkit-poe-complete\"") && out.contains("devkit-poe-complete = [{ index = \"SFTPyPI\" }]"),
+        "{out}"
+      );
+      assert!(out.contains("\"ruff>=0.15\""), "{out}");
+    }
   }
 
   const TPL: &str = "[tool.pyright]\n  strict = true\n\n# setup-project: if-docker\n[tool.docker]\n  mkdirs = []\n";
