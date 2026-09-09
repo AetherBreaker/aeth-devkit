@@ -11,6 +11,7 @@ pub mod interrupt;
 pub mod json_merge;
 pub mod lines;
 pub mod md_block;
+pub mod packages;
 pub mod templates;
 pub mod toml_merge;
 pub mod vscode;
