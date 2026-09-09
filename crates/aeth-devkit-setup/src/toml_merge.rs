@@ -138,9 +138,7 @@ impl Merger<'_> {
               // key-by-key merge below gives an existing table.
               let mut fresh = ttable.clone();
               strip_marker_lines(fresh.decor_mut());
-              for key in ttable.iter().map(|(k, _)| k).filter(|k| self.gated_off(ttable, k)) {
-                fresh.remove(key);
-              }
+              fresh.retain(|k, _| !self.gated_off(ttable, k));
               for (mut key, _) in fresh.iter_mut() {
                 strip_marker_lines(key.leaf_decor_mut());
               }
