@@ -2043,3 +2043,11 @@ EOF
 - Spec 4.0's "explicit floor cannot be met" and "`{latest}` throttled" are both decided by uv's output (Task 8 step 2); devkit parses no package metadata.
 - `if-docker` on the new template tables also fires for a project that has Docker files but no `services` (the `[tool.docker]` seed case). Such a project then carries the dependency without setup-project managing its Dockerfile. No such project exists today; accepted.
 - The smoke test's wheel carries a musl binary under a generic `linux` tag; the release wheel is manylinux. Both run the same code; the image test covers the packaging path, CI's wheel job covers the manylinux build.
+
+## Execution notes (Part A done 2026-09-08)
+
+- Tasks 1–4 are complete: `AetherBreaker/devkit-container` exists, CI is green, `v1.0.0` is released and `devkit-container==1.0.0` resolves from SFTPyPI. Part B starts at Task 5 on branch `feat/extract-devkit-container`.
+- Task 1: filter-repo kept 13 commits and re-pointed six aeth-devkit tags at surviving commits; they were deleted before the push. A `.gitattributes` (`* text=auto eol=lf`) was added so a Windows checkout builds an LF template into the wheel.
+- Task 3 changed design: `uv sync --frozen` removes any package the lock does not name, so a `uv pip install` of the wheel between the template's syncs was uninstalled by the next sync. The scratch app now depends on `devkit-container` through a `[tool.uv.sources]` path source to the local wheel (copied to `/app/wheels/` before the first sync), which is also the faithful shape: the image installs it from `uv.lock`.
+- Task 4: `setup-project` needs a real terminal (`IsTerminal` on stdin); the tool shells have none, and opening console windows is not acceptable. It was run once successfully; future wet runs are the user's to run. `devkit release` reads the SFTPyPI credentials from the environment, so it is run as `poe release --force` after copying the two `UV_INDEX_SFTPYPI_*` lines from `aeth-devkit/.env` into the repo's `.env`; WORKSPACE.md says so.
+- A stash "setup-project output, first run" remains in `devkit-container`; it is superseded by the commit and can be dropped.
