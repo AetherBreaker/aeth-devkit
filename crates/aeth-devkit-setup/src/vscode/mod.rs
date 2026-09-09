@@ -401,8 +401,7 @@ mod tests {
     let old = RecordingRunner::new(0);
     old.script(&code(tmp.path()), &["--list-extensions"], 0, "aeth.aeth-devkit@0.0.0\n");
     let mut f = StubFetch::default();
-    f.bodies
-      .insert(install::refs_url(), r#"[{"ref":"refs/tags/vscode-extension-v1"}]"#.into());
+    f.bodies.insert(install::refs_url(), r#"[{"ref":"refs/tags/v1"}]"#.into());
     assert!(matches!(prepare(&o, &old, &f), Prepared::ReloadNeeded));
   }
 
