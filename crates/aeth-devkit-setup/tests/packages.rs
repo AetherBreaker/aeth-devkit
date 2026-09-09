@@ -17,7 +17,7 @@ fn fixtures() -> PathBuf {
 
 fn lock_with(container: &str) -> String {
   format!(
-    "version = 1\n\n[[package]]\nname = \"aeth-devkit\"\nversion = \"{RUNNING_DEVKIT}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-container\"\nversion = \"{container}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n"
+    "version = 1\n\n[[package]]\nname = \"aeth-devkit\"\nversion = \"{RUNNING_DEVKIT}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-claude-hooks\"\nversion = \"1.0.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-poe-complete\"\nversion = \"1.0.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-container\"\nversion = \"{container}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n"
   )
 }
 
@@ -30,11 +30,20 @@ fn project(pyproject: &str, lock: Option<&str>) -> tempfile::TempDir {
   dir
 }
 
-const DOCKER_PYPROJECT: &str = "[project]\n  name = \"p\"\n  dependencies = [\"devkit-container\"]\n\n[tool.docker]\n  services = [\"p\"]\n\n[tool.uv.sources]\n  devkit-container = [{ index = \"SFTPyPI\" }]\n\n[[tool.uv.index]]\n  name = \"SFTPyPI\"\n  url = \"https://idx/+simple\"\n  explicit = true\n";
+const DOCKER_PYPROJECT: &str = "[project]\n  name = \"p\"\n  dependencies = [\"devkit-container\"]\n\n[tool.docker]\n  services = [\"p\"]\n\n[dependency-groups]\n  dev = [\"devkit-claude-hooks>=1.0.0\", \"devkit-poe-complete>=1.0.0\"]\n\n[tool.uv.sources]\n  devkit-container = [{ index = \"SFTPyPI\" }]\n  devkit-claude-hooks = [{ index = \"SFTPyPI\" }]\n  devkit-poe-complete = [{ index = \"SFTPyPI\" }]\n\n[[tool.uv.index]]\n  name = \"SFTPyPI\"\n  url = \"https://idx/+simple\"\n  explicit = true\n";
 
 /// The venv with the fixture copy of the container package at `version`, or empty.
 fn venv(version: Option<&str>) -> StubVenv {
   let mut map = HashMap::new();
+  for name in ["devkit_claude_hooks", "devkit_poe_complete"] {
+    map.insert(
+      name.to_string(),
+      Installed {
+        dir: fixtures(),
+        version: "1.0.0".into(),
+      },
+    );
+  }
   if let Some(v) = version {
     map.insert(
       "devkit_container".to_string(),
@@ -73,7 +82,11 @@ fn advance(
 }
 
 fn latest() -> Vec<String> {
-  vec!["devkit-container".to_string()]
+  vec![
+    "devkit-claude-hooks".into(),
+    "devkit-poe-complete".into(),
+    "devkit-container".into(),
+  ]
 }
 
 #[test]
@@ -95,6 +108,10 @@ fn a_latest_package_is_locked_under_the_devkit_constraint_and_its_floor_written(
     [
       "lock",
       "--upgrade-package",
+      "devkit-claude-hooks",
+      "--upgrade-package",
+      "devkit-poe-complete",
+      "--upgrade-package",
       "devkit-container",
       "--upgrade-package",
       &format!("aeth-devkit=={RUNNING_DEVKIT}"),
@@ -107,7 +124,13 @@ fn a_latest_package_is_locked_under_the_devkit_constraint_and_its_floor_written(
   assert_eq!(calls.len(), 2, "{calls:?}");
   let py = fs::read_to_string(root.join("pyproject.toml")).unwrap();
   assert!(py.contains("\"devkit-container>=1.4.0\""), "{py}");
-  assert!(changes.warnings.is_empty(), "{:?}", changes.warnings);
+  // The stub index answers 1.4.0 for every package, so the two packages locked at 1.0.0 get
+  // the throttle warning; the subject of this test must not.
+  assert!(
+    changes.warnings.iter().all(|w| !w.contains("devkit-container")),
+    "{:?}",
+    changes.warnings
+  );
   assert!(changes.files.iter().any(|f| f.path.ends_with("pyproject.toml")));
   assert!(changes.managed.iter().any(|p| p.ends_with("uv.lock")), "{:?}", changes.managed);
   assert!(!changes.venv_synced);
@@ -163,7 +186,7 @@ fn a_package_locked_from_a_path_gets_no_floor() {
   let index = StubIndexClient { versions: vec![] };
   let changes = advance(dir.path(), &runner, &index, &venv(Some("1.5.0.dev0")), &latest(), false).unwrap();
   let py = fs::read_to_string(dir.path().join("pyproject.toml")).unwrap();
-  assert!(py.contains("\"devkit-container\"") && !py.contains(">="), "{py}");
+  assert!(py.contains("\"devkit-container\"") && !py.contains("devkit-container>="), "{py}");
   assert!(changes.notes.iter().any(|n| n.contains("left as written")), "{:?}", changes.notes);
   assert_eq!(runner.calls_for("uv").len(), 1, "no floor, no relock");
 }
@@ -322,11 +345,40 @@ fn a_package_missing_from_the_lock_after_locking_is_an_error() {
   );
 }
 
+const PLAIN_PYPROJECT: &str = "[project]\n  name = \"p\"\n\n[dependency-groups]\n  dev = [\"devkit-claude-hooks\", \"devkit-poe-complete\"]\n\n[tool.uv.sources]\n  devkit-claude-hooks = [{ index = \"SFTPyPI\" }]\n  devkit-poe-complete = [{ index = \"SFTPyPI\" }]\n\n[[tool.uv.index]]\n  name = \"SFTPyPI\"\n  url = \"https://idx/+simple\"\n  explicit = true\n";
+
 #[test]
-fn nothing_happens_without_docker() {
-  let dir = project("[project]\n  name = \"p\"\n", None);
+fn a_project_without_docker_still_gets_the_hooks_and_completion() {
+  // The venv already holds both packages at the locked version, so the step locks under the
+  // devkit constraint, writes the floors, re-locks and has nothing to sync; an empty venv
+  // would end in the sync re-check that
+  // `a_lagging_venv_is_synced_and_a_sync_that_changes_nothing_is_an_error` covers.
+  let lock = lock_with("1.4.0").replace("devkit-container", "unrelated");
+  let dir = project(PLAIN_PYPROJECT, Some(&lock));
   let runner = RecordingRunner::new(0);
   let index = StubIndexClient { versions: vec![] };
-  let changes = advance(dir.path(), &runner, &index, &venv(None), &[], false).unwrap();
-  assert!(runner.calls_for("uv").is_empty() && changes.notes.is_empty());
+  let changes = advance(dir.path(), &runner, &index, &venv(None), &latest(), false).unwrap();
+  let calls = runner.calls_for("uv");
+  assert_eq!(
+    calls,
+    vec![
+      vec![
+        "lock".to_string(),
+        "--upgrade-package".into(),
+        "devkit-claude-hooks".into(),
+        "--upgrade-package".into(),
+        "devkit-poe-complete".into(),
+        "--upgrade-package".into(),
+        format!("aeth-devkit=={RUNNING_DEVKIT}"),
+      ],
+      vec!["lock".to_string()],
+    ],
+    "the upgrade lock, the re-lock after the floors, no sync: the venv already matches"
+  );
+  let py = fs::read_to_string(dir.path().join("pyproject.toml")).unwrap();
+  assert!(
+    py.contains("\"devkit-claude-hooks>=1.0.0\"") && py.contains("\"devkit-poe-complete>=1.0.0\""),
+    "{py}"
+  );
+  assert!(changes.warnings.is_empty(), "{:?}", changes.warnings);
 }
