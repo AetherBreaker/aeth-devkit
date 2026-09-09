@@ -252,11 +252,13 @@ rustc-ice-*.txt
 # ---- SFT additions ----
 .cache/
 *.env
-.env.*
-!.env.example
 persisted_data/
 
 # ---- project-specific ----
+# ---- SFT additions ----
+.env.*
+!.env.example
+
 # Templates shipped in the wheel must never be ignored (template.env matches *.env above)
 !python/aeth_devkit/templates/**
 
