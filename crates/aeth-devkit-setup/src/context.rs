@@ -61,7 +61,7 @@ pub struct ProjectContext {
 pub const DEFAULT_DEVKIT_INDEX: &str = "SFTPyPI";
 
 /// Every key `[tool.devkit]` may hold; anything else is refused (see `discover`).
-pub const DEVKIT_KEYS: &[&str] = &["release-workflow"];
+const DEVKIT_KEYS: &[&str] = &["release-workflow"];
 
 impl ProjectContext {
   pub fn discover(root: &Path) -> Result<Self> {
