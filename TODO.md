@@ -31,6 +31,28 @@ design exists. Check items off in place; delete them once released.
 
 ## Release / packaging
 
+- [ ] **Complete-release rule for every version check** (policy agreed 2026-09-09; design it
+      with full attention before implementing). A version counts as released only when all
+      three indicators exist: the git tag on the remote, the GitHub release, and the package on
+      SFTPyPI (the last only for targets that publish there). Any subset is the signature of an
+      interrupted release or an interrupted rescind, so every resolver must warn that the
+      version looks incomplete, name what is missing, and fall back to the newest version that
+      passes all three. Sites in this repo: `docker-pin` (`crates/aeth-devkit-pin/src/resolve.rs`,
+      already three-way but errors on a tag without a release instead of falling back), the
+      VS Code extension installer (`crates/aeth-devkit-setup/src/vscode/install.rs`, reads
+      releases with the asset, no tag check, no index), `devkit lock`
+      (`crates/aeth-devkit-lock`, index only), the `{latest}` package step
+      (`crates/aeth-devkit-setup/src/packages.rs`, uv chooses; steer it with a
+      `<=newest-complete,!=incomplete` specifier on `--upgrade-package`), the update nag
+      (`crates/aeth-devkit-core/src/update.rs`, index only, cached), and `devkit release`'s
+      post-run verification. Open design points: how devkit learns a package's GitHub
+      repository (a fixed table of its own packages vs. `[project.urls]` metadata; `docker-pin`
+      uses the project's origin), `gh` vs. anonymous HTTP for the GitHub side, and whether an
+      explicit `--version` that is incomplete errors (today) or warns and falls back. Other
+      repos: `devkit-vscode` (tag push then release; no index), `devkit-container` and the
+      later wheel repos (all three indicators), the sister projects' `docker-pin` runs that
+      consume them, and `rescind-release.sh` (a rollback must remove all three, in the reverse
+      order, so a half-rescind is caught the same way).
 - [ ] Release 7.0.0 (`aeth-devkit`), then migrate downstream projects per README.
 - [ ] **TUI for the release watch** (shelved 2026-09-04; work committed, unpushed, on
       `feat/release-watch-repaint`). That branch dropped `gh run watch` for our own column view
