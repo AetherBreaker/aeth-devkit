@@ -1,15 +1,25 @@
 //! The devkit packages `setup-project` keeps current in a project (spec section 4.0): which
-//! they are, where the venv keeps them, and what the lock says about them. The advancing
-//! itself lives in `advance`, added in a later task.
+//! they are, where the venv keeps them, what the lock says about them, and [`advance`],
+//! which locks them under the running devkit, writes the `{latest}` floors and syncs.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context as _, Result, bail};
 use toml_edit::{DocumentMut, Item};
 
-use aeth_devkit_core::pyproject::normalize_dist_name;
+use aeth_devkit_core::pyproject::{
+  find_requirement, index_url_for, normalize_dist_name, replace_requirement, set_requirement_version,
+};
+use aeth_devkit_core::version::{latest_stable, parse_lenient};
 
+use crate::changes::Changes;
 use crate::context::ProjectContext;
+
+/// The version of the devkit running this code; every resolution is constrained to it so
+/// devkit is never upgraded as a side effect (spec 4.0). All workspace crates share one
+/// version, so the setup crate's is the binary's.
+pub const RUNNING_DEVKIT: &str = env!("CARGO_PKG_VERSION");
 
 /// A package devkit owns and `setup-project` installs and advances. `name` is the
 /// distribution name (index, pyproject); `import_name` is the directory in site-packages.
@@ -116,6 +126,130 @@ pub fn latest_requested(template: &str) -> Vec<String> {
     .filter(|s| s.contains(crate::toml_merge::LATEST))
     .map(crate::context::dependency_name)
     .collect()
+}
+
+/// Bring the active devkit packages to the newest release the running devkit accepts, write
+/// the floors the template marked `{latest}`, and sync the venv. Runs after the pyproject
+/// merge has listed the packages and before anything reads them from the venv.
+pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: &[String], changes: &mut Changes) -> Result<()> {
+  let packages = active(ctx);
+  if packages.is_empty() {
+    return Ok(());
+  }
+  let missing: Vec<&DevkitPackage> = packages
+    .iter()
+    .copied()
+    .filter(|p| deps.packages.dir(p.import_name).is_none())
+    .collect();
+  if dry_run {
+    for p in &missing {
+      changes.notes.push(format!(
+        "{} is not installed in this venv; a plain run adds it to pyproject.toml, locks it and syncs.",
+        p.name
+      ));
+    }
+    return Ok(());
+  }
+  let root = &ctx.root;
+  let lock_path = root.join("uv.lock");
+  let lock_before = crate::read_optional(&lock_path)?;
+  // The constraint is the running binary's version, so a lock that already names another
+  // devkit means the venv is out of step with the lock: the lock step must not paper over
+  // that by moving devkit's entry to match the binary.
+  if let Some(v) = lock_before.as_deref().and_then(|l| locked_registry_version(l, "aeth-devkit"))
+    && v != RUNNING_DEVKIT
+  {
+    bail!(
+      "uv.lock pins aeth-devkit {v} but this devkit is {RUNNING_DEVKIT}; run `uv sync` so the venv matches the lock, then rerun setup-project"
+    );
+  }
+  let constraints = root.join(".cache").join("devkit-constraints.txt");
+  std::fs::create_dir_all(root.join(".cache")).context("creating .cache")?;
+  std::fs::write(&constraints, format!("aeth-devkit=={RUNNING_DEVKIT}\n")).context("writing the constraints file")?;
+  let mut args: Vec<String> = vec!["lock".into()];
+  for p in &packages {
+    args.push("--upgrade-package".into());
+    args.push(p.name.into());
+  }
+  args.push("--constraints".into());
+  args.push(constraints.to_string_lossy().into_owned());
+  let out = deps.docker.runner.run_capture("uv", &args, root)?;
+  if !out.success() {
+    let first = out.stderr.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    if out.stderr.contains("No solution found") {
+      bail!(
+        "a devkit package's floor cannot be met by the running devkit {RUNNING_DEVKIT}: {first}; run `devkit lock`, then rerun setup-project"
+      );
+    }
+    bail!("uv lock failed: {}", out.stderr.trim());
+  }
+  let lock_after = std::fs::read_to_string(&lock_path).context("reading uv.lock after locking")?;
+  let pyproject_path = root.join("pyproject.toml");
+  let text = std::fs::read_to_string(&pyproject_path).context("reading pyproject.toml")?;
+  let mut doc: DocumentMut = text.parse().context("parsing pyproject.toml")?;
+  let mut pinned: Vec<String> = Vec::new();
+  let mut locked_all: Vec<String> = Vec::new();
+  for p in &packages {
+    let locked = locked_version(&lock_after, p.name).with_context(|| format!("{} is not in uv.lock after locking", p.name))?;
+    locked_all.push(format!("{} {locked}", p.name));
+    if latest.iter().any(|n| n == p.name)
+      && let Some(req) = find_requirement(&doc, p.name)
+    {
+      let bare = req.spec.trim() == p.name;
+      let new_spec = if bare {
+        Some(format!("{}>={locked}", p.name))
+      } else {
+        set_requirement_version(&req.spec, &locked)
+      };
+      if let Some(new_spec) = new_spec
+        && new_spec != req.spec
+      {
+        pinned.push(if bare {
+          format!("pinned {new_spec}")
+        } else {
+          format!("pinned {new_spec} (was {})", req.spec)
+        });
+        replace_requirement(&mut doc, &req, &new_spec);
+      }
+    }
+    // The nudge: newer on the index than uv could choose under the constraint.
+    if let Some(url) = index_url_for(&doc, p.name) {
+      match deps.index.versions(&url, p.name) {
+        Ok(versions) => {
+          let newest = latest_stable(versions.iter().map(String::as_str));
+          if let (Some(newest), Some(have)) = (newest.as_deref().and_then(parse_lenient), parse_lenient(&locked))
+            && newest > have
+          {
+            changes.warnings.push(format!(
+              "{} {newest} is available but needs a newer aeth-devkit than the running {RUNNING_DEVKIT}; run `devkit lock`, then rerun setup-project",
+              p.name
+            ));
+          }
+        }
+        Err(e) => changes
+          .warnings
+          .push(format!("could not check {url} for a newer {}: {e:#}", p.name)),
+      }
+    }
+  }
+  if !pinned.is_empty() {
+    std::fs::write(&pyproject_path, doc.to_string()).context("writing pyproject.toml")?;
+    for line in &pinned {
+      changes.note(&pyproject_path, line);
+    }
+  }
+  let lock_changed = lock_before.as_deref() != Some(lock_after.as_str());
+  if lock_changed || !missing.is_empty() {
+    match deps.docker.runner.run_inherit("uv", &["sync".into(), "--frozen".into()], root)? {
+      Some(0) => {}
+      Some(code) => bail!("uv sync --frozen exited with {code}"),
+      None => bail!("uv sync --frozen was terminated by a signal"),
+    }
+  }
+  if lock_changed {
+    changes.note(&lock_path, &format!("locked {}", locked_all.join(", ")));
+  }
+  Ok(())
 }
 
 /// The installed version of the package at `package_dir`, read from the

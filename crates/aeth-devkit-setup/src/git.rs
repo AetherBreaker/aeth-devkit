@@ -26,6 +26,8 @@ pub const COMMIT_SUBJECT: &str = "Standardize project configuration with devkit"
 pub fn committable(root: &Path) -> Vec<String> {
   let mut out: Vec<String> = [
     "pyproject.toml",
+    // Written by the package step (uv lock); committed with the run like pyproject.toml.
+    "uv.lock",
     ".vscode/settings.json",
     ".vscode/extensions.json",
     ".vscode/launch.json",
