@@ -403,7 +403,9 @@ fn a_stale_venv_is_synced_before_the_dockerfile_is_compared() {
   };
   let mut a = args(&root);
   a.no_push = true;
-  run(
+  // The recorded sync installs nothing, so the venv still lags afterwards: the run stops
+  // rather than render 1.3.0's template under 1.4.0's name.
+  let err = run(
     &a,
     &Deps {
       runner: &r,
@@ -411,12 +413,11 @@ fn a_stale_venv_is_synced_before_the_dockerfile_is_compared() {
       packages: &dirs,
     },
   )
-  .unwrap();
+  .unwrap_err()
+  .to_string();
   assert_eq!(r.calls_for("uv")[0], vec!["sync", "--frozen"]);
-  assert!(
-    !subjects(&root).iter().any(|s| s.contains("refresh Dockerfile")),
-    "the file already matched"
-  );
+  assert!(err.contains("1.4.0") && err.contains("uv sync"), "{err}");
+  assert!(!subjects(&root).iter().any(|s| s.contains("refresh Dockerfile")), "{err}");
 }
 
 #[test]
@@ -441,4 +442,56 @@ fn without_the_package_in_the_lock_the_refresh_is_skipped() {
   assert_eq!(std::fs::read_to_string(root.join("docker/Dockerfile")).unwrap(), "FROM old\n");
   assert!(r.calls_for("uv").is_empty());
   assert_eq!(subjects(&root)[0], "chore: pin my-package to 2.0.0");
+}
+
+#[test]
+fn an_already_pinned_project_still_gets_the_refresh_committed_and_pushed() {
+  let (_d, root) = docker_fixture("FROM old\n", Some("1.4.0"));
+  let (_site, dirs) = installed("1.4.0", "FROM new {python_dir}\n");
+  let r = happy_runner();
+  r.script("gh", &["api"], 0, "v1.0.0\n");
+  let idx = StubIndexClient {
+    versions: vec!["1.0.0".into()],
+  };
+  run(
+    &args(&root),
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &dirs,
+    },
+  )
+  .unwrap();
+  let log = subjects(&root);
+  assert_eq!(log[0], "chore(docker): refresh Dockerfile from devkit-container 1.4.0", "{log:?}");
+  assert!(!log.iter().any(|s| s.starts_with("chore: pin")), "{log:?}");
+  assert!(pushed(&r), "the refresh commit must reach origin even with nothing to pin");
+}
+
+#[test]
+fn no_commit_keeps_an_uncommitted_dockerfile_edit_on_top_of_the_refresh() {
+  let (_d, root) = docker_fixture("FROM old\nRUN keep-me\n", Some("1.4.0"));
+  // A user edit at the end, uncommitted; the refresh changes the first line only.
+  std::fs::write(root.join("docker/Dockerfile"), "FROM old\nRUN keep-me\nRUN user-edit\n").unwrap();
+  let (_site, dirs) = installed("1.4.0", "FROM new {python_dir}\nRUN keep-me\n");
+  let r = happy_runner();
+  let idx = StubIndexClient {
+    versions: vec!["2.0.0".into()],
+  };
+  let mut a = args(&root);
+  a.no_commit = true;
+  run(
+    &a,
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &dirs,
+    },
+  )
+  .unwrap();
+  assert_eq!(
+    std::fs::read_to_string(root.join("docker/Dockerfile")).unwrap(),
+    "FROM new src\nRUN keep-me\nRUN user-edit\n"
+  );
+  assert_eq!(subjects(&root)[0], "docker", "nothing committed");
 }
