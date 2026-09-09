@@ -503,7 +503,9 @@ fn local_venv_is_resynced_while_the_workflow_runs() {
     .unwrap();
   // Started before the wait, so the two overlap.
   assert!(sync_at < watch_at, "{calls:?}");
-  assert_eq!(calls[sync_at].cwd, w.root());
+  // Canonical on both sides: Windows hands the test a temp dir under its 8.3 short name
+  // (`RUNNER~1`) while the recorded cwd carries the long one.
+  assert_eq!(calls[sync_at].cwd.canonicalize().unwrap(), w.root().canonicalize().unwrap());
 }
 
 #[test]
