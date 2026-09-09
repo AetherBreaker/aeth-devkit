@@ -123,8 +123,16 @@ mod tests {
     }
   }
 
+  // No venv in these tests: the resolver never asks for a package directory.
+  static NO_PACKAGES: std::sync::LazyLock<aeth_devkit_setup::packages::StubPackageDirs> =
+    std::sync::LazyLock::new(aeth_devkit_setup::packages::StubPackageDirs::default);
+
   fn deps<'a>(runner: &'a RecordingRunner, index: &'a StubIndexClient) -> Deps<'a> {
-    Deps { runner, index }
+    Deps {
+      runner,
+      index,
+      packages: &*NO_PACKAGES,
+    }
   }
 
   #[test]
