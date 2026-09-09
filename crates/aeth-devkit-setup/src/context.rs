@@ -43,7 +43,16 @@ pub struct ProjectContext {
   /// Name of the sole `[[tool.uv.index]]` with a `publish-url`, which the release workflow
   /// publishes to; `None` means PyPI via trusted publishing.
   pub publish_index: Option<String>,
+  /// The index the project takes `aeth-devkit` from, by the name its `[tool.uv.sources]`
+  /// entry gives it: devkit's sister packages are published beside devkit, so the template
+  /// sources them from the same index. The conventional name stands in when no source names
+  /// one; a name no `[[tool.uv.index]]` declares surfaces as uv's own error at lock time.
+  pub devkit_index: String,
 }
+
+/// The index name assumed for devkit's packages when the project declares no source for
+/// `aeth-devkit` itself.
+pub const DEFAULT_DEVKIT_INDEX: &str = "SFTPyPI";
 
 impl ProjectContext {
   pub fn discover(root: &Path) -> Result<Self> {
@@ -140,6 +149,9 @@ impl ProjectContext {
       None
     };
 
+    let devkit_index =
+      aeth_devkit_core::pyproject::source_index_name(&doc, "aeth-devkit").unwrap_or_else(|| DEFAULT_DEVKIT_INDEX.to_string());
+
     Ok(Self {
       root,
       package,
@@ -155,6 +167,7 @@ impl ProjectContext {
       python_dir,
       has_rust,
       publish_index,
+      devkit_index,
     })
   }
 
@@ -346,6 +359,19 @@ mod publish_index_detection {
       ProjectContext::discover(dir.path()).unwrap().publish_index.as_deref(),
       Some("SFTPyPI")
     );
+  }
+
+  #[test]
+  fn the_devkit_index_is_the_one_aeth_devkit_comes_from() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+      dir.path().join("pyproject.toml"),
+      "[project]\nname = \"p\"\n\n[tool.uv.sources]\naeth-devkit = [{ index = \"Internal\" }]\n",
+    )
+    .unwrap();
+    assert_eq!(ProjectContext::discover(dir.path()).unwrap().devkit_index, "Internal");
+    std::fs::write(dir.path().join("pyproject.toml"), "[project]\nname = \"p\"\n").unwrap();
+    assert_eq!(ProjectContext::discover(dir.path()).unwrap().devkit_index, DEFAULT_DEVKIT_INDEX);
   }
 
   #[test]

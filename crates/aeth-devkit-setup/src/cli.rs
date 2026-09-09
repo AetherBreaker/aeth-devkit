@@ -159,7 +159,7 @@ pub fn run(args: &Args) -> Result<ExitCode> {
         },
       },
       index: &index,
-      packages: &crate::packages::SystemPackageDirs,
+      venv: &crate::packages::SystemVenv,
     };
     let mut c = crate::run_with(&ctx, &templates, dry_run, &deps)?;
     if !dry_run {
@@ -200,6 +200,7 @@ pub fn run(args: &Args) -> Result<ExitCode> {
     if let Some(bases) = &bases {
       let _w = crate::interrupt::Writing::begin();
       aeth_devkit_core::commit::unstage_clean_base(&root, bases)?;
+      crate::packages::resync_after_replay(&root, &runner, bases, &changes);
     }
     if changes.problems.is_empty() {
       println!("Nothing to do — project already matches the templates.");
@@ -222,7 +223,11 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   }
   if let Some(bases) = &mut bases {
     let _w = crate::interrupt::Writing::begin();
-    match crate::git::commit_changes(&root, &changes, bases) {
+    let committed = crate::git::commit_changes(&root, &changes, bases);
+    // Committed and replayed, or rolled back: either way the user's uv.lock is back on
+    // disk, and the venv follows it.
+    crate::packages::resync_after_replay(&root, &runner, bases, &changes);
+    match committed {
       Ok(Some(hash)) => println!("Committed as {hash}."),
       Ok(None) => println!("Nothing to commit (only gitignored or env files changed)."),
       Err(e) => {

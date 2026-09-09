@@ -27,11 +27,11 @@ use crate::context::ProjectContext;
 const DEVKIT_WORKFLOW_HEADER: &str = "# Installed and kept current by `devkit setup-project`";
 
 /// Everything `run_with` needs from outside: the Docker collaborators, the index client the
-/// package step asks for newer releases, and where the venv keeps installed packages.
+/// package step asks for newer releases, and the project's venv as it holds devkit packages.
 pub struct Deps<'a> {
   pub docker: docker::Deps<'a>,
   pub index: &'a dyn aeth_devkit_core::index::IndexClient,
-  pub packages: &'a dyn packages::PackageDirs,
+  pub venv: &'a dyn packages::Venv,
 }
 
 /// Apply every template to the project at `root` with real collaborators and no
@@ -45,7 +45,7 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
       mode: if dry_run { docker::Mode::DryRun } else { docker::Mode::KeepAll },
     },
     index: &aeth_devkit_core::index::HttpIndexClient::default(),
-    packages: &packages::SystemPackageDirs,
+    venv: &packages::SystemVenv,
   };
   run_with(&ProjectContext::discover(root)?, templates_dir, dry_run, &deps)
 }

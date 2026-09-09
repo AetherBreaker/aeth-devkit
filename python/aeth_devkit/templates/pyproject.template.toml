@@ -242,4 +242,4 @@
 
 # setup-project: if-docker-services
 [tool.uv.sources]
-  devkit-container = [{ index = "SFTPyPI" }]
+  devkit-container = [{ index = "{devkit_index}" }]

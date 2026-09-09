@@ -1,13 +1,16 @@
 //! The devkit packages `setup-project` keeps current in a project (spec section 4.0): which
-//! they are, where the venv keeps them, what the lock says about them, and [`advance`],
+//! they are, how the venv holds them, what the lock says about them, and [`advance`],
 //! which locks them under the running devkit, writes the `{latest}` floors and syncs.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 use toml_edit::{DocumentMut, Item};
 
+use aeth_devkit_core::commit::TrackedBase;
+use aeth_devkit_core::process::Runner;
 use aeth_devkit_core::pyproject::{
   find_requirement, index_url_for, normalize_dist_name, replace_requirement, set_requirement_version,
 };
@@ -36,6 +39,12 @@ pub const CONTAINER: DevkitPackage = DevkitPackage {
   import_name: "devkit_container",
 };
 
+/// devkit itself, for the lookups that read its own package data (the templates).
+pub const DEVKIT: DevkitPackage = DevkitPackage {
+  name: "aeth-devkit",
+  import_name: "aeth_devkit",
+};
+
 /// The devkit packages this project should carry. Only the container so far; the templates,
 /// hooks and completion packages join in later split steps. The container's condition is
 /// `[tool.docker].services`, the same `if-docker-services` gate the template adds the
@@ -52,33 +61,66 @@ pub fn active(ctx: &ProjectContext) -> Vec<&'static DevkitPackage> {
   out
 }
 
-/// Where the project at `root` keeps an installed package, by import name. A trait so tests
-/// can point at a fixture instead of a real site-packages.
-pub trait PackageDirs {
-  fn dir(&self, root: &Path, import_name: &str) -> Option<PathBuf>;
+/// A devkit package as an environment holds it: where its files are (the Dockerfile
+/// template is read from `dir`) and the distribution version installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+  pub dir: PathBuf,
+  pub version: String,
 }
 
-/// Asks the project's own venv (`<root>/.venv`), which is where the locked package lives
-/// whichever devkit binary is running: the venv's, `target/debug`'s or a tool install's. No
-/// fallback to the interpreter beside the binary or on PATH, because those can answer from
-/// another environment with a version the project's lock does not name.
-pub struct SystemPackageDirs;
+/// What the project at `root` has installed of a devkit package. A trait so tests can
+/// answer from a fixture instead of a real environment.
+pub trait Venv {
+  fn installed(&self, root: &Path, package: &DevkitPackage) -> Option<Installed>;
+}
 
-impl PackageDirs for SystemPackageDirs {
-  fn dir(&self, root: &Path, import_name: &str) -> Option<PathBuf> {
-    [".venv/Scripts/python.exe", ".venv/bin/python"]
+/// The project's own environment: `UV_PROJECT_ENVIRONMENT` when set (relative to the
+/// project root, as uv reads it), else `<root>/.venv`. That is where the locked package
+/// lives whichever devkit binary is running: the venv's, `target/debug`'s or a tool
+/// install's. No fallback to the interpreter beside the binary or on PATH, because those
+/// can answer from another environment with a version the project's lock does not name.
+pub struct SystemVenv;
+
+impl Venv for SystemVenv {
+  fn installed(&self, root: &Path, package: &DevkitPackage) -> Option<Installed> {
+    let env = std::env::var_os("UV_PROJECT_ENVIRONMENT").map_or_else(|| PathBuf::from(".venv"), PathBuf::from);
+    let env = if env.is_absolute() { env } else { root.join(env) };
+    ["Scripts/python.exe", "bin/python"]
       .iter()
-      .find_map(|rel| crate::templates::package_dir_via(&root.join(rel), import_name))
+      .find_map(|rel| probe(&env.join(rel), package))
   }
+}
+
+/// `package` as the interpreter at `python` has it, or `None` when that interpreter cannot
+/// be spawned (`python.exe` on Unix) or lacks the package. The version comes from
+/// `importlib.metadata`, not from a `dist-info` directory beside the package: an editable
+/// install keeps the two in different places, and a distribution's name need not match its
+/// import name.
+pub fn probe(python: &Path, package: &DevkitPackage) -> Option<Installed> {
+  let (name, import_name) = (package.name, package.import_name);
+  let code = format!(
+    "import importlib.metadata as m, os, {import_name}; print(os.path.dirname({import_name}.__file__)); print(m.version('{name}'))"
+  );
+  // `-X utf8`: a piped stdout is otherwise the ANSI code page, which mangles a non-ASCII path.
+  let out = Command::new(python).args(["-X", "utf8", "-c", &code]).output().ok()?;
+  if !out.status.success() {
+    return None;
+  }
+  let stdout = String::from_utf8_lossy(&out.stdout);
+  let mut lines = stdout.lines().map(str::trim);
+  let dir = PathBuf::from(lines.next()?);
+  let version = lines.next()?.to_string();
+  (dir.is_dir() && !version.is_empty()).then_some(Installed { dir, version })
 }
 
 /// Canned answers by import name, whatever the root; for tests.
 #[derive(Default)]
-pub struct StubPackageDirs(pub HashMap<String, PathBuf>);
+pub struct StubVenv(pub HashMap<String, Installed>);
 
-impl PackageDirs for StubPackageDirs {
-  fn dir(&self, _root: &Path, import_name: &str) -> Option<PathBuf> {
-    self.0.get(import_name).cloned()
+impl Venv for StubVenv {
+  fn installed(&self, _root: &Path, package: &DevkitPackage) -> Option<Installed> {
+    self.0.get(package.import_name).cloned()
   }
 }
 
@@ -137,15 +179,6 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
   if packages.is_empty() {
     return Ok(());
   }
-  if dry_run {
-    for p in packages.iter().filter(|p| deps.packages.dir(&ctx.root, p.import_name).is_none()) {
-      changes.notes.push(format!(
-        "{} is not installed in this venv; a plain run adds it to pyproject.toml, locks it and syncs.",
-        p.name
-      ));
-    }
-    return Ok(());
-  }
   let root = &ctx.root;
   let lock_path = root.join("uv.lock");
   let lock_before = crate::read_optional(&lock_path)?;
@@ -153,12 +186,26 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
   // devkit means the venv is out of step with the lock: the lock step must not paper over
   // that by moving devkit's entry to match the binary. On a committing run this is HEAD's
   // lock (the run merges against HEAD), so a lock moved but not committed reads as stale.
+  // A dry run reports it as a problem: `--check` must not pass a project a plain run refuses.
   if let Some(v) = lock_before.as_deref().and_then(|l| locked_registry_version(l, "aeth-devkit"))
     && v != RUNNING_DEVKIT
   {
-    bail!(
+    let message = format!(
       "uv.lock pins aeth-devkit {v} but this devkit is {RUNNING_DEVKIT}; run `uv sync` so the venv matches the lock (or commit a uv.lock you already moved), then rerun setup-project"
     );
+    if !dry_run {
+      bail!(message);
+    }
+    changes.problems.push(message);
+  }
+  if dry_run {
+    for p in packages.iter().filter(|p| deps.venv.installed(&ctx.root, p).is_none()) {
+      changes.notes.push(format!(
+        "{} is not installed in this venv; a plain run adds it to pyproject.toml, locks it and syncs.",
+        p.name
+      ));
+    }
+    return Ok(());
   }
   // `uv lock` has no constraints flag; a version specifier on `--upgrade-package` is a hard
   // constraint for this resolution (verified: an unmeetable one is "No solution found"), so
@@ -182,40 +229,64 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
         "a devkit package's floor cannot be met by the running devkit {RUNNING_DEVKIT}:\n  {reason}\nrun `devkit lock`, then rerun setup-project"
       );
     }
-    bail!("uv lock failed: {stderr}");
+    // Once every package is locked the lock stays usable, so a refresh that fails (no
+    // network, most often: `--upgrade-package` re-fetches the index page) is a warning and
+    // the run goes on with the versions it names. Before adoption there is nothing to fall
+    // back on.
+    let adopted = lock_before
+      .as_deref()
+      .is_some_and(|l| packages.iter().all(|p| locked_version(l, p.name).is_some()));
+    if !adopted {
+      bail!("uv lock failed: {stderr}");
+    }
+    changes
+      .warnings
+      .push(format!("uv lock failed; the locked devkit packages stay as they are: {stderr}"));
   }
-  let lock_after = std::fs::read_to_string(&lock_path).context("reading uv.lock after locking")?;
+  let mut lock_after = std::fs::read_to_string(&lock_path).context("reading uv.lock after locking")?;
   let pyproject_path = root.join("pyproject.toml");
   let text = std::fs::read_to_string(&pyproject_path).context("reading pyproject.toml")?;
   let mut doc: DocumentMut = text.parse().context("parsing pyproject.toml")?;
   let mut pinned: Vec<String> = Vec::new();
-  let mut locked_all: Vec<String> = Vec::new();
-  // Whether the venv must be synced: a package absent or installed at another version
-  // than the lock names would hand the Docker step the wrong template.
-  let mut stale = false;
+  let mut locked_all: Vec<(&DevkitPackage, String)> = Vec::new();
   for p in &packages {
-    let locked = locked_version(&lock_after, p.name).with_context(|| format!("{} is not in uv.lock after locking", p.name))?;
-    locked_all.push(format!("{} {locked}", p.name));
-    let installed = deps.packages.dir(root, p.import_name).and_then(|d| installed_version(&d));
-    stale |= installed.as_deref() != Some(locked.as_str());
+    let locked = locked_version(&lock_after, p.name).with_context(|| {
+      format!(
+        "{} is not in uv.lock after locking; the merge lists it under [project].dependencies unless `[tool.setup-project].keep` holds that key back, and a project with Docker services must carry it",
+        p.name
+      )
+    })?;
     if latest.iter().any(|n| n == p.name)
       && let Some(req) = find_requirement(&doc, p.name)
     {
-      let bare = req.spec.trim() == p.name;
-      let new_spec = if bare {
-        Some(format!("{}>={locked}", p.name))
-      } else {
-        set_requirement_version(&req.spec, &locked)
+      let spec = req.spec.trim();
+      let bare = normalize_dist_name(spec) == normalize_dist_name(p.name);
+      // Only an index release can be a published floor: a path or editable source (the
+      // package's own checkout beside the project) locks a version no index serves. And a
+      // compatible-release clause (`~=`) is the user's ceiling as much as a floor; moving
+      // its version would narrow it.
+      let new_spec = match locked_registry_version(&lock_after, p.name) {
+        None => None,
+        Some(_) if bare => Some(format!("{}>={locked}", p.name)),
+        Some(_) if spec.contains("~=") => None,
+        Some(_) => set_requirement_version(&req.spec, &locked),
       };
-      if let Some(new_spec) = new_spec
-        && new_spec != req.spec
-      {
-        pinned.push(if bare {
-          format!("pinned {new_spec}")
-        } else {
-          format!("pinned {new_spec} (was {})", req.spec)
-        });
-        replace_requirement(&mut doc, &req, &new_spec);
+      match new_spec {
+        Some(new_spec) if new_spec != req.spec => {
+          pinned.push(if bare {
+            format!("pinned {new_spec}")
+          } else {
+            format!("pinned {new_spec} (was {})", req.spec)
+          });
+          replace_requirement(&mut doc, &req, &new_spec);
+        }
+        Some(_) => {}
+        // Extras, markers, `~=`, a non-index source: the requirement is left as written,
+        // and the user hears why the floor did not move.
+        None => changes.notes.push(format!(
+          "{}: `{}` was left as written (locked {locked}); a floor is only written for a plain name or a `>=` requirement locked from an index.",
+          p.name, req.spec
+        )),
       }
     }
     // The nudge: newer on the index than uv could choose under the constraint.
@@ -237,40 +308,82 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
           .push(format!("could not check {url} for a newer {}: {e:#}", p.name)),
       }
     }
+    locked_all.push((p, locked));
   }
   if !pinned.is_empty() {
-    // A managed-file write like every other: a Ctrl-C waits for it (see `interrupt`).
-    let _w = crate::interrupt::Writing::begin();
-    std::fs::write(&pyproject_path, doc.to_string()).context("writing pyproject.toml")?;
-    for line in &pinned {
-      changes.note(&pyproject_path, line);
+    changes.record(&pyproject_path, &text, &doc.to_string(), pinned)?;
+    // The floor is a requirement uv has already copied into the lock's `requires-dist`, so
+    // the file uv just wrote is out of date the moment it lands, and the next `uv run` would
+    // rewrite it behind the commit. Preferences keep every version; this pass only refreshes
+    // that metadata.
+    let out = deps.docker.runner.run_capture("uv", &["lock".into()], root)?;
+    if !out.success() {
+      bail!("uv lock failed after writing the floor: {}", out.stderr.trim());
     }
+    lock_after = std::fs::read_to_string(&lock_path).context("reading uv.lock after locking")?;
   }
+  // The venv must hold what the lock names before the Docker step reads the template from
+  // it. Asked again after the sync: one that lands elsewhere (another
+  // `UV_PROJECT_ENVIRONMENT`, say) would otherwise hand that step nothing, and every later
+  // run would sync again to no effect.
+  let lagging = || -> Vec<String> {
+    locked_all
+      .iter()
+      .filter(|(p, locked)| deps.venv.installed(root, p).is_none_or(|i| i.version != *locked))
+      .map(|(p, locked)| format!("{} {locked}", p.name))
+      .collect()
+  };
   let lock_changed = lock_before.as_deref() != Some(lock_after.as_str());
-  if lock_changed || stale {
+  if lock_changed || !lagging().is_empty() {
     match deps.docker.runner.run_inherit("uv", &["sync".into(), "--frozen".into()], root)? {
       Some(0) => {}
       Some(code) => bail!("uv sync --frozen exited with {code}"),
       None => bail!("uv sync --frozen was terminated by a signal"),
     }
+    changes.venv_synced = true;
+    let still = lagging();
+    if !still.is_empty() {
+      bail!(
+        "{} locked but not in the project's environment after `uv sync --frozen`; is it elsewhere (UV_PROJECT_ENVIRONMENT)?",
+        still.join(", ")
+      );
+    }
   }
-  if lock_changed {
-    changes.note(&lock_path, &format!("locked {}", locked_all.join(", ")));
-  }
+  // uv wrote the lock; recording it like every managed file registers it as devkit's (a
+  // gitignored lock is then warned about) and marks a first lock as created. The rewrite
+  // is byte-identical.
+  let detail = format!(
+    "locked {}",
+    locked_all
+      .iter()
+      .map(|(p, v)| format!("{} {v}", p.name))
+      .collect::<Vec<_>>()
+      .join(", ")
+  );
+  changes.record_optional(&lock_path, lock_before.as_deref(), &lock_after, vec![detail])?;
   Ok(())
 }
 
-/// The installed version of the package at `package_dir`, read from the
-/// `<import_name>-<version>.dist-info` directory beside it. No interpreter call: the
-/// directory name is the metadata.
-pub fn installed_version(package_dir: &Path) -> Option<String> {
-  let import_name = package_dir.file_name()?.to_string_lossy().into_owned();
-  let prefix = format!("{import_name}-");
-  std::fs::read_dir(package_dir.parent()?).ok()?.flatten().find_map(|e| {
-    let file = e.file_name().to_string_lossy().into_owned();
-    let stem = file.strip_suffix(".dist-info")?;
-    stem.strip_prefix(&prefix).map(str::to_string)
-  })
+/// After a committing run has put the user's `uv.lock` back — merged with this run's
+/// changes, or restored by a rollback — bring the venv in step with it. [`advance`] synced
+/// against the lock as staged, which is HEAD's copy whenever the user's differed, so the
+/// venv would otherwise match neither the file on disk nor their uncommitted work. A
+/// failure is a warning: the files are already right, and the next `uv run` syncs again.
+pub fn resync_after_replay(root: &Path, runner: &dyn Runner, bases: &[TrackedBase], changes: &Changes) {
+  let lock_was_staged = bases
+    .iter()
+    .any(|b| b.path == "uv.lock" && b.head.is_some() && b.worktree.as_deref() != b.head.as_deref());
+  if !(changes.venv_synced && lock_was_staged) {
+    return;
+  }
+  println!("Syncing the venv to the uv.lock now in the working tree");
+  let outcome = match runner.run_inherit("uv", &["sync".into(), "--frozen".into()], root) {
+    Ok(Some(0)) => return,
+    Ok(Some(code)) => format!("uv sync --frozen exited with {code}"),
+    Ok(None) => "uv sync --frozen was terminated by a signal".to_string(),
+    Err(e) => format!("could not run uv sync --frozen: {e:#}"),
+  };
+  eprintln!("warning: {outcome}; run `uv sync` to bring the venv in step with uv.lock");
 }
 
 #[cfg(test)]
@@ -311,17 +424,6 @@ source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+s
   }
 
   #[test]
-  fn installed_version_comes_from_the_dist_info_beside_the_package() {
-    let site = tempfile::tempdir().unwrap();
-    let pkg = site.path().join("devkit_container");
-    std::fs::create_dir_all(&pkg).unwrap();
-    assert_eq!(installed_version(&pkg), None);
-    std::fs::create_dir(site.path().join("devkit_container-1.4.0.dist-info")).unwrap();
-    std::fs::create_dir(site.path().join("devkit_other-9.9.9.dist-info")).unwrap();
-    assert_eq!(installed_version(&pkg).as_deref(), Some("1.4.0"));
-  }
-
-  #[test]
   fn the_container_is_active_only_for_docker_projects() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -352,12 +454,44 @@ source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+s
   }
 
   #[test]
-  fn stub_dirs_answer_from_the_map() {
-    let mut map = std::collections::HashMap::new();
-    map.insert("devkit_container".to_string(), PathBuf::from("/site/devkit_container"));
-    let dirs = StubPackageDirs(map);
+  fn the_stub_venv_answers_from_the_map() {
+    let installed = Installed {
+      dir: PathBuf::from("/site/devkit_container"),
+      version: "1.4.0".into(),
+    };
+    let mut map = HashMap::new();
+    map.insert("devkit_container".to_string(), installed.clone());
+    let venv = StubVenv(map);
     let root = Path::new("/p");
-    assert_eq!(dirs.dir(root, "devkit_container"), Some(PathBuf::from("/site/devkit_container")));
-    assert_eq!(dirs.dir(root, "other"), None);
+    assert_eq!(venv.installed(root, &CONTAINER), Some(installed));
+    assert_eq!(venv.installed(root, &DEVKIT), None);
+  }
+
+  #[test]
+  fn the_probe_reads_the_workspace_venv() {
+    // The workspace venv has aeth-devkit installed editable, which is the layout a
+    // dist-info scan beside the package would miss; skipped where there is no venv (CI's
+    // Rust job builds without one).
+    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join(".venv");
+    let Some(python) = ["Scripts/python.exe", "bin/python"]
+      .iter()
+      .map(|rel| venv.join(rel))
+      .find(|p| p.is_file())
+    else {
+      return;
+    };
+    let found = probe(&python, &DEVKIT).expect("aeth-devkit is installed in the workspace venv");
+    assert!(parse_lenient(&found.version).is_some(), "{:?}", found.version);
+    assert!(found.dir.join("templates").is_dir(), "{}", found.dir.display());
+    assert_eq!(
+      probe(
+        &python,
+        &DevkitPackage {
+          name: "devkit-nonexistent",
+          import_name: "devkit_nonexistent",
+        }
+      ),
+      None
+    );
   }
 }

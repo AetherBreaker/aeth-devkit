@@ -123,15 +123,15 @@ mod tests {
     }
   }
 
-  // No venv in these tests: the resolver never asks for a package directory.
-  static NO_PACKAGES: std::sync::LazyLock<aeth_devkit_setup::packages::StubPackageDirs> =
-    std::sync::LazyLock::new(aeth_devkit_setup::packages::StubPackageDirs::default);
+  // No venv in these tests: the resolver never asks what is installed.
+  static NO_VENV: std::sync::LazyLock<aeth_devkit_setup::packages::StubVenv> =
+    std::sync::LazyLock::new(aeth_devkit_setup::packages::StubVenv::default);
 
   fn deps<'a>(runner: &'a RecordingRunner, index: &'a StubIndexClient) -> Deps<'a> {
     Deps {
       runner,
       index,
-      packages: &*NO_PACKAGES,
+      venv: &*NO_VENV,
     }
   }
 

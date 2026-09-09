@@ -19,7 +19,7 @@ use aeth_devkit_core::version::parse_lenient;
 use aeth_devkit_core::{git, github, pyproject};
 use aeth_devkit_setup::context::ProjectContext;
 use aeth_devkit_setup::docker::static_files::{normalize_newlines, render};
-use aeth_devkit_setup::packages::{self, PackageDirs};
+use aeth_devkit_setup::packages::{self, Venv};
 
 /// Pin the docker compose file to a released version of this project.
 #[derive(Parser, Debug, Clone)]
@@ -56,7 +56,7 @@ pub struct Args {
 pub struct Deps<'a> {
   pub runner: &'a dyn Runner,
   pub index: &'a dyn IndexClient,
-  pub packages: &'a dyn PackageDirs,
+  pub venv: &'a dyn Venv,
 }
 
 pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
@@ -169,7 +169,7 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
   }
   // The Dockerfile is judged now but written only after the preflight below, so a refresh
   // is never left as a local commit when the pin itself cannot proceed.
-  let refresh = dockerfile_drift(&root, deps, args.dry_run)?;
+  let refresh = dockerfile_drift(&root, &doc, deps, args.dry_run)?;
   if edits.is_empty() && refresh.is_none() {
     println!("Already pinned to {display}. No changes made.");
     return Ok(ExitCode::SUCCESS);
@@ -213,16 +213,6 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
   if let Some(refresh) = refresh {
     apply_refresh(&root, refresh, will_commit)?;
   }
-  if edits.is_empty() {
-    println!("Already pinned to {display}; {rel} unchanged.");
-    if will_push {
-      let branch = git::current_branch(&root)?;
-      git::push_refs(deps.runner, &root, &[&branch])?;
-      println!("Pushed {branch}.");
-    }
-    return Ok(ExitCode::SUCCESS);
-  }
-
   if let Some((current, merged)) = compose_merge {
     let mode = git::head_mode(&root, &rel)?.unwrap_or_else(|| "100644".into());
     let sha = git::hash_object(&root, pinned_text.as_bytes())?;
@@ -237,6 +227,8 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
     // Smudged iff the user's copy was, so the file keeps the line endings it had.
     git::write_worktree(&root, &rel, &merged, current.filtered).with_context(|| format!("writing {}", compose_path.display()))?;
     println!("Committed pin on HEAD; your uncommitted changes to {rel} were kept in the working tree.");
+  } else if edits.is_empty() {
+    println!("Already pinned to {display}; {rel} unchanged.");
   } else {
     std::fs::write(&compose_path, &pinned_text).with_context(|| format!("writing {}", compose_path.display()))?;
     println!("Updated {rel}");
@@ -262,12 +254,12 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
 
 /// A `docker/Dockerfile` that differs from the locked devkit-container's template, decided
 /// by [`dockerfile_drift`] and written by [`apply_refresh`].
-pub struct DockerfileRefresh {
+struct DockerfileRefresh {
   rendered: String,
   locked: String,
-  /// The working copy differs from HEAD (or is untracked), so a write must keep its edits.
-  dirty: bool,
-  head: Option<Vec<u8>>,
+  /// HEAD's copy when the working copy carries edits of its own, which a write must keep
+  /// (a 3-way merge); `None` when the file is clean or absent and is simply replaced.
+  base: Option<Vec<u8>>,
 }
 
 /// Before a pin: does the committed Dockerfile match the locked devkit-container's
@@ -277,65 +269,83 @@ pub struct DockerfileRefresh {
 /// announces: the template must come from the locked version, or the comparison is against
 /// the wrong file. `None` when the file matches, the project has no Docker services, or the
 /// package is not locked yet.
-pub fn dockerfile_drift(root: &Path, deps: &Deps, dry_run: bool) -> Result<Option<DockerfileRefresh>> {
-  let ctx = ProjectContext::discover(root)?;
-  if !ctx.has_docker {
+fn dockerfile_drift(root: &Path, doc: &DocumentMut, deps: &Deps, dry_run: bool) -> Result<Option<DockerfileRefresh>> {
+  // The services switch is read on its own first: `discover` validates the whole
+  // setup-project configuration (a single publish index, among others), which a project
+  // without Docker services never had to satisfy to be pinned.
+  if aeth_devkit_setup::context::services_key(doc)?.is_none_or(|s| s.is_empty()) {
     return Ok(None);
   }
+  let ctx = ProjectContext::discover(root)?;
   let lock = std::fs::read_to_string(root.join("uv.lock")).ok();
   let Some(locked) = lock.as_deref().and_then(|l| packages::locked_version(l, packages::CONTAINER.name)) else {
     println!("Dockerfile: devkit-container is not in uv.lock; run setup-project to adopt it. Skipping the refresh.");
     return Ok(None);
   };
-  let installed = |deps: &Deps| {
-    deps
-      .packages
-      .dir(root, packages::CONTAINER.import_name)
-      .and_then(|d| packages::installed_version(&d))
-  };
-  let have = installed(deps);
+  let installed = || deps.venv.installed(root, &packages::CONTAINER).map(|i| i.version);
+  let have = installed();
   if have.as_deref() != Some(locked.as_str()) {
-    let have = have.as_deref().unwrap_or("nothing");
+    let shown = have.unwrap_or_else(|| "nothing".into());
     if dry_run {
       println!(
-        "Dockerfile: devkit-container {locked} is locked but {have} is installed; a real run syncs the venv first and compares then."
+        "Dockerfile: devkit-container {locked} is locked but {shown} is installed; a real run syncs the venv first and compares then."
       );
       return Ok(None);
     }
-    println!("Syncing the venv (devkit-container {locked} is locked, {have} installed)");
+    println!("Syncing the venv (devkit-container {locked} is locked, {shown} installed)");
     match deps.runner.run_inherit("uv", &["sync".into(), "--frozen".into()], root)? {
       Some(0) => {}
       Some(code) => bail!("uv sync --frozen exited with {code}"),
       None => bail!("uv sync --frozen was terminated by a signal"),
     }
-    // A sync that left another version in `.venv` would render the wrong template under a
+    // A sync that left another version in the venv would render the wrong template under a
     // commit message naming the locked one.
-    if installed(deps).as_deref() != Some(locked.as_str()) {
+    if installed().as_deref() != Some(locked.as_str()) {
       bail!(
-        "devkit-container {locked} is locked but `uv sync --frozen` did not put it in .venv; is the project's environment elsewhere (UV_PROJECT_ENVIRONMENT)?"
+        "devkit-container {locked} is locked but `uv sync --frozen` did not put it in the project's environment; is it elsewhere (UV_PROJECT_ENVIRONMENT)?"
       );
     }
   }
-  let Some(rendered) = render(&ctx, deps.packages)? else {
-    bail!("devkit-container {locked} is locked but not importable from this venv");
-  };
+  // `installed()` answered just above, and `render` asks the same venv.
+  let rendered = render(&ctx, deps.venv)?.expect("the installed package renders");
   let rel = "docker/Dockerfile";
-  let worktree = std::fs::read_to_string(root.join(rel)).ok();
+  // Absent is a state; unreadable (locked by an editor, not UTF-8) is an error, or a present
+  // file would be judged deleted, or refreshed against nothing.
+  let worktree = match std::fs::read_to_string(root.join(rel)) {
+    Ok(text) => Some(text),
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+    Err(e) => return Err(e).with_context(|| format!("reading {rel}")),
+  };
   let dirty = git::is_dirty(root, &[rel])?;
-  let head = git::head_blob(root, rel)?;
+  // HEAD's copy is only ever consulted for a file with uncommitted changes; a clean checkout,
+  // the case the pin is meant for, skips those two git spawns.
+  let head = if dirty { git::head_blob(root, rel)? } else { None };
   if dirty && head.is_some() && worktree.is_none() {
     bail!("{rel} is deleted in the working tree; restore it or commit the deletion first");
   }
   // Drift is judged against what a commit would be made on: HEAD's copy when the working
   // copy carries edits of its own, else the file as it is.
-  let base_text = match (&head, dirty) {
-    (Some(h), true) => String::from_utf8(h.clone()).context("docker/Dockerfile at HEAD is not UTF-8")?,
-    _ => worktree.unwrap_or_default(),
+  let base_text = match &head {
+    Some(h) => String::from_utf8(h.clone()).context("docker/Dockerfile at HEAD is not UTF-8")?,
+    None => worktree.unwrap_or_default(),
   };
   if normalize_newlines(&base_text) == normalize_newlines(&rendered) {
     println!("Dockerfile: matches devkit-container {locked}.");
     return Ok(None);
   }
+  // A file that was never committed has no base to merge its edits against, and replacing
+  // it would lose them; the compose file in that state is refused the same way.
+  if dirty && head.is_none() {
+    bail!("{rel} is not committed yet; commit it first so its edits survive the refresh");
+  }
+  // Written in the file's own line endings, as setup-project writes it (the template is
+  // LF): a CRLF file would otherwise be rewritten whole, and every uncommitted edit in it
+  // would read as overlapping the refresh.
+  let rendered = if base_text.contains("\r\n") && !rendered.contains("\r\n") {
+    rendered.replace('\n', "\r\n")
+  } else {
+    rendered
+  };
   println!(
     "Dockerfile: drifted from devkit-container {locked}; {}.",
     if dry_run { "would be refreshed" } else { "refreshing" }
@@ -343,21 +353,20 @@ pub fn dockerfile_drift(root: &Path, deps: &Deps, dry_run: bool) -> Result<Optio
   Ok(Some(DockerfileRefresh {
     rendered,
     locked,
-    dirty,
-    head,
+    base: head,
   }))
 }
 
 /// Write the refreshed Dockerfile, in its own commit ahead of the pin's when committing.
-/// The file is devkit-owned, so there is no prompt; the user's uncommitted edits are merged
-/// back on top either way (3-way against HEAD, like the compose pin), and overlapping edits
-/// abort before anything is written.
-pub fn apply_refresh(root: &Path, refresh: DockerfileRefresh, will_commit: bool) -> Result<()> {
+/// The file is devkit-owned, so there is no prompt; uncommitted edits to it are merged back
+/// on top (3-way against HEAD, like the compose pin), and overlapping edits abort before
+/// anything is written.
+fn apply_refresh(root: &Path, refresh: DockerfileRefresh, will_commit: bool) -> Result<()> {
   let rel = "docker/Dockerfile".to_string();
   let path = root.join("docker").join("Dockerfile");
-  let message = format!("chore(docker): refresh Dockerfile from devkit-container {}", refresh.locked);
-  let DockerfileRefresh { rendered, dirty, head, .. } = refresh;
-  if let (true, Some(base)) = (dirty, head) {
+  let DockerfileRefresh { rendered, locked, base } = refresh;
+  let message = format!("chore(docker): refresh Dockerfile from devkit-container {locked}");
+  if let Some(base) = base {
     let current = git::worktree_blob(root, &rel)?.with_context(|| format!("{rel} vanished during the run"))?;
     let merged = git::merge_file(root, &current.bytes, &base, rendered.as_bytes())?
       .context("your uncommitted Dockerfile changes overlap the refreshed lines; commit or revert them first")?;
@@ -403,7 +412,7 @@ pub fn run_real(args: &Args) -> Result<ExitCode> {
     &Deps {
       runner: &aeth_devkit_core::process::SystemRunner,
       index: &index,
-      packages: &packages::SystemPackageDirs,
+      venv: &packages::SystemVenv,
     },
   )
 }

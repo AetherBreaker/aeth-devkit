@@ -179,7 +179,7 @@ fn partial(p: &Proposal, accepted: &[usize]) -> Result<Decision> {
 pub fn apply(ctx: &ProjectContext, templates_dir: &Path, deps: &crate::Deps, changes: &mut Changes) -> Result<()> {
   let docker = &deps.docker;
   let consent = Consent::new(docker.prompt, docker.reviewer, docker.mode);
-  static_files::apply(ctx, deps.packages, &consent, changes)?;
+  static_files::apply(ctx, deps.venv, &consent, changes)?;
   compose(ctx, templates_dir, docker.runner, &consent, changes)?;
   if consent.kept_silently() {
     changes

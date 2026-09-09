@@ -35,8 +35,14 @@ fn run(root: &Path, dry_run: bool) -> anyhow::Result<aeth_devkit_setup::changes:
   runner.script("gh", &["api"], 0, "v1.1.0\n");
   let index = aeth_devkit_core::index::StubIndexClient { versions: vec![] };
   let mut map = std::collections::HashMap::new();
-  map.insert("devkit_container".to_string(), fixtures().join("docker"));
-  let dirs = aeth_devkit_setup::packages::StubPackageDirs(map);
+  map.insert(
+    "devkit_container".to_string(),
+    aeth_devkit_setup::packages::Installed {
+      dir: fixtures().join("docker"),
+      version: "1.4.0".into(),
+    },
+  );
+  let venv = aeth_devkit_setup::packages::StubVenv(map);
   let deps = aeth_devkit_setup::Deps {
     docker: aeth_devkit_setup::docker::Deps {
       runner: &runner,
@@ -49,7 +55,7 @@ fn run(root: &Path, dry_run: bool) -> anyhow::Result<aeth_devkit_setup::changes:
       },
     },
     index: &index,
-    packages: &dirs,
+    venv: &venv,
   };
   let ctx = aeth_devkit_setup::context::ProjectContext::discover(root)?;
   aeth_devkit_setup::run_with(&ctx, &templates(), dry_run, &deps)
@@ -88,6 +94,8 @@ fn applies_and_is_idempotent() {
   let root = dir.path();
 
   let changes = run(root, false).unwrap();
+  let py = read(root, "pyproject.toml");
+  assert!(!py.contains("{latest}") && !py.contains("setup-project:"), "{py}");
   let changed: Vec<String> = changes
     .files
     .iter()
@@ -1004,4 +1012,72 @@ fn rust_projects_get_the_maturin_matrix_workflow() {
     wf.contains("uv publish --index SFTPyPI dist/*") && !wf.contains("setup-project:"),
     "{wf}"
   );
+}
+
+#[test]
+fn a_committing_run_resyncs_the_venv_to_the_lock_the_user_gets_back() {
+  // The run locks and syncs against HEAD's copy of uv.lock; a lock the user had edited but
+  // not committed comes back after the replay, and the venv must follow it rather than
+  // the copy the run worked on. With a clean lock the one sync is the right one.
+  let devkit_only = format!(
+    "version = 1\n\n[[package]]\nname = \"aeth-devkit\"\nversion = \"{}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n",
+    aeth_devkit_setup::packages::RUNNING_DEVKIT
+  );
+  let users_extra = "[[package]]\nname = \"requests\"\nversion = \"2.32.0\"\nsource = { registry = \"https://idx/+simple\" }\n\n";
+  for (user_edit, syncs) in [(false, 1), (true, 2)] {
+    let dir = make_project();
+    let root = dir.path();
+    // HEAD's lock predates the container; the recorded `uv lock` adds it, as uv would.
+    let with_container = read(root, "uv.lock");
+    write(root, "uv.lock", &devkit_only);
+    git_init(root);
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "init"]);
+    if user_edit {
+      // Their package sits above devkit's block, so the replay merges cleanly.
+      write(
+        root,
+        "uv.lock",
+        &devkit_only.replace("[[package]]", &format!("{users_extra}[[package]]")),
+      );
+    }
+    let runner = aeth_devkit_core::process::RecordingRunner::new(0);
+    runner.script("gh", &["api"], 0, "v1.1.0\n");
+    let lock_after = with_container.clone();
+    runner.script_with_effect("uv", &["lock"], 0, move |cwd| {
+      std::fs::write(cwd.join("uv.lock"), &lock_after).unwrap()
+    });
+    let index = aeth_devkit_core::index::StubIndexClient { versions: vec![] };
+    let mut map = std::collections::HashMap::new();
+    map.insert(
+      "devkit_container".to_string(),
+      aeth_devkit_setup::packages::Installed {
+        dir: fixtures().join("docker"),
+        version: "1.4.0".into(),
+      },
+    );
+    let venv = aeth_devkit_setup::packages::StubVenv(map);
+    let deps = aeth_devkit_setup::Deps {
+      docker: aeth_devkit_setup::docker::Deps {
+        runner: &runner,
+        prompt: &aeth_devkit_core::prompt::ScriptedPrompt::new(&[]),
+        reviewer: None,
+        mode: aeth_devkit_setup::docker::Mode::KeepAll,
+      },
+      index: &index,
+      venv: &venv,
+    };
+    let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
+    let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
+    let changes = aeth_devkit_setup::run_with(&ctx, &templates(), false, &deps).unwrap();
+    assert!(changes.venv_synced, "the lock moved, so the run synced");
+    let committed = aeth_devkit_setup::git::commit_changes(root, &changes, &mut bases);
+    aeth_devkit_setup::packages::resync_after_replay(root, &runner, &bases, &changes);
+    assert!(committed.unwrap().is_some());
+    let lock = read(root, "uv.lock");
+    assert_eq!(lock.contains("name = \"requests\""), user_edit, "{lock}");
+    assert!(lock.contains("name = \"devkit-container\""), "{lock}");
+    let sync_calls = runner.calls_for("uv").iter().filter(|c| c[0] == "sync").count();
+    assert_eq!(sync_calls, syncs, "user_edit={user_edit}: {:?}", runner.calls_for("uv"));
+  }
 }

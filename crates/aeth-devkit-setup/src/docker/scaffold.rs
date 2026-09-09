@@ -172,6 +172,7 @@ mod tests {
       python_dir: "src".into(),
       has_rust: false,
       publish_index: None,
+      devkit_index: "SFTPyPI".into(),
       name: "proj".into(),
       version: Some("1.2.3".into()),
       origin: origin.map(str::to_string),

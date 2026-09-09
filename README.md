@@ -114,7 +114,9 @@ second run is a byte-for-byte no-op.
   extension**). `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to
   delete, never removed.
 - **Placeholders** - `{project_root}`, `{package}`, `{python_dir}`, `{devkit_bin}`,
-  `{publish_index}`, `{publish_index_key}`, `{git_repo}` with per-format escaping;
+  `{publish_index}`, `{publish_index_key}`, `{devkit_index}` (the index the project's
+  `aeth-devkit` source names, `SFTPyPI` when there is none), `{git_repo}` with per-format
+  escaping;
   `{devkit_bin}` prefers the venv binary over `uv run devkit`; `{git_tag}` (latest stable
   remote tag, resolved lazily, falling back to `v<pyproject version>` with a note) and
   `{service}` are filled per compose scaffold block; `{latest}` in a pyproject template
@@ -124,9 +126,15 @@ second run is a byte-for-byte no-op.
 - **Devkit packages** - For Docker projects, `devkit-container` is added when missing, locked
   with `uv lock --upgrade-package` under the constraint `aeth-devkit==<the running version>`,
   and installed with `uv sync --frozen`; the floor written to `pyproject.toml` is the version
-  uv chose. A floor no release can meet with this devkit stops the run with "run `devkit
-  lock`"; a newer release on the index that needs a newer devkit is a warning. `uv.lock` is
-  committed with the run. Devkit itself is never upgraded here; that is `devkit lock`'s job.
+  uv chose (for a plain name or a `>=` requirement locked from an index; anything else is
+  left as written with a note), followed by a plain `uv lock` so the lock's metadata records
+  it. A floor no release can meet with this devkit stops the run with "run `devkit lock`"; a
+  newer release on the index that needs a newer devkit is a warning, and so is a refresh that
+  fails once the package is locked (offline, say). The project's environment is
+  `UV_PROJECT_ENVIRONMENT` or `.venv`, and a sync that does not land the locked version there
+  stops the run. `uv.lock` is committed with the run; when the user's own lock had uncommitted
+  changes the venv is synced again once it is back. Devkit itself is never upgraded here;
+  that is `devkit lock`'s job.
 - **Post-apply** - `tombi format` on pyproject (non-fatal), then a quiet auto-commit of
   exactly the changed files (`Standardize project configuration with devkit`, per-file
   body; never env files or `settings.local.json`) via the machinery shared with `lock` and
@@ -254,7 +262,11 @@ no push), `--no-push`, `-c/--compose-file`, `--root`.
 - **Dockerfile refresh** - Before pinning, the committed `docker/Dockerfile` is compared with
   the template of the locked `devkit-container` (the venv is synced first if it lags
   `uv.lock`) and replaced, without a prompt, in its own commit when it differs
-  (`chore(docker): refresh Dockerfile from devkit-container <ver>`).
+  (`chore(docker): refresh Dockerfile from devkit-container <ver>`), in the file's own line
+  endings. Uncommitted edits ride on top through the same 3-way merge as the compose file; a
+  Dockerfile that was never committed is refused rather than replaced. Only
+  `[tool.docker].services` decides whether the step runs, so a project without services is
+  pinned as before.
 - **Commit & push** - Commits exactly the compose file (`chore: pin <package> to <ver>`),
   pathspec-limited so other staged work stays out; pushes the current branch. A dirty
   compose file gets the pin committed against HEAD's copy through a scratch index and the
