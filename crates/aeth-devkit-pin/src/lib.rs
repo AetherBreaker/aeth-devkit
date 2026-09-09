@@ -3,7 +3,7 @@
 
 pub mod resolve;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, bail};
@@ -17,6 +17,9 @@ use aeth_devkit_core::paths::strip_verbatim;
 use aeth_devkit_core::process::Runner;
 use aeth_devkit_core::version::parse_lenient;
 use aeth_devkit_core::{git, github, pyproject};
+use aeth_devkit_setup::context::ProjectContext;
+use aeth_devkit_setup::docker::static_files::{normalize_newlines, render};
+use aeth_devkit_setup::packages::{self, PackageDirs};
 
 /// Pin the docker compose file to a released version of this project.
 #[derive(Parser, Debug, Clone)]
@@ -53,6 +56,7 @@ pub struct Args {
 pub struct Deps<'a> {
   pub runner: &'a dyn Runner,
   pub index: &'a dyn IndexClient,
+  pub packages: &'a dyn PackageDirs,
 }
 
 pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
@@ -102,6 +106,7 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
   // --- Decide which content to edit: HEAD's copy when we will commit over a dirty file. ---
   let will_commit = !args.no_commit && !args.dry_run;
   let will_push = will_commit && !args.no_push;
+  refresh_dockerfile(&root, deps, args.dry_run, will_commit)?;
   let worktree_text = std::fs::read_to_string(&compose_path).with_context(|| format!("reading {}", compose_path.display()))?;
   let dirty = git::is_dirty(&root, &[&rel])?;
   let head = git::head_blob(&root, &rel)?;
@@ -232,6 +237,87 @@ pub fn run(args: &Args, deps: &Deps) -> Result<ExitCode> {
   Ok(ExitCode::SUCCESS)
 }
 
+/// Before a pin: make the committed Dockerfile match the locked devkit-container's
+/// template. The lock can advance the entrypoint (`poe lock`) while the Dockerfile stays on
+/// the old shape, and a deploy would build the mismatch; this is the last moment before every
+/// deploy. The file is devkit-owned, so drift is replaced without a prompt, in its own commit
+/// ahead of the pin's.
+pub fn refresh_dockerfile(root: &Path, deps: &Deps, dry_run: bool, will_commit: bool) -> Result<()> {
+  let ctx = ProjectContext::discover(root)?;
+  if !ctx.has_docker {
+    return Ok(());
+  }
+  let lock = std::fs::read_to_string(root.join("uv.lock")).ok();
+  let Some(locked) = lock.as_deref().and_then(|l| packages::locked_version(l, packages::CONTAINER.name)) else {
+    println!("Dockerfile: devkit-container is not in uv.lock; run setup-project to adopt it. Skipping the refresh.");
+    return Ok(());
+  };
+  // A venv behind the lock would render the wrong version's template.
+  let installed = deps
+    .packages
+    .dir(root, packages::CONTAINER.import_name)
+    .and_then(|d| packages::installed_version(&d));
+  if installed.as_deref() != Some(locked.as_str()) {
+    println!(
+      "Syncing the venv (devkit-container {locked} is locked, {} installed)",
+      installed.as_deref().unwrap_or("nothing")
+    );
+    match deps.runner.run_inherit("uv", &["sync".into(), "--frozen".into()], root)? {
+      Some(0) => {}
+      Some(code) => bail!("uv sync --frozen exited with {code}"),
+      None => bail!("uv sync --frozen was terminated by a signal"),
+    }
+  }
+  let Some(rendered) = render(&ctx, deps.packages)? else {
+    bail!("devkit-container {locked} is locked but not importable from this venv after uv sync");
+  };
+  let rel = "docker/Dockerfile".to_string();
+  let path = root.join("docker").join("Dockerfile");
+  let worktree = std::fs::read_to_string(&path).ok();
+  let dirty = git::is_dirty(root, &[&rel])?;
+  let head = git::head_blob(root, &rel)?;
+  // Same choice as the compose pin below: over a dirty file, the commit is made against
+  // HEAD's copy and the user's edits ride on top.
+  let base_text = match (&head, will_commit && dirty) {
+    (Some(h), true) => String::from_utf8(h.clone()).context("docker/Dockerfile at HEAD is not UTF-8")?,
+    _ => worktree.clone().unwrap_or_default(),
+  };
+  if normalize_newlines(&base_text) == normalize_newlines(&rendered) {
+    println!("Dockerfile: matches devkit-container {locked}.");
+    return Ok(());
+  }
+  println!("Dockerfile: drifted from devkit-container {locked}; refreshing.");
+  if dry_run {
+    return Ok(());
+  }
+  let message = format!("chore(docker): refresh Dockerfile from devkit-container {locked}");
+  if let (true, Some(base)) = (will_commit && dirty, head) {
+    let current = git::worktree_blob(root, &rel)?.with_context(|| format!("{rel} vanished during the run"))?;
+    let merged = git::merge_file(root, &current.bytes, &base, rendered.as_bytes())?
+      .context("your uncommitted Dockerfile changes overlap the refreshed lines; commit or revert them first")?;
+    let mode = git::head_mode(root, &rel)?.unwrap_or_else(|| "100644".into());
+    let sha = git::hash_object(root, rendered.as_bytes())?;
+    git::commit_files_on_head(
+      root,
+      &[git::IndexEntry {
+        path: rel.clone(),
+        staged: Some((mode, sha)),
+      }],
+      &message,
+    )?;
+    git::write_worktree(root, &rel, &merged, current.filtered).with_context(|| format!("writing {}", path.display()))?;
+    println!("Committed the Dockerfile refresh on HEAD; your uncommitted changes to {rel} were kept in the working tree.");
+  } else {
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(&path, &rendered).with_context(|| format!("writing {}", path.display()))?;
+    if will_commit {
+      let hash = git::commit_paths(root, std::slice::from_ref(&rel), &message)?;
+      println!("Committed {hash}: {message}");
+    }
+  }
+  Ok(())
+}
+
 /// [`run`] with the real collaborators.
 pub fn run_real(args: &Args) -> Result<ExitCode> {
   let index = aeth_devkit_core::index::HttpIndexClient::with_timeout(std::time::Duration::from_secs(30));
@@ -240,6 +326,7 @@ pub fn run_real(args: &Args) -> Result<ExitCode> {
     &Deps {
       runner: &aeth_devkit_core::process::SystemRunner,
       index: &index,
+      packages: &packages::SystemPackageDirs,
     },
   )
 }

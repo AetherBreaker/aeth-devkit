@@ -25,7 +25,7 @@ pub const TEMPLATE_FILE: &str = "template.Dockerfile";
 /// when the package is not in the venv. The version rendered is the version the image will
 /// install, because both come from the same locked package.
 pub fn render(ctx: &ProjectContext, packages: &dyn PackageDirs) -> Result<Option<String>> {
-  let Some(dir) = packages.dir(crate::packages::CONTAINER.import_name) else {
+  let Some(dir) = packages.dir(&ctx.root, crate::packages::CONTAINER.import_name) else {
     return Ok(None);
   };
   let path = dir.join(TEMPLATE_FILE);

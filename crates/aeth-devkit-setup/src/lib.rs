@@ -45,7 +45,7 @@ pub fn run(root: &Path, templates_dir: &Path, dry_run: bool) -> Result<Changes> 
       mode: if dry_run { docker::Mode::DryRun } else { docker::Mode::KeepAll },
     },
     index: &aeth_devkit_core::index::HttpIndexClient::default(),
-    packages: &packages::SystemPackageDirs { root: root.to_path_buf() },
+    packages: &packages::SystemPackageDirs,
   };
   run_with(&ProjectContext::discover(root)?, templates_dir, dry_run, &deps)
 }

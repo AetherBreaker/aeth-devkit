@@ -8,11 +8,12 @@
   name = "aeth_devkit_pin"
 
 [dependencies]
-  aeth-devkit-core = { workspace = true }
-  anyhow           = { workspace = true }
-  clap             = { workspace = true }
-  pep440_rs        = { workspace = true }
-  toml_edit        = { workspace = true }
+  aeth-devkit-core  = { workspace = true }
+  aeth-devkit-setup = { workspace = true }
+  anyhow            = { workspace = true }
+  clap              = { workspace = true }
+  pep440_rs         = { workspace = true }
+  toml_edit         = { workspace = true }
 
 [dev-dependencies]
   aeth-devkit-core = { workspace = true, features = ["test-util"] }

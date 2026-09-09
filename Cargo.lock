@@ -94,6 +94,7 @@ name = "aeth-devkit-pin"
 version = "11.0.1"
 dependencies = [
  "aeth-devkit-core",
+ "aeth-devkit-setup",
  "anyhow",
  "clap",
  "pep440_rs",

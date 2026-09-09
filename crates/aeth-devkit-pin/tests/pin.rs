@@ -8,6 +8,7 @@ use aeth_devkit_core::git::init_test_repo;
 use aeth_devkit_core::index::StubIndexClient;
 use aeth_devkit_core::process::RecordingRunner;
 use aeth_devkit_pin::{Args, Deps, run};
+use aeth_devkit_setup::packages::StubPackageDirs;
 
 const PYPROJECT: &str = "[project]\nname = \"my-package\"\n\n[[tool.uv.index]]\nname = \"SFTPyPI\"\nurl = \"https://x/+simple\"\npublish-url = \"https://x/internal/\"\n";
 const COMPOSE: &str = "services:\n  app:\n    build:\n      args:\n        PACKAGE_NAME: my_package\n        PACKAGE_VERSION: 1.0.0\n";
@@ -65,7 +66,15 @@ fn pins_latest_commits_and_pushes() {
   let idx = StubIndexClient {
     versions: vec!["1.0.0".into(), "2.0.0".into()],
   };
-  run(&args(&root), &Deps { runner: &r, index: &idx }).unwrap();
+  run(
+    &args(&root),
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &StubPackageDirs::default(),
+    },
+  )
+  .unwrap();
   let text = std::fs::read_to_string(root.join("compose.yaml")).unwrap();
   assert!(text.contains("PACKAGE_VERSION: 2.0.0"), "{text}");
   // Committed (tree clean) and pushed.
@@ -92,7 +101,15 @@ fn already_pinned_is_a_quiet_noop() {
   let idx = StubIndexClient {
     versions: vec!["1.0.0".into()],
   };
-  run(&args(&root), &Deps { runner: &r, index: &idx }).unwrap();
+  run(
+    &args(&root),
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &StubPackageDirs::default(),
+    },
+  )
+  .unwrap();
   assert!(!pushed(&r));
   assert_eq!(std::fs::read_to_string(root.join("compose.yaml")).unwrap(), COMPOSE);
 }
@@ -106,7 +123,15 @@ fn dry_run_touches_nothing() {
   };
   let mut a = args(&root);
   a.dry_run = true;
-  run(&a, &Deps { runner: &r, index: &idx }).unwrap();
+  run(
+    &a,
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &StubPackageDirs::default(),
+    },
+  )
+  .unwrap();
   assert_eq!(std::fs::read_to_string(root.join("compose.yaml")).unwrap(), COMPOSE);
   assert!(!pushed(&r));
 }
@@ -119,7 +144,16 @@ fn behind_origin_fails_before_editing() {
   let idx = StubIndexClient {
     versions: vec!["2.0.0".into()],
   };
-  let err = run(&args(&root), &Deps { runner: &r, index: &idx }).unwrap_err().to_string();
+  let err = run(
+    &args(&root),
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &StubPackageDirs::default(),
+    },
+  )
+  .unwrap_err()
+  .to_string();
   assert!(err.contains("behind origin"), "{err}");
   assert_eq!(std::fs::read_to_string(root.join("compose.yaml")).unwrap(), COMPOSE);
 }
@@ -134,7 +168,15 @@ fn dirty_compose_commits_pin_on_head_and_keeps_user_edits() {
   let idx = StubIndexClient {
     versions: vec!["2.0.0".into()],
   };
-  run(&args(&root), &Deps { runner: &r, index: &idx }).unwrap();
+  run(
+    &args(&root),
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &StubPackageDirs::default(),
+    },
+  )
+  .unwrap();
   // HEAD has the pin but not the user's edit; the worktree has both.
   let head = Command::new("git")
     .current_dir(&root)
@@ -160,7 +202,15 @@ fn dirty_crlf_checkout_merges_cleanly_and_stays_crlf() {
   let idx = StubIndexClient {
     versions: vec!["2.0.0".into()],
   };
-  run(&args(&root), &Deps { runner: &r, index: &idx }).unwrap();
+  run(
+    &args(&root),
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &StubPackageDirs::default(),
+    },
+  )
+  .unwrap();
   let head = Command::new("git")
     .current_dir(&root)
     .args(["show", "HEAD:compose.yaml"])
@@ -188,7 +238,16 @@ fn conflicting_dirty_edit_aborts_before_committing() {
   let idx = StubIndexClient {
     versions: vec!["2.0.0".into()],
   };
-  let err = run(&args(&root), &Deps { runner: &r, index: &idx }).unwrap_err().to_string();
+  let err = run(
+    &args(&root),
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &StubPackageDirs::default(),
+    },
+  )
+  .unwrap_err()
+  .to_string();
   assert!(err.contains("overlap"), "{err}");
   // Nothing was committed.
   let log = Command::new("git").current_dir(&root).args(["log", "--oneline"]).output().unwrap();
@@ -204,7 +263,15 @@ fn no_commit_edits_worktree_only() {
   };
   let mut a = args(&root);
   a.no_commit = true;
-  run(&a, &Deps { runner: &r, index: &idx }).unwrap();
+  run(
+    &a,
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &StubPackageDirs::default(),
+    },
+  )
+  .unwrap();
   assert!(std::fs::read_to_string(root.join("compose.yaml")).unwrap().contains("2.0.0"));
   let log = Command::new("git").current_dir(&root).args(["log", "--oneline"]).output().unwrap();
   assert_eq!(String::from_utf8_lossy(&log.stdout).lines().count(), 1, "no new commit");
@@ -220,7 +287,15 @@ fn no_push_commits_locally_only() {
   };
   let mut a = args(&root);
   a.no_push = true;
-  run(&a, &Deps { runner: &r, index: &idx }).unwrap();
+  run(
+    &a,
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &StubPackageDirs::default(),
+    },
+  )
+  .unwrap();
   let log = Command::new("git").current_dir(&root).args(["log", "--oneline"]).output().unwrap();
   assert_eq!(String::from_utf8_lossy(&log.stdout).lines().count(), 2, "pin commit exists");
   assert!(!pushed(&r));
@@ -236,10 +311,134 @@ fn explicit_version_flows_through() {
   };
   let mut a = args(&root);
   a.version = Some("1.5.0".into());
-  run(&a, &Deps { runner: &r, index: &idx }).unwrap();
+  run(
+    &a,
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &StubPackageDirs::default(),
+    },
+  )
+  .unwrap();
   assert!(
     std::fs::read_to_string(root.join("compose.yaml"))
       .unwrap()
       .contains("PACKAGE_VERSION: 1.5.0")
   );
+}
+
+const DOCKER_PYPROJECT: &str = "[project]\nname = \"my-package\"\n\n[tool.docker]\nservices = [\"app\"]\n\n[[tool.uv.index]]\nname = \"SFTPyPI\"\nurl = \"https://x/+simple\"\npublish-url = \"https://x/internal/\"\n";
+
+fn lock(container: &str) -> String {
+  format!(
+    "version = 1\n\n[[package]]\nname = \"devkit-container\"\nversion = \"{container}\"\nsource = {{ registry = \"https://x/+simple\" }}\n"
+  )
+}
+
+/// `fixture()` made a Docker project: `services` set, a committed Dockerfile, and a lock
+/// naming devkit-container when `locked` is given.
+fn docker_fixture(dockerfile: &str, locked: Option<&str>) -> (tempfile::TempDir, PathBuf) {
+  let (dir, root) = fixture();
+  std::fs::write(root.join("pyproject.toml"), DOCKER_PYPROJECT).unwrap();
+  std::fs::create_dir_all(root.join("docker")).unwrap();
+  std::fs::write(root.join("docker/Dockerfile"), dockerfile).unwrap();
+  if let Some(v) = locked {
+    std::fs::write(root.join("uv.lock"), lock(v)).unwrap();
+  }
+  git(&root, &["add", "."]);
+  git(&root, &["commit", "-q", "-m", "docker"]);
+  (dir, root)
+}
+
+/// A fake site-packages holding devkit_container at `version` with `template` as its Dockerfile.
+fn installed(version: &str, template: &str) -> (tempfile::TempDir, StubPackageDirs) {
+  let site = tempfile::tempdir().unwrap();
+  let pkg = site.path().join("devkit_container");
+  std::fs::create_dir_all(&pkg).unwrap();
+  std::fs::create_dir(site.path().join(format!("devkit_container-{version}.dist-info"))).unwrap();
+  std::fs::write(pkg.join("template.Dockerfile"), template).unwrap();
+  let mut map = std::collections::HashMap::new();
+  map.insert("devkit_container".to_string(), pkg);
+  (site, StubPackageDirs(map))
+}
+
+fn subjects(root: &Path) -> Vec<String> {
+  let out = Command::new("git").current_dir(root).args(["log", "--format=%s"]).output().unwrap();
+  String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect()
+}
+
+#[test]
+fn a_drifted_dockerfile_is_replaced_and_committed_before_the_pin() {
+  let (_d, root) = docker_fixture("FROM old\n", Some("1.4.0"));
+  let (_site, dirs) = installed("1.4.0", "FROM new {python_dir}\n");
+  let r = happy_runner();
+  let idx = StubIndexClient {
+    versions: vec!["2.0.0".into()],
+  };
+  let mut a = args(&root);
+  a.no_push = true;
+  run(
+    &a,
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &dirs,
+    },
+  )
+  .unwrap();
+  assert_eq!(std::fs::read_to_string(root.join("docker/Dockerfile")).unwrap(), "FROM new src\n");
+  let log = subjects(&root);
+  assert_eq!(log[0], "chore: pin my-package to 2.0.0", "{log:?}");
+  assert_eq!(log[1], "chore(docker): refresh Dockerfile from devkit-container 1.4.0", "{log:?}");
+  assert!(r.calls_for("uv").is_empty(), "installed 1.4.0 matches the lock: no sync");
+}
+
+#[test]
+fn a_stale_venv_is_synced_before_the_dockerfile_is_compared() {
+  let (_d, root) = docker_fixture("FROM new src\n", Some("1.4.0"));
+  let (_site, dirs) = installed("1.3.0", "FROM new {python_dir}\n");
+  let r = happy_runner();
+  let idx = StubIndexClient {
+    versions: vec!["2.0.0".into()],
+  };
+  let mut a = args(&root);
+  a.no_push = true;
+  run(
+    &a,
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &dirs,
+    },
+  )
+  .unwrap();
+  assert_eq!(r.calls_for("uv")[0], vec!["sync", "--frozen"]);
+  assert!(
+    !subjects(&root).iter().any(|s| s.contains("refresh Dockerfile")),
+    "the file already matched"
+  );
+}
+
+#[test]
+fn without_the_package_in_the_lock_the_refresh_is_skipped() {
+  let (_d, root) = docker_fixture("FROM old\n", None);
+  let (_site, dirs) = installed("1.4.0", "FROM new {python_dir}\n");
+  let r = happy_runner();
+  let idx = StubIndexClient {
+    versions: vec!["2.0.0".into()],
+  };
+  let mut a = args(&root);
+  a.no_push = true;
+  run(
+    &a,
+    &Deps {
+      runner: &r,
+      index: &idx,
+      packages: &dirs,
+    },
+  )
+  .unwrap();
+  assert_eq!(std::fs::read_to_string(root.join("docker/Dockerfile")).unwrap(), "FROM old\n");
+  assert!(r.calls_for("uv").is_empty());
+  assert_eq!(subjects(&root)[0], "chore: pin my-package to 2.0.0");
 }

@@ -159,7 +159,7 @@ pub fn run(args: &Args) -> Result<ExitCode> {
         },
       },
       index: &index,
-      packages: &crate::packages::SystemPackageDirs { root: root.clone() },
+      packages: &crate::packages::SystemPackageDirs,
     };
     let mut c = crate::run_with(&ctx, &templates, dry_run, &deps)?;
     if !dry_run {

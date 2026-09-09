@@ -49,34 +49,32 @@ pub fn active(ctx: &ProjectContext) -> Vec<&'static DevkitPackage> {
   out
 }
 
-/// Where the venv keeps an installed package, by import name. A trait so tests can point at
-/// a fixture instead of a real site-packages.
+/// Where the project at `root` keeps an installed package, by import name. A trait so tests
+/// can point at a fixture instead of a real site-packages.
 pub trait PackageDirs {
-  fn dir(&self, import_name: &str) -> Option<PathBuf>;
+  fn dir(&self, root: &Path, import_name: &str) -> Option<PathBuf>;
 }
 
 /// Asks the project's own venv (`<root>/.venv`), which is where the locked package lives
 /// whichever devkit binary is running: the venv's, `target/debug`'s or a tool install's. No
 /// fallback to the interpreter beside the binary or on PATH, because those can answer from
 /// another environment with a version the project's lock does not name.
-pub struct SystemPackageDirs {
-  pub root: PathBuf,
-}
+pub struct SystemPackageDirs;
 
 impl PackageDirs for SystemPackageDirs {
-  fn dir(&self, import_name: &str) -> Option<PathBuf> {
+  fn dir(&self, root: &Path, import_name: &str) -> Option<PathBuf> {
     [".venv/Scripts/python.exe", ".venv/bin/python"]
       .iter()
-      .find_map(|rel| crate::templates::package_dir_via(&self.root.join(rel), import_name))
+      .find_map(|rel| crate::templates::package_dir_via(&root.join(rel), import_name))
   }
 }
 
-/// Canned answers by import name; for tests.
+/// Canned answers by import name, whatever the root; for tests.
 #[derive(Default)]
 pub struct StubPackageDirs(pub HashMap<String, PathBuf>);
 
 impl PackageDirs for StubPackageDirs {
-  fn dir(&self, import_name: &str) -> Option<PathBuf> {
+  fn dir(&self, _root: &Path, import_name: &str) -> Option<PathBuf> {
     self.0.get(import_name).cloned()
   }
 }
@@ -139,7 +137,7 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
   let missing: Vec<&DevkitPackage> = packages
     .iter()
     .copied()
-    .filter(|p| deps.packages.dir(p.import_name).is_none())
+    .filter(|p| deps.packages.dir(&ctx.root, p.import_name).is_none())
     .collect();
   if dry_run {
     for p in &missing {
@@ -348,7 +346,8 @@ source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+s
     let mut map = std::collections::HashMap::new();
     map.insert("devkit_container".to_string(), PathBuf::from("/site/devkit_container"));
     let dirs = StubPackageDirs(map);
-    assert_eq!(dirs.dir("devkit_container"), Some(PathBuf::from("/site/devkit_container")));
-    assert_eq!(dirs.dir("other"), None);
+    let root = Path::new("/p");
+    assert_eq!(dirs.dir(root, "devkit_container"), Some(PathBuf::from("/site/devkit_container")));
+    assert_eq!(dirs.dir(root, "other"), None);
   }
 }
