@@ -1,0 +1,170 @@
+//! Step 15 of setup-project: `devkit-complete install` for the shells this machine has, so
+//! poe completion comes from the venv's binary without anyone typing the command. The binary
+//! is the one the package step installed (step 1b); the shells are whatever `PATH` can start.
+
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+
+use aeth_devkit_core::process::Runner;
+
+use crate::changes::Changes;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Shells {
+  pub powershell: bool,
+  pub bash: bool,
+}
+
+/// Which shells `PATH` can start: `pwsh` or Windows PowerShell counts as PowerShell, any
+/// `bash` counts (Git Bash on Windows, the login shell elsewhere).
+pub fn shells_on(path: &OsStr) -> Shells {
+  let has = |names: &[&str]| std::env::split_paths(path).any(|d| names.iter().any(|n| d.join(n).is_file()));
+  Shells {
+    powershell: has(&["pwsh.exe", "powershell.exe", "pwsh"]),
+    bash: has(&["bash.exe", "bash"]),
+  }
+}
+
+/// The venv's `devkit-complete`, in the environment the package step syncs (the
+/// `UV_PROJECT_ENVIRONMENT` rule `packages::SystemVenv` follows).
+pub fn binary(root: &Path) -> Option<PathBuf> {
+  let env = std::env::var_os("UV_PROJECT_ENVIRONMENT").map_or_else(|| PathBuf::from(".venv"), PathBuf::from);
+  let env = if env.is_absolute() { env } else { root.join(env) };
+  ["Scripts/devkit-complete.exe", "bin/devkit-complete"]
+    .iter()
+    .map(|rel| env.join(rel))
+    .find(|p| p.is_file())
+}
+
+/// Run the install for `shells`; `--dry-run` on a dry run, since it writes to the home
+/// directory rather than the project. The installer's "  - …" lines become notes, and its
+/// "Nothing to do" is silence, so a routine run says nothing about completion.
+pub fn install(root: &Path, binary: &Path, shells: Shells, runner: &dyn Runner, dry_run: bool, changes: &mut Changes) {
+  let mut args: Vec<String> = vec!["install".into()];
+  if shells.powershell {
+    args.push("--powershell".into());
+  }
+  if shells.bash {
+    args.push("--bash".into());
+  }
+  if args.len() == 1 {
+    return;
+  }
+  if dry_run {
+    args.push("--dry-run".into());
+  }
+  match runner.run_capture(&binary.to_string_lossy(), &args, root) {
+    Ok(out) if out.success() => {
+      for line in out.stdout.lines().filter_map(|l| l.strip_prefix("  - ")) {
+        changes.notes.push(format!("shell completion: {line}"));
+      }
+    }
+    Ok(out) => changes
+      .warnings
+      .push(format!("devkit-complete install failed: {}", out.stderr.trim())),
+    Err(e) => changes.warnings.push(format!("devkit-complete install could not run: {e:#}")),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use aeth_devkit_core::process::RecordingRunner;
+
+  #[test]
+  fn shells_are_found_on_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = std::env::join_paths([dir.path()]).unwrap();
+    assert_eq!(shells_on(&path), Shells::default());
+    std::fs::write(dir.path().join("bash"), "").unwrap();
+    assert_eq!(
+      shells_on(&path),
+      Shells {
+        powershell: false,
+        bash: true
+      }
+    );
+    std::fs::write(dir.path().join("pwsh.exe"), "").unwrap();
+    assert_eq!(
+      shells_on(&path),
+      Shells {
+        powershell: true,
+        bash: true
+      }
+    );
+  }
+
+  #[test]
+  fn the_binary_is_the_venvs() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(binary(dir.path()), None);
+    let bin = dir.path().join(".venv").join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("devkit-complete"), "").unwrap();
+    assert_eq!(binary(dir.path()), Some(bin.join("devkit-complete")));
+  }
+
+  #[test]
+  fn install_reports_changes_and_stays_quiet_when_there_are_none() {
+    let root = tempfile::tempdir().unwrap();
+    let bin = root.path().join("devkit-complete");
+    let shells = Shells {
+      powershell: true,
+      bash: true,
+    };
+    let r = RecordingRunner::new(0);
+    r.script(
+      &bin.to_string_lossy(),
+      &["install"],
+      0,
+      "Changed:\n  - created C:/home/.local/share/devkit/poe-completion.ps1\n  - added: $c = …\nOpen a new shell for it to take effect.\n",
+    );
+    let mut changes = Changes::new(false);
+    install(root.path(), &bin, shells, &r, false, &mut changes);
+    assert_eq!(r.calls_for(&bin.to_string_lossy())[0], vec!["install", "--powershell", "--bash"]);
+    assert_eq!(
+      changes.notes,
+      vec![
+        "shell completion: created C:/home/.local/share/devkit/poe-completion.ps1",
+        "shell completion: added: $c = …"
+      ]
+    );
+
+    let r = RecordingRunner::new(0);
+    r.script(
+      &bin.to_string_lossy(),
+      &["install"],
+      0,
+      "Nothing to do — completion is already installed.\n",
+    );
+    let mut changes = Changes::new(true);
+    install(
+      root.path(),
+      &bin,
+      Shells {
+        powershell: false,
+        bash: true,
+      },
+      &r,
+      true,
+      &mut changes,
+    );
+    assert_eq!(r.calls_for(&bin.to_string_lossy())[0], vec!["install", "--bash", "--dry-run"]);
+    assert!(changes.notes.is_empty(), "{:?}", changes.notes);
+
+    let r = RecordingRunner::new(0);
+    let mut changes = Changes::new(false);
+    install(root.path(), &bin, Shells::default(), &r, false, &mut changes);
+    assert!(r.calls.borrow().is_empty(), "no shell, no call");
+
+    let r = RecordingRunner::new(1);
+    let mut changes = Changes::new(false);
+    install(root.path(), &bin, shells, &r, false, &mut changes);
+    assert_eq!(changes.warnings.len(), 1, "{:?}", changes.warnings);
+    assert!(
+      changes.warnings[0].starts_with("devkit-complete install failed"),
+      "{:?}",
+      changes.warnings
+    );
+  }
+}

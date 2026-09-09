@@ -3,6 +3,7 @@
 
 pub mod changes;
 pub mod cli;
+pub mod completion;
 pub mod context;
 pub mod docker;
 pub mod format;
@@ -343,6 +344,19 @@ pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps:
     changes
       .notes
       .push(".github/copilot-instructions.md is superseded by AGENTS.md (chat.useAgentsMdFile is on); safe to delete.".into());
+  }
+
+  // 15. Shell completion for poe, from the venv's `devkit-complete` the package step
+  //     installed (1b), for the shells on PATH. Last, and outside the project: it writes to
+  //     the home directory, so a dry run asks the installer for its own dry run.
+  match completion::binary(&ctx.root) {
+    Some(bin) => {
+      let shells = completion::shells_on(&std::env::var_os("PATH").unwrap_or_default());
+      completion::install(&ctx.root, &bin, shells, deps.docker.runner, dry_run, &mut changes);
+    }
+    None => changes
+      .notes
+      .push("devkit-complete is not installed in this venv; shell completion was not installed".into()),
   }
 
   Ok(changes)
