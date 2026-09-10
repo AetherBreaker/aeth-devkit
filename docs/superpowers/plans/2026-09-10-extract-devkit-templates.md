@@ -958,11 +958,11 @@ gh pr checks --watch 2>&1 | tail -6
 
 Expected: `rust` (both OSes), `tests` (both), `wheel`, `render` green.
 
-- [ ] **Step 2: Two independent extra-high-effort reviews**
+- [x] **Step 2: Two independent extra-high-effort reviews**
 
 One on this session's model, one on another top model, each with the branch diff, this plan, the spec, and read-only access to `devkit-templates`. Point them at: the bootstrap inside the committing flow (the pyproject and lock edits happen after `stage_bases`, exactly where `advance`'s already do — confirm no double entry for `devkit-templates`, no lost user edit on replay, one `pyproject.toml` entry in the report); the dry-run error path writes nothing; override precedence and the unknown-key refusal for `[tool.devkit]`; that nothing still reads `python/aeth_devkit/templates` (grep the tree); `--check` gone from code, tests, docs and the task table; `bump_pin` on the two-requirement case; the `render` job's dry run on a project with no environment (the package step's dry-run notes, the container "not adopted" note). Verify the union of findings, fix what is real, push, wait for green.
 
-- [ ] **Step 3: Merge and release**
+- [x] **Step 3: Merge and release**
 
 The standing instruction (step 2) is to merge and release once the reviews are clean; confirm only if that may have changed.
 
