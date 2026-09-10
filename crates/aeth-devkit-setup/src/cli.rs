@@ -6,7 +6,8 @@ use std::process::ExitCode;
 use anyhow::{Context as _, Result, bail};
 use clap::Parser;
 
-/// Standardize a project's configuration from the templates shipped with aeth-devkit.
+/// Standardize a project's configuration from the devkit-templates package in its
+/// environment.
 #[derive(Parser, Debug, Clone)]
 #[command(name = "devkit-setup", version, about)]
 pub struct Args {
@@ -92,6 +93,12 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
   let runner = aeth_devkit_core::process::SystemRunner;
 
+  // Discovered before staging (see `run_with`), and with the override before the VS Code
+  // step: a wrong --templates-dir is refused before an extension is installed or a reload
+  // asked for.
+  let ctx = crate::context::ProjectContext::discover(&root)?;
+  let templates_override = crate::templates::override_dir(args.templates_dir.as_deref(), &ctx)?;
+
   // First, so the guards inside `prepare` (the extension download, argv.json) count.
   if !dry_run && let Err(e) = crate::interrupt::install() {
     println!("note: {e:#}; a Ctrl-C will not wait for a write in progress to finish.");
@@ -128,9 +135,6 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   // presence is what makes the run keep previews for the review at the end.
   let reviewer = vs.as_ref().map(|v| crate::vscode::session::VsCodeReviewer::new(v, &runner));
 
-  // Discovered before staging (see `run_with`).
-  let ctx = crate::context::ProjectContext::discover(&root)?;
-  let templates_override = crate::templates::override_dir(args.templates_dir.as_deref(), &ctx)?;
   // When committing, the committable managed files are merged against their `HEAD`
   // content, so the commit carries only this run's changes and the user's uncommitted
   // edits are replayed back on top afterwards (see `aeth_devkit_core::commit`).

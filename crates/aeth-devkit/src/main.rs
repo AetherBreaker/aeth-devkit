@@ -14,7 +14,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-  /// Standardize the project's configuration from the shipped templates.
+  /// Standardize the project's configuration from the devkit-templates package in its environment.
   SetupProject(aeth_devkit_setup::cli::Args),
   /// Bump the aeth-devkit pin, run `uv sync`, and commit uv.lock.
   Lock(aeth_devkit_lock::Args),
