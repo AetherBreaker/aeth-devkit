@@ -88,21 +88,32 @@ fn requirement_tables(doc: &DocumentMut) -> Vec<String> {
 /// Non-string array entries (e.g. `{ include-group = … }`) are skipped.
 pub fn find_requirement(doc: &DocumentMut, name: &str) -> Option<Requirement> {
   let want = normalize_dist_name(name);
-  for table in requirement_tables(doc) {
-    let Some(arr) = array_at(doc, &table) else { continue };
-    for (index, v) in arr.iter().enumerate() {
-      if let Some(spec) = v.as_str()
-        && requirement_name(spec) == want
-      {
-        return Some(Requirement {
-          table,
-          index,
-          spec: spec.to_string(),
-        });
-      }
-    }
-  }
-  None
+  requirement_tables(doc)
+    .into_iter()
+    .find_map(|table| requirement_in(doc, &table, &want))
+}
+
+/// [`find_requirement`] restricted to `dependency-groups.*`: the tooling pins, which are
+/// the ones `devkit lock` moves. A `[project].dependencies` requirement for a devkit
+/// package is a compatibility floor (devkit-templates), raised by hand.
+pub fn find_requirement_in_groups(doc: &DocumentMut, name: &str) -> Option<Requirement> {
+  let want = normalize_dist_name(name);
+  requirement_tables(doc)
+    .into_iter()
+    .filter(|t| t.starts_with("dependency-groups."))
+    .find_map(|table| requirement_in(doc, &table, &want))
+}
+
+fn requirement_in(doc: &DocumentMut, table: &str, want: &str) -> Option<Requirement> {
+  let arr = array_at(doc, table)?;
+  arr.iter().enumerate().find_map(|(index, v)| {
+    let spec = v.as_str()?;
+    (requirement_name(spec) == want).then(|| Requirement {
+      table: table.to_string(),
+      index,
+      spec: spec.to_string(),
+    })
+  })
 }
 
 /// `name[extras]` followed by everything else (specifiers, then an optional `; marker`).

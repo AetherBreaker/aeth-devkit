@@ -303,3 +303,49 @@ fn no_stable_version_is_an_error() {
   assert!(err.contains("No stable release versions found for aeth-devkit"), "{err}");
   assert!(runner.calls.borrow().is_empty());
 }
+
+#[test]
+fn a_dev_group_pin_moves_and_a_runtime_floor_on_the_same_package_stays() {
+  let dir = project(true);
+  let root = dir.path();
+  let both = PYPROJECT.replace(
+    "  dependencies = [\"requests>=2\"]\n",
+    "  dependencies = [\"requests>=2\", \"aeth-devkit>=6.0.2\"]\n",
+  );
+  std::fs::write(root.join("pyproject.toml"), &both).unwrap();
+  git::commit_paths(root, &["pyproject.toml".into()], "floor").unwrap();
+  let index = StubIndexClient {
+    versions: vec!["7.1.0".into()],
+  };
+  let runner = RecordingRunner::new(0);
+  assert_eq!(run(&args(root), &index, &runner).unwrap(), ExitCode::SUCCESS);
+  let py = read(root, "pyproject.toml");
+  assert!(
+    py.contains("dependencies = [\"requests>=2\", \"aeth-devkit>=6.0.2\"]"),
+    "the floor stays: {py}"
+  );
+  assert!(py.contains("    \"aeth-devkit>=7.1.0\",\n"), "the dev pin moved: {py}");
+  assert_eq!(last_subject(root), COMMIT_SUBJECT);
+}
+
+#[test]
+fn a_package_pinned_only_at_runtime_is_still_bumped() {
+  let dir = project(true);
+  let root = dir.path();
+  let runtime_only = PYPROJECT
+    .replace(
+      "  dependencies = [\"requests>=2\"]\n",
+      "  dependencies = [\"requests>=2\", \"aeth-devkit>=6.0.2\"]\n",
+    )
+    .replace("    \"aeth-devkit>=6.0.2\",\n", "");
+  std::fs::write(root.join("pyproject.toml"), &runtime_only).unwrap();
+  git::commit_paths(root, &["pyproject.toml".into()], "runtime").unwrap();
+  let index = StubIndexClient {
+    versions: vec!["7.1.0".into()],
+  };
+  let runner = RecordingRunner::new(0);
+  assert_eq!(run(&args(root), &index, &runner).unwrap(), ExitCode::SUCCESS);
+  let py = read(root, "pyproject.toml");
+  assert!(py.contains("dependencies = [\"requests>=2\", \"aeth-devkit>=7.1.0\"]"), "{py}");
+  assert_eq!(last_subject(root), COMMIT_SUBJECT);
+}
