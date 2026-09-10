@@ -386,7 +386,7 @@ In `pyproject.toml`:
 
 ```toml
 [dependency-groups]
-  dev = ["aeth-devkit>=7.0.0"]
+  dev = ["aeth-devkit"]
 
 [tool.uv.sources]
   aeth-devkit = { index = "<your index name>" }
@@ -395,18 +395,9 @@ In `pyproject.toml`:
   include_script = [{ script = "aeth_devkit:tasks", executor = { type = "uv", frozen = true } }]
 ```
 
-Then `uv sync` and `poe setup-project`.
-
-## Migrating from `poe-tasks`
-
-1. Replace the `poe-tasks` dev dependency with `aeth-devkit>=7.0.0` and rename the
-   `tool.uv.sources` key from `poe-tasks` to `aeth-devkit`.
-2. `uv sync --upgrade`.
-3. `poe setup-project` — it rewrites `include_script` from `poe_tasks:tasks` to
-   `aeth_devkit:tasks`.
-
-`poe lock` keeps the pin current from then on. It reads the index URL from
-`tool.uv.sources` / `[[tool.uv.index]]`; with no source declared it queries PyPI.
+Then `uv sync` and `poe setup-project`, which adds `devkit-templates`, `devkit-claude-hooks`
+and `devkit-poe-complete` to the dev group and locks them (see **Devkit packages**), and
+`poe lock` whenever the `aeth-devkit` pin should move.
 
 ## Development
 
@@ -416,9 +407,9 @@ uv run maturin develop     # installs the devkit binary into .venv
 ```
 
 Layout: `crates/aeth-devkit-core` (shared git/process/pyproject/index helpers),
-`crates/aeth-devkit-setup` and `crates/aeth-devkit-lock` (one command each, library +
-dev binary), `crates/aeth-devkit` (the shipped `devkit` dispatcher),
-`python/aeth_devkit` (poe tasks, remaining shell scripts). The setup crate's tests render
+`crates/aeth-devkit-setup`, `-lock`, `-release` and `-pin` (one command each, library +
+dev binary), `crates/aeth-devkit` (the shipped `devkit` dispatcher), `python/aeth_devkit`
+(the poe task table and the one remaining shell script). The setup crate's tests render
 the snapshot under `crates/aeth-devkit-setup/tests/fixtures/templates`; to render a
-templates checkout instead, pass `--templates-dir` or set `DEVKIT_TEMPLATES`. CI's `render`
-job dry-runs the newest released templates through the working-tree binary.
+templates checkout instead, pass `--templates-dir` or set `DEVKIT_TEMPLATES`. CI's
+`Templates:` job dry-runs the newest released templates through the working-tree binary.
