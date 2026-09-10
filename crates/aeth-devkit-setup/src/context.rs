@@ -56,7 +56,9 @@ pub struct ProjectContext {
   pub release_workflow: bool,
   /// `[tool.devkit].templates-dir`: a directory to render instead of the environment's
   /// `devkit_templates` package, relative to the project root. The templates repository
-  /// rendering its own tree; also any project that keeps a checkout beside it.
+  /// rendering its own tree; also any project that keeps a checkout beside it. Joined here,
+  /// checked to exist by `templates::override_dir`: only setup-project reads it, and a
+  /// checkout beside the project need not exist on every machine that runs `docker-pin`.
   pub templates_dir: Option<PathBuf>,
 }
 
@@ -194,16 +196,13 @@ impl ProjectContext {
     };
     let templates_dir = match devkit.and_then(|d| d.get("templates-dir")) {
       None => None,
-      Some(item) => {
-        let rel = item
-          .as_str()
-          .with_context(|| format!("[tool.devkit].templates-dir must be a string, got {}", item.to_string().trim()))?;
-        let dir = root.join(rel);
-        if !dir.is_dir() {
-          bail!("[tool.devkit].templates-dir: {} is not a directory", dir.display());
-        }
-        Some(dir)
-      }
+      Some(item) => Some(
+        root.join(
+          item
+            .as_str()
+            .with_context(|| format!("[tool.devkit].templates-dir must be a string, got {}", item.to_string().trim()))?,
+        ),
+      ),
     };
 
     Ok(Self {
@@ -461,13 +460,14 @@ mod devkit_settings {
     .unwrap();
     let ctx = ProjectContext::discover(dir.path()).unwrap();
     assert_eq!(ctx.templates_dir, Some(ctx.root.join("tpl")));
+    // Existence is setup-project's concern (`templates::override_dir`), not discovery's.
     std::fs::write(
       dir.path().join("pyproject.toml"),
       "[project]\nname = \"p\"\n\n[tool.devkit]\ntemplates-dir = \"missing\"\n",
     )
     .unwrap();
-    let err = ProjectContext::discover(dir.path()).unwrap_err().to_string();
-    assert!(err.contains("templates-dir") && err.contains("missing"), "{err}");
+    let ctx = ProjectContext::discover(dir.path()).unwrap();
+    assert_eq!(ctx.templates_dir, Some(ctx.root.join("missing")));
     std::fs::write(
       dir.path().join("pyproject.toml"),
       "[project]\nname = \"p\"\n\n[tool.devkit]\ntemplates-dir = true\n",

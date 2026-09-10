@@ -503,3 +503,43 @@ fn the_templates_repository_never_bootstraps_itself() {
   assert!(err.contains("templates-dir"), "{err}");
   assert!(runner.calls_for("uv").is_empty());
 }
+
+#[test]
+fn the_bootstrap_creates_the_tables_it_needs_without_empty_headers() {
+  let dir = project(
+    "[project]\n  name = \"p\"\n\n[tool.ruff]\n  fix = true\n",
+    Some(&lock_with_templates("1.0.0")),
+  );
+  let runner = RecordingRunner::new(0);
+  let index = StubIndexClient { versions: vec![] };
+  ensure(dir.path(), &runner, &index, &venv_with_templates("1.0.0"), false).unwrap();
+  let py = fs::read_to_string(dir.path().join("pyproject.toml")).unwrap();
+  let doc: toml_edit::DocumentMut = py.parse().unwrap();
+  assert_eq!(doc["dependency-groups"]["dev"][0].as_str(), Some("devkit-templates>=1.0.0"), "{py}");
+  assert_eq!(
+    doc["tool"]["uv"]["sources"]["devkit-templates"][0]["index"].as_str(),
+    Some("SFTPyPI"),
+    "{py}"
+  );
+  assert!(!py.contains("[tool]\n") && !py.contains("[tool.uv]\n"), "no empty headers: {py}");
+  assert!(py.contains("[tool.ruff]\n  fix = true\n"), "{py}");
+}
+
+#[test]
+fn a_stale_lock_is_one_problem_on_a_dry_run_and_stops_a_plain_run_before_any_write() {
+  let stale = lock_with_templates("1.0.0").replace(&format!("version = \"{RUNNING_DEVKIT}\""), "version = \"0.0.1\"");
+  let listed = PLAIN_PYPROJECT.replace("\"devkit-poe-complete\"]", "\"devkit-poe-complete\", \"devkit-templates>=1.0.0\"]");
+  let dir = project(&listed, Some(&stale));
+  let runner = RecordingRunner::new(0);
+  let index = StubIndexClient { versions: vec![] };
+  // The bootstrap and its `advance` both ask; one report.
+  let (_, changes) = ensure(dir.path(), &runner, &index, &venv_with_templates("1.0.0"), true).unwrap();
+  assert_eq!(changes.problems.len(), 1, "{:?}", changes.problems);
+  assert!(runner.calls_for("uv").is_empty());
+  let dir = project(PLAIN_PYPROJECT, Some(&stale));
+  let err = ensure(dir.path(), &runner, &index, &venv(None), false).unwrap_err().to_string();
+  assert!(err.contains("uv.lock pins aeth-devkit 0.0.1"), "{err}");
+  let py = fs::read_to_string(dir.path().join("pyproject.toml")).unwrap();
+  assert!(!py.contains("devkit-templates"), "nothing written before the refusal: {py}");
+  assert!(runner.calls_for("uv").is_empty());
+}
