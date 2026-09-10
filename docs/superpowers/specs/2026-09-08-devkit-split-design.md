@@ -311,7 +311,8 @@ Each step is its own plan, branch and PR.
 3. Extract hooks and completion: the wheels published first, then the templates that reference
    them, then the devkit major that removes the subcommands.
 4. `devkit-templates` as a package; `setup` reads from the venv; `--check` removal; templates CI.
-5. Slim `aeth-devkit`: constants, CI, TODO, README; optionally the bake removal.
+5. Slim `aeth-devkit`: constants, CI, TODO, README; optionally the bake removal. Scoped in 7.1
+   as it stands after step 4.
 
 Steps 2, 3 and 4 are independent of each other; 3 and 4 use the 4.0 machinery from step 1. Step 5
 is last. The wireguard spec follows step 1 and is independent of 2 to 5.
@@ -330,6 +331,56 @@ secrets (`UV_INDEX_SFTPYPI_USERNAME`, `UV_INDEX_SFTPYPI_PASSWORD`) are piped fro
 `.env` into each wheel repo with `gh secret set`, never printed. The Claude Code OAuth token is
 set by hand later; the Claude workflow is installed regardless. Then `setup-project`, and one
 release.
+
+### 7.1 Step 5 as it stands after step 4 (written 2026-09-10)
+
+Steps 1 to 4 are done and released (aeth-devkit 14.0.0, devkit-templates 1.1.0); the six repos
+are on 14.0.0. Much of 4.5 happened inside those steps, so step 5 is smaller than its line
+suggests. Consumers are still not migrated: they move after step 5, not during it.
+
+**Already done, do not redo**: the CI jobs 4.5 names are gone and `devkit-container.yml` /
+`vscode-extension.yml` are deleted; the templates directory is gone and `templates::locate`
+reads the venv package (an override, else `devkit_templates`); `aeth-devkit`'s own
+`pyproject.toml` carries the dev-group packages through its own `setup-project` run;
+`WORKSPACE.md` exists and lists all six repos; every workflow, job and step across the six repos
+is named by what it runs and the convention is in the AGENTS.md template (GitHub Workflow
+Naming). CI has no structural work left; the `Templates:` job in `aeth-devkit`'s `ci.yml` is
+the cross-repo check and stays.
+
+**Decided**: the bake stays. `build.rs` keeps generating `_tasks_generated.py` from
+`_tasks_source.py`, the regeneration check in CI stays. Step 5 does not touch it.
+
+**What remains**, each its own commit on `main` (small fixes go there, no branch):
+
+1. *Constants and leftover code*: `REMOVAL-CANDIDATES.md` lists what the split left behind,
+   with the evidence and the removal cost. Rule on each `aeth-devkit` entry (remove, or keep
+   with the reason written where the code lives): `packages::DEVKIT` (only tests name it),
+   `Changes::problems` as a list apart from `warnings` (`--check` went in 14.0.0), the
+   `legacy_hook_key` / `matches_key` pre-Rust hook migration, and the two Docker gates
+   `if-docker` / `if-docker-services` (a template change too, so a devkit-templates release
+   if it goes). The `devkit-poe-complete` entries (`tasks` / `args` subcommands, the
+   `OLD_DEVKIT_POWERSHELL_LINE` migration) are the same review in that repo. When every entry
+   is ruled on, delete the file: it existed to collect candidates during the split.
+2. *TODO.md*: drop the stale "Release 7.0.0, then migrate downstream projects per README"
+   entry and any other the split made moot; the 4.3 extension release-workflow entry is
+   present ("devkit-vscode: a stronger release workflow"), the 4.1 Dockerfile opt-out entry
+   must be checked for and added if missing. The 2026-09-10 entry to template `ci.yml` and
+   have `setup-project` install it when the project runs tests stays.
+3. *README.md*: the feature reference describes only what `aeth-devkit` still contains. The
+   four satellite sections (`devkit-container`, VS Code extension, hooks and completion,
+   `devkit-templates`) shrink to what `setup-project` does with each package plus a pointer
+   to that repo's README. "Migrating from `poe-tasks`" is a 7.0.0-era section: keep it only
+   if a `poe-tasks` project still exists, else drop it and the `aeth-devkit>=7.0.0` example
+   with it.
+4. *Release* `aeth-devkit` (patch or minor; no contract changes unless item 1 removes a gate),
+   then the consumer migration per section 9: `aeth_ext`, `IMAPReportCollector`,
+   `ScheduledInvoiceProcessor`, `ScheduledReportAggregator`, `timeclock_entry_processor`,
+   each through `poe setup-project`, twice, the second run reporting nothing to do.
+
+Constraints that bind every item: the project's Bash hook refuses `uv add` / `uv remove` /
+`uv lock` (use `uv sync`, `poe lock`, `setup-project`); `poe release` note words cannot start
+with a dash and must avoid apostrophes; edit scripts go to the scratchpad, never inline
+multi-line Python in a heredoc.
 
 ## 8. Rejected alternatives
 
