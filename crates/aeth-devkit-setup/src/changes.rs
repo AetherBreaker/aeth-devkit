@@ -40,12 +40,12 @@ pub struct Changes {
   /// `warning:` lines (stderr): a managed file devkit deliberately left whole because the
   /// project's layout puts it out of reach, not because anything is wrong with it, or a step
   /// outside the project (the index refresh, the completion install) that failed without
-  /// invalidating the run. Never written; `--check` passes, so a supported layout cannot
-  /// fail a pipeline forever.
+  /// invalidating the run. Never written: a supported layout is never a `problem:`.
   pub warnings: Vec<String>,
   /// `problem:` lines: drift the run saw in a file it manages but could not edit (a compose
-  /// shape the engine does not model). Never written, never committed; `--check` fails on
-  /// them, since a listed service is a declared intent to have the file managed.
+  /// shape the engine does not model). Never written, never committed; reported on every
+  /// run until it is fixed by hand, since a listed service is a declared intent to have the
+  /// file managed.
   pub problems: Vec<String>,
   /// The package step ran `uv sync`; a committing run resyncs after the replay when the
   /// lock it synced was HEAD's copy rather than the user's (see `packages::resync_after_replay`).
