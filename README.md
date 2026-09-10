@@ -7,7 +7,7 @@ plus the `devkit` CLI (Rust) they call.
 
 | poe task                                                          | Backing                        | What it does                                                                                                                                                                                                                                                  |
 | ----------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `poe setup-project`                                               | `devkit setup-project`         | Standardize a project's config from the shipped templates (idempotent).                                                                                                                                                                                       |
+| `poe setup-project`                                               | `devkit setup-project`         | Standardize a project's config from the `devkit-templates` package in its environment (idempotent).                                                                                                                                                           |
 | `poe lock [-U] [--all-extras] [-p PKG] [--dry-run] [--no-commit]` | `devkit lock`                  | Bump the `aeth-devkit` pin to the latest stable release on its index, `uv sync`, commit `uv.lock`.                                                                                                                                                            |
 | `poe release [-f] [--dry-run] [bump …] ["notes"]`                 | `devkit release`               | Bump version, commit, tag, push, create the GitHub release, then wait for the release workflow to build and publish; rolls back on failure.                                                                                                                                                                             |
 | `poe docker-pin [-V VER] [--dry-run] [--no-commit] [--no-push]`   | `devkit docker-pin`            | Pin the compose file's `GIT_TAG` / `PACKAGE_VERSION` to a released version of the project, commit, and push.                                                                                                                                                  |
@@ -34,14 +34,16 @@ only once they migrate to Rust. -->
 
 ### `devkit setup-project`
 
-Flags: `--root`, `--templates-dir` (or `DEVKIT_TEMPLATES`), `--dry-run`, `--check`
-(dry-run that exits 1 on drift), `--no-commit`, `-y`/`--yes`. Prompts only before
-replacing a Docker file (see **Docker** below); otherwise no prompts. `-y` accepts every
-proposal without asking. The prompts read stdin, a terminal or a pipe alike; if the input
-ends before a question is answered the run is cancelled (exit 2, the changes rolled back
-when committing), never finished on defaults. A run with no stdin at all (a closed handle
-or the null device) is refused up front unless nothing will be asked: `-y`, `--dry-run`
-or `--check`. Idempotent — a second run is a byte-for-byte no-op.
+Flags: `--root`, `--templates-dir` (or `DEVKIT_TEMPLATES`, or `[tool.devkit].templates-dir`;
+a working tree rendered instead of the environment's `devkit-templates` package),
+`--dry-run`, `--no-commit`, `-y`/`--yes`. Prompts only before replacing a Docker file (see
+**Docker** below); otherwise no prompts. `-y` accepts every proposal without asking. The
+prompts read stdin, a terminal or a pipe alike; if the input ends before a question is
+answered the run is cancelled (exit 2, the changes rolled back when committing), never
+finished on defaults. A run with no stdin at all (a closed handle or the null device) is
+refused up front unless nothing will be asked: `-y` or `--dry-run`. A dry run exits 0; a
+`problem:` line is a finding for a hand edit, not an exit code. Idempotent — a second run
+is a byte-for-byte no-op.
 
 - **Project discovery** - Detects the package name and layout (`src/` vs `python/`), Rust
   (`Cargo.toml` enables the Rust overlays), Docker (`[tool.docker].services` non-empty
@@ -50,6 +52,14 @@ or `--check`. Idempotent — a second run is a byte-for-byte no-op.
   `[tool.docker].silence_unlisted_services_warning = true`, which nothing else reads), and the declared
   dependencies (drives `if-dep` gating). A committing run refuses a `services` value that
   differs from HEAD's: commit it, then rerun.
+- **Templates** - Read from the project's environment: the `devkit_templates` package
+  (`AetherBreaker/devkit-templates`). A project that lacks it gets `devkit-templates` added
+  to its dev group with its index source, locked under the running devkit and synced before
+  anything renders; `--dry-run` on such a project is an error saying so. Templates are
+  versioned by `uv.lock` like the other devkit packages. `--templates-dir`,
+  `DEVKIT_TEMPLATES` and `[tool.devkit].templates-dir` (in that order of precedence, each
+  an existing directory) render a working tree instead, with no bootstrap; the templates
+  repository renders its own tree that way.
 - **pyproject merge** - Comment-preserving deep merge of the template into
   `pyproject.toml` — scalars replace, arrays union, dependency arrays match by normalized
   package name so pins upgrade in place, `if-dep` / `if-docker` / `if-docker-services`
@@ -74,7 +84,7 @@ or `--check`. Idempotent — a second run is a byte-for-byte no-op.
   `.github/workflows/claude.yml`.
 - **Release workflow** - `.github/workflows/release.yml` is rendered from the pure-Python
   or the maturin-matrix template (`Cargo.toml` selects the latter) and is devkit-owned:
-  any drift is replaced, reported, and counts for `--check`. The publish step targets the
+  any drift is replaced and reported. The publish step targets the
   sole `[[tool.uv.index]]` with a `publish-url` through repository secrets
   `UV_INDEX_<KEY>_USERNAME` / `_PASSWORD`, or PyPI via trusted publishing when no index
   publishes; several publish indexes are a config error. Before attaching or publishing,
@@ -110,9 +120,10 @@ or `--check`. Idempotent — a second run is a byte-for-byte no-op.
   touched, and a shape the engine does not model (a flow-style `volumes: [...]` /
   `environment: {...}`, a list-form `build.args`) is judged on its text and reported as a
   `problem:` rather than edited, so the file is never left unparseable; so is an inline
-  `services:` or an inline service block, which the step leaves whole. `--check` exits 1 on
-  any `problem:`, since a listed service declares the file managed. A compose file with no
-  top-level `services:` key is a `warning:` on stderr instead and does not fail `--check`:
+  `services:` or an inline service block, which the step leaves whole. A `problem:` is
+  reported on every run until the file is fixed by hand, since a listed service declares
+  the file managed. A compose file with no top-level `services:` key is a `warning:` on
+  stderr instead, not a problem:
   an `include:`-only aggregator is a supported Compose layout whose services live in the
   included files, and writing one here would conflict with them rather than override. The
   Dockerfile is rendered from the installed `devkit-container` package; the package step
@@ -120,7 +131,7 @@ or `--check`. Idempotent — a second run is a byte-for-byte no-op.
   yet notes that instead of rendering.
   `-y` accepts everything up front, an add included; a typed `replace all` covers the
   shown diffs that follow, and adding a listed-but-absent service is still asked.
-  `--dry-run`/`--check` print everything and count Docker drift. Inside a VS Code
+  `--dry-run` prints everything, Docker drift included. Inside a VS Code
   terminal the diff opens in the editor instead (see **VS Code extension**).
   `docker/entrypoint.sh` and `docker/scripts/` are reported as safe to delete, never
   removed.
@@ -305,8 +316,8 @@ to the marketplace: each build is a GitHub release there (`vN`, asset
 is `vscode-extension-v1` on this repository and stays published.
 
 When `devkit setup-project` runs in a VS Code terminal (`TERM_PROGRAM=vscode`; force with
-`--vscode`, disable with `--no-vscode`) with stdin a terminal and neither `--check` nor
-`-y`, it installs the newest compatible extension if none is present (a one-off
+`--vscode`, disable with `--no-vscode`) with stdin a terminal and not `-y`, it
+installs the newest compatible extension if none is present (a one-off
 `code --install-extension`; an upgrade over a running one exits 2 asking you to reload the
 window and run again), adds itself to `enable-proposed-api` in `~/.vscode/argv.json`
 (restart VS Code once; this enables the floating Replace/Keep button), and then opens
@@ -350,6 +361,18 @@ describe the hooks and the completion engine. `devkit hook` and `devkit complete
 in 13.0.0: a project whose venv takes that devkit before `setup-project` has rewritten its
 hook lines gets a usage error from every hook until `poe setup-project` runs.
 
+### `devkit-templates`
+
+The templates `setup-project` renders (`pyproject.toml`, the VS Code files, the ignore
+files, `.env`, the compose scaffold, the workflows, `AGENTS.md`, the Claude settings,
+`.mcp.json`) live in `AetherBreaker/devkit-templates`, a pure-Python `devkit_templates`
+wheel on SFTPyPI whose only content is `templates/`. `setup-project` installs it into every
+project (its first run on a project adds it to the dev group, locks it under the running
+devkit and syncs) and reads it from the environment (see **Templates** above), so a
+project's templates version is its `uv.lock`. aeth-devkit ships none since 14.0.0. The
+package's `[project].dependencies` floor on `aeth-devkit` is its compatibility contract,
+raised by hand; `poe lock` there moves only the dev-group pin.
+
 ## Using it in a project
 
 In `pyproject.toml`:
@@ -388,4 +411,7 @@ uv run maturin develop     # installs the devkit binary into .venv
 Layout: `crates/aeth-devkit-core` (shared git/process/pyproject/index helpers),
 `crates/aeth-devkit-setup` and `crates/aeth-devkit-lock` (one command each, library +
 dev binary), `crates/aeth-devkit` (the shipped `devkit` dispatcher),
-`python/aeth_devkit` (poe tasks, remaining shell scripts, templates).
+`python/aeth_devkit` (poe tasks, remaining shell scripts). The setup crate's tests render
+the snapshot under `crates/aeth-devkit-setup/tests/fixtures/templates`; to render a
+templates checkout instead, pass `--templates-dir` or set `DEVKIT_TEMPLATES`. CI's `render`
+job dry-runs the newest released templates through the working-tree binary.

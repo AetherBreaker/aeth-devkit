@@ -86,3 +86,44 @@ jobs:
           uv run devkit --version
           uv run devkit setup-project --help
           uv run poe lock --dry-run
+
+  # The engine against the released templates: a change here that breaks a template shape
+  # is caught before a release. A dry run, so no `aeth-devkit==<this version>` is resolved
+  # (a plain run's package step would, and would fail on the commit that bumps the version
+  # before its wheel exists).
+  render:
+    name: Render the released templates through this tree's devkit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+
+      - name: Dry-run scratch projects
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build -p aeth-devkit
+          # Only the templates package: its aeth-devkit floor is a runtime dependency, and
+          # this job's devkit is the one just built.
+          uv venv "$RUNNER_TEMP/tpl" --python 3.14
+          uv pip install --python "$RUNNER_TEMP/tpl/bin/python" --no-deps --index https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple devkit-templates
+          tpl="$("$RUNNER_TEMP/tpl/bin/python" -c 'import devkit_templates, os; print(os.path.join(os.path.dirname(devkit_templates.__file__), "templates"))')"
+          for kind in python docker; do
+            root="$RUNNER_TEMP/scratch-$kind"
+            mkdir -p "$root/src/scratch_app" && : > "$root/src/scratch_app/__init__.py"
+            {
+              printf '[project]\nname = "scratch-app"\nversion = "0.1.0"\nrequires-python = ">=3.14"\ndependencies = []\n\n'
+              if [ "$kind" = docker ]; then printf '[tool.docker]\nservices = ["scratch-app"]\n\n'; fi
+              # publish-url: the release workflow's publish block renders only with one.
+              printf '[[tool.uv.index]]\nname = "SFTPyPI"\nurl = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple"\npublish-url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/"\nexplicit = true\n'
+            } > "$root/pyproject.toml"
+            target/debug/devkit setup-project --root "$root" --templates-dir "$tpl" --dry-run --no-vscode | tee "$root/out.txt"
+            grep -q '^Would change:' "$root/out.txt"
+          done

@@ -13,6 +13,7 @@ gh repo clone AetherBreaker/devkit-container
 gh repo clone AetherBreaker/devkit-vscode
 gh repo clone AetherBreaker/devkit-claude-hooks
 gh repo clone AetherBreaker/devkit-poe-complete
+gh repo clone AetherBreaker/devkit-templates
 ```
 
 ## Publishing credentials
@@ -25,7 +26,7 @@ every checkout is the deliberate convention, and its repository secrets are pre-
 the same way, unused so far.
 
 ```bash
-for r in devkit-container devkit-vscode devkit-claude-hooks devkit-poe-complete; do cp aeth-devkit/.env "$r/.env"; done
+for r in devkit-container devkit-vscode devkit-claude-hooks devkit-poe-complete devkit-templates; do cp aeth-devkit/.env "$r/.env"; done
 ```
 
 ## Bring each repository up
@@ -34,10 +35,15 @@ for r in devkit-container devkit-vscode devkit-claude-hooks devkit-poe-complete;
 `-y` to accept every change (a run with no stdin at all is refused without it).
 
 ```bash
-for r in aeth-devkit devkit-container devkit-vscode devkit-claude-hooks devkit-poe-complete; do
+for r in aeth-devkit devkit-container devkit-vscode devkit-claude-hooks devkit-poe-complete devkit-templates; do
   (cd "$r" && uv sync && uv run poe setup-project)
 done
 ```
+
+`devkit-templates` renders its own tree (`[tool.devkit].templates-dir`), so it needs no
+`devkit_templates` from the index in its environment; its `[project].dependencies` floor on
+`aeth-devkit` is the compatibility contract and is raised by hand, while `poe lock` moves
+only its dev-group pin.
 
 `devkit-vscode` also needs `npm ci`; its `poe setup-project` needs `aeth-devkit>=12.1.0` in its
 venv, which `uv sync` provides. `devkit-claude-hooks` and `devkit-poe-complete` build their
