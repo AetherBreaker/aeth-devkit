@@ -11,11 +11,11 @@ use aeth_devkit_setup::docker::{Deps, Mode};
 use aeth_devkit_setup::packages::{Installed, StubVenv};
 
 fn fixtures() -> PathBuf {
-  Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("docker")
+  Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures")
 }
 
 fn templates() -> PathBuf {
-  Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python/aeth_devkit/templates")
+  fixtures().join("templates")
 }
 
 fn write(root: &Path, rel: &str, content: &str) {
@@ -72,7 +72,7 @@ fn package_dirs() -> StubVenv {
     map.insert(
       name.to_string(),
       Installed {
-        dir: fixtures(),
+        dir: fixtures().join("docker"),
         version: version.into(),
       },
     );
@@ -268,7 +268,7 @@ fn imap_fixture_with_injected_drift_gets_exactly_the_standard_edits() {
     "https://github.com/AetherBreaker/IMAPReportCollector.git",
   );
   let root = dir.path();
-  let original = fs::read_to_string(fixtures().join("compose-imap.yaml")).unwrap();
+  let original = fs::read_to_string(fixtures().join("docker").join("compose-imap.yaml")).unwrap();
   let drifted = original
     .replace("      dockerfile: docker/Dockerfile\n", "      dockerfile: Dockerfile\n")
     .replace("      interval: 30s\n", "")
@@ -313,7 +313,7 @@ fn aeth_ext_fixture_is_already_compliant() {
   write(
     root,
     "docker/compose.yaml",
-    &fs::read_to_string(fixtures().join("compose-aeth-ext.yaml")).unwrap(),
+    &fs::read_to_string(fixtures().join("docker").join("compose-aeth-ext.yaml")).unwrap(),
   );
   let (changes, _, _) = run(root, Mode::ReplaceAll, &[], false);
   let compose_changed = changes.files.iter().any(|f| f.path.ends_with("compose.yaml"));

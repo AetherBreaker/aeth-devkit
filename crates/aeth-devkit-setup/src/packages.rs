@@ -509,7 +509,7 @@ source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+s
     };
     let found = probe(&python, &DEVKIT).expect("aeth-devkit is installed in the workspace venv");
     assert!(parse_lenient(&found.version).is_some(), "{:?}", found.version);
-    assert!(found.dir.join("templates").is_dir(), "{}", found.dir.display());
+    assert!(found.dir.join("__init__.py").is_file(), "{}", found.dir.display());
     assert_eq!(
       probe(
         &python,

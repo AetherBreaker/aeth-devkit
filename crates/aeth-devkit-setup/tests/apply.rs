@@ -1,4 +1,6 @@
-//! End-to-end: apply the real templates to fixture projects, check outcomes and idempotency.
+//! End-to-end: apply the template snapshot under `tests/fixtures/templates` to fixture
+//! projects, check outcomes and idempotency. The templates live in devkit-templates; the
+//! engine's tests are hermetic.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,12 +10,7 @@ fn fixtures() -> PathBuf {
 }
 
 fn templates() -> PathBuf {
-  Path::new(env!("CARGO_MANIFEST_DIR"))
-    .join("..")
-    .join("..")
-    .join("python")
-    .join("aeth_devkit")
-    .join("templates")
+  fixtures().join("templates")
 }
 
 fn write(root: &Path, rel: &str, content: &str) {
