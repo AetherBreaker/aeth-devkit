@@ -39,9 +39,9 @@ the repository they live in, the evidence, and what removal would cost.
   warning every run), one gate would do.
 - **`packages::DEVKIT`** (`crates/aeth-devkit-setup/src/packages.rs`): named devkit's own
   package for the beside-the-binary templates lookup, which went with the templates
-  (14.0.0). Only the `probe` unit test names it now, as a package known to be in the
-  workspace venv. Removal cost: that test probes another package (any of the three
-  satellites), or goes.
+  (14.0.0). Two unit tests name it now (`probe`, and the stub venv's), as a package known
+  to be in the workspace venv. Removal cost: those tests use another package (any of the
+  three satellites), or go.
 - **`Changes::problems` as a list distinct from `warnings`** (`crates/aeth-devkit-setup/src/changes.rs`):
   the split existed for `--check`'s exit code (1 on a problem, 0 on a warning), which went
   in 14.0.0. What is left is the wording: a `problem:` still says "needs a hand edit" and
