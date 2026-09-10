@@ -16,6 +16,8 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "devkit-claude-hooks" },
+    { name = "devkit-poe-complete" },
     { name = "maturin" },
     { name = "poethepoet" },
     { name = "poethepoet-tasks" },
@@ -32,6 +34,8 @@ requires-dist = [{ name = "poethepoet", specifier = ">=0.46.0" }]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "devkit-claude-hooks", specifier = ">=1.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "devkit-poe-complete", specifier = ">=1.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "maturin", specifier = ">=1.7,<2" },
     { name = "poethepoet", specifier = ">=0.46.0" },
     { name = "poethepoet-tasks", specifier = ">=0.3.0" },
@@ -214,6 +218,26 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/8a/4d/dc3d53eadf155916e183bf5dfacbfc4aa5bfb7f13b7da11c01caa7a05cbc/coverage-7.16.0-cp315-cp315t-win_amd64.whl", hash = "sha256:c5612cc20ca76abc883e50269af47c1494b42958bb63dbb9aa79729a1ab5f7d3", size = 226562, upload-time = "2026-08-28T21:54:30.42Z" },
     { url = "https://files.pythonhosted.org/packages/2f/00/ac9da1a60a4e84c3ad0f7db4723fd327154a8f9add210c0dcd2db3ec5156/coverage-7.16.0-cp315-cp315t-win_arm64.whl", hash = "sha256:2ddaa9e2af4760a329d80008b7a3b4762fbb0dbcb169199360f9a5179c32f2dc", size = 225872, upload-time = "2026-08-28T21:54:32.806Z" },
     { url = "https://files.pythonhosted.org/packages/b1/5a/234e8fadf85c3cc48cb31c247b9e8e0c7f06ece80f5b29f9b8c241f9da4c/coverage-7.16.0-py3-none-any.whl", hash = "sha256:245f7de6d023a5bba375dbec9f2e0869bfa26ac0cc639bbb7b4c814884000b73", size = 214977, upload-time = "2026-08-28T21:54:35.189Z" },
+]
+
+[[package]]
+name = "devkit-claude-hooks"
+version = "1.0.0"
+source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/5ac/0c3aafb44ca38/devkit_claude_hooks-1.0.0.tar.gz", hash = "sha256:5ac0c3aafb44ca3863f03a6d973a1eaff7eeb67b1e52d752fc07253678fa5545" }
+wheels = [
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/8f2/7cd18130399f5/devkit_claude_hooks-1.0.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8f27cd18130399f5b656c56c1826e702e6b0358ca813c81ae8dc5b67ded51296" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/ed2/7d4343e4c2243/devkit_claude_hooks-1.0.0-py3-none-win_amd64.whl", hash = "sha256:ed27d4343e4c2243e11211fd5ad5eb8b3879b3d96c10d477f7f0712d26007114" },
+]
+
+[[package]]
+name = "devkit-poe-complete"
+version = "1.0.0"
+source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/e24/d25dbddfe8d8c/devkit_poe_complete-1.0.0.tar.gz", hash = "sha256:e24d25dbddfe8d8c6f9678b85526dbcd11c907f4b189963c80eb34dfa7bd950a" }
+wheels = [
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/e4c/c172fef790d5e/devkit_poe_complete-1.0.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e4cc172fef790d5ed8fc1f49f61a8280b213b1ff6ee2bdba6fa55f9115e462c6" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/7c9/a3cfc35ceac21/devkit_poe_complete-1.0.0-py3-none-win_amd64.whl", hash = "sha256:7c9a3cfc35ceac21232b9c0eee7ba72d812974ef1b9ee87f3b8acdd6b9847b89" },
 ]
 
 [[package]]
