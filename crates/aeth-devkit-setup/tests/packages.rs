@@ -11,13 +11,25 @@ use aeth_devkit_core::prompt::ScriptedPrompt;
 use aeth_devkit_setup::docker::{Deps as DockerDeps, Mode};
 use aeth_devkit_setup::packages::{self, Installed, RUNNING_DEVKIT, StubVenv};
 
+fn fixtures_root() -> PathBuf {
+  Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures")
+}
+
 fn fixtures() -> PathBuf {
-  Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("docker")
+  fixtures_root().join("docker")
 }
 
 fn lock_with(container: &str) -> String {
   format!(
     "version = 1\n\n[[package]]\nname = \"aeth-devkit\"\nversion = \"{RUNNING_DEVKIT}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-claude-hooks\"\nversion = \"1.0.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-poe-complete\"\nversion = \"1.0.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-container\"\nversion = \"{container}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n"
+  )
+}
+
+/// `lock_with` plus the templates package, as the bootstrap's recorded lock leaves it.
+fn lock_with_templates(templates: &str) -> String {
+  format!(
+    "{}\n[[package]]\nname = \"devkit-templates\"\nversion = \"{templates}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n",
+    lock_with("1.4.0")
   )
 }
 
@@ -77,8 +89,46 @@ fn advance(
   };
   let ctx = aeth_devkit_setup::context::ProjectContext::discover(root)?;
   let mut changes = aeth_devkit_setup::changes::Changes::new(dry_run);
-  packages::advance(&ctx, &deps, dry_run, latest, &mut changes)?;
+  packages::advance(&ctx, &deps, dry_run, &packages::active(&ctx), latest, &mut changes)?;
   Ok(changes)
+}
+
+/// `venv(None)` plus the templates package at `version`, its files being the snapshot under
+/// `tests/fixtures/templates` (the package directory is `tests/fixtures`).
+fn venv_with_templates(version: &str) -> StubVenv {
+  let mut v = venv(None);
+  v.0.insert(
+    "devkit_templates".to_string(),
+    Installed {
+      dir: fixtures_root(),
+      version: version.into(),
+    },
+  );
+  v
+}
+
+fn ensure(
+  root: &Path,
+  runner: &RecordingRunner,
+  index: &StubIndexClient,
+  venv: &StubVenv,
+  dry_run: bool,
+) -> anyhow::Result<(PathBuf, aeth_devkit_setup::changes::Changes)> {
+  let prompt = ScriptedPrompt::new(&[]);
+  let deps = aeth_devkit_setup::Deps {
+    docker: DockerDeps {
+      runner,
+      prompt: &prompt,
+      reviewer: None,
+      mode: Mode::Ask,
+    },
+    index,
+    venv,
+  };
+  let ctx = aeth_devkit_setup::context::ProjectContext::discover(root)?;
+  let mut changes = aeth_devkit_setup::changes::Changes::new(dry_run);
+  let dir = packages::ensure_templates(&ctx, &deps, dry_run, &mut changes)?;
+  Ok((dir, changes))
 }
 
 fn latest() -> Vec<String> {
@@ -357,6 +407,9 @@ fn a_project_without_docker_still_gets_the_hooks_and_completion() {
   let dir = project(PLAIN_PYPROJECT, Some(&lock));
   let runner = RecordingRunner::new(0);
   let index = StubIndexClient { versions: vec![] };
+  let ctx = aeth_devkit_setup::context::ProjectContext::discover(dir.path()).unwrap();
+  // The bootstrap's package is not the merge's: `active` never lists it.
+  assert!(packages::active(&ctx).iter().all(|p| p.name != packages::TEMPLATES.name));
   let changes = advance(dir.path(), &runner, &index, &venv(None), &latest(), false).unwrap();
   let calls = runner.calls_for("uv");
   assert_eq!(
@@ -381,4 +434,72 @@ fn a_project_without_docker_still_gets_the_hooks_and_completion() {
     "{py}"
   );
   assert!(changes.warnings.is_empty(), "{:?}", changes.warnings);
+}
+
+#[test]
+fn the_bootstrap_adds_the_bare_requirement_and_source_and_returns_the_venv_templates_dir() {
+  let dir = project(PLAIN_PYPROJECT, Some(&lock_with_templates("1.0.0")));
+  let root = dir.path();
+  let runner = RecordingRunner::new(0);
+  let index = StubIndexClient {
+    versions: vec!["1.0.0".into()],
+  };
+  let (out, changes) = ensure(root, &runner, &index, &venv_with_templates("1.0.0"), false).unwrap();
+  assert_eq!(out, fixtures_root().join("templates"));
+  let py = fs::read_to_string(root.join("pyproject.toml")).unwrap();
+  assert!(py.contains("\"devkit-templates>=1.0.0\""), "{py}");
+  assert!(py.contains("devkit-templates = [{ index = \"SFTPyPI\" }]"), "{py}");
+  let calls = runner.calls_for("uv");
+  assert_eq!(
+    calls[0],
+    vec![
+      "lock".to_string(),
+      "--upgrade-package".into(),
+      "devkit-templates".into(),
+      "--upgrade-package".into(),
+      format!("aeth-devkit=={RUNNING_DEVKIT}"),
+    ],
+    "{calls:?}"
+  );
+  assert_eq!(calls[1], vec!["lock".to_string()], "the re-lock after the floor");
+  assert!(calls.iter().all(|c| c[0] != "sync"), "the stub venv already holds 1.0.0");
+  let pyproject_entries: Vec<_> = changes.files.iter().filter(|f| f.path.ends_with("pyproject.toml")).collect();
+  assert_eq!(pyproject_entries.len(), 1, "{changes:?}");
+  let details = &pyproject_entries[0].details;
+  assert!(details.iter().any(|d| d.contains("added \"devkit-templates\"")), "{details:?}");
+  assert!(details.iter().any(|d| d.contains("pinned devkit-templates>=1.0.0")), "{details:?}");
+}
+
+#[test]
+fn a_dry_run_without_the_templates_package_is_an_error_naming_the_remedy() {
+  let dir = project(PLAIN_PYPROJECT, None);
+  let runner = RecordingRunner::new(0);
+  let index = StubIndexClient { versions: vec![] };
+  let err = ensure(dir.path(), &runner, &index, &venv(None), true).unwrap_err().to_string();
+  assert!(err.contains("a plain run adds it"), "{err}");
+  assert!(runner.calls_for("uv").is_empty());
+  assert!(
+    !fs::read_to_string(dir.path().join("pyproject.toml"))
+      .unwrap()
+      .contains("devkit-templates")
+  );
+  // Listed but not installed: the same refusal (a dry run never syncs).
+  let listed = PLAIN_PYPROJECT.replace("\"devkit-poe-complete\"]", "\"devkit-poe-complete\", \"devkit-templates>=1.0.0\"]");
+  let dir = project(&listed, Some(&lock_with_templates("1.0.0")));
+  let err = ensure(dir.path(), &runner, &index, &venv(None), true).unwrap_err().to_string();
+  assert!(err.contains("a plain run adds it"), "{err}");
+  // Listed and installed: a dry run passes through and reads the venv.
+  let (out, changes) = ensure(dir.path(), &runner, &index, &venv_with_templates("1.0.0"), true).unwrap();
+  assert_eq!(out, fixtures_root().join("templates"));
+  assert!(changes.files.is_empty() && runner.calls_for("uv").is_empty(), "{changes:?}");
+}
+
+#[test]
+fn the_templates_repository_never_bootstraps_itself() {
+  let dir = project(&PLAIN_PYPROJECT.replace("name = \"p\"", "name = \"devkit-templates\""), None);
+  let runner = RecordingRunner::new(0);
+  let index = StubIndexClient { versions: vec![] };
+  let err = ensure(dir.path(), &runner, &index, &venv(None), false).unwrap_err().to_string();
+  assert!(err.contains("templates-dir"), "{err}");
+  assert!(runner.calls_for("uv").is_empty());
 }

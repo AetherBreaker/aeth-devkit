@@ -106,7 +106,7 @@ fn try_run(root: &Path, mode: Mode, answers: &[&str], dry_run: bool) -> (anyhow:
       mode,
     };
     let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
-    aeth_devkit_setup::run_with(&ctx, &templates(), dry_run, &deps(docker, &index, &dirs))
+    aeth_devkit_setup::run_with(&ctx, Some(&templates()), dry_run, &deps(docker, &index, &dirs))
   };
   (changes, prompt, runner)
 }
@@ -156,7 +156,7 @@ fn without_the_container_package_the_dockerfile_is_skipped_with_a_note() {
     mode: Mode::DryRun,
   };
   let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
-  let changes = aeth_devkit_setup::run_with(&ctx, &templates(), true, &deps(docker, &index, &dirs)).unwrap();
+  let changes = aeth_devkit_setup::run_with(&ctx, Some(&templates()), true, &deps(docker, &index, &dirs)).unwrap();
   // A dry run records what it would write, so the file list is the evidence: no Dockerfile,
   // but the rest of the Docker step (the compose file) still ran.
   assert!(
@@ -493,7 +493,7 @@ fn a_crlf_file_keeps_its_line_endings_through_replace_replace_all_and_partial() 
     mode: Mode::Ask,
   };
   let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
-  aeth_devkit_setup::run_with(&ctx, &templates(), false, &deps(docker, &index, &dirs)).unwrap();
+  aeth_devkit_setup::run_with(&ctx, Some(&templates()), false, &deps(docker, &index, &dirs)).unwrap();
   let out = read(root, "docker/Dockerfile");
   assert!(
     out.contains("PYTHONOPTIMIZE=1") && out.ends_with("# trailing\r\n") && all_crlf(&out),
@@ -527,7 +527,7 @@ fn a_partial_answer_from_the_reviewer_writes_the_assembled_text() {
     mode: Mode::Ask,
   };
   let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
-  let changes = aeth_devkit_setup::run_with(&ctx, &templates(), false, &deps(docker, &index, &dirs)).unwrap();
+  let changes = aeth_devkit_setup::run_with(&ctx, Some(&templates()), false, &deps(docker, &index, &dirs)).unwrap();
   let out = read(root, "docker/Dockerfile");
   assert!(
     out.contains("PYTHONOPTIMIZE=1")

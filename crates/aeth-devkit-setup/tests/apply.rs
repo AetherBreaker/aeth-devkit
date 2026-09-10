@@ -26,21 +26,33 @@ fn read(root: &Path, rel: &str) -> String {
 /// `run_with` accepting every proposal, with the Docker step's `gh` tag lookup answered
 /// locally (the fixture lists a service, so a first run would otherwise hit GitHub, and
 /// fail without a token in CI), no index answers, and the fixture copy of the container
-/// package's template standing in for the venv.
+/// package's template standing in for the venv. Renders the snapshot as an override; see
+/// `run_from_venv` for the bootstrap path.
 fn run(root: &Path, dry_run: bool) -> anyhow::Result<aeth_devkit_setup::changes::Changes> {
+  run_via(root, dry_run, Some(&templates()))
+}
+
+/// `run` through the environment: no override, so the run bootstraps `devkit-templates`
+/// (the stub venv holds it at 1.0.0 with the snapshot as its `templates/`).
+fn run_from_venv(root: &Path, dry_run: bool) -> anyhow::Result<aeth_devkit_setup::changes::Changes> {
+  run_via(root, dry_run, None)
+}
+
+fn run_via(root: &Path, dry_run: bool, templates_override: Option<&Path>) -> anyhow::Result<aeth_devkit_setup::changes::Changes> {
   let runner = aeth_devkit_core::process::RecordingRunner::new(0);
   runner.script("gh", &["api"], 0, "v1.1.0\n");
   let index = aeth_devkit_core::index::StubIndexClient { versions: vec![] };
   let mut map = std::collections::HashMap::new();
-  for (name, version) in [
-    ("devkit_container", "1.4.0"),
-    ("devkit_claude_hooks", "1.0.0"),
-    ("devkit_poe_complete", "1.0.0"),
+  for (name, version, dir) in [
+    ("devkit_container", "1.4.0", fixtures().join("docker")),
+    ("devkit_claude_hooks", "1.0.0", fixtures().join("docker")),
+    ("devkit_poe_complete", "1.0.0", fixtures().join("docker")),
+    ("devkit_templates", "1.0.0", fixtures()),
   ] {
     map.insert(
       name.to_string(),
       aeth_devkit_setup::packages::Installed {
-        dir: fixtures().join("docker"),
+        dir,
         version: version.into(),
       },
     );
@@ -61,7 +73,7 @@ fn run(root: &Path, dry_run: bool) -> anyhow::Result<aeth_devkit_setup::changes:
     venv: &venv,
   };
   let ctx = aeth_devkit_setup::context::ProjectContext::discover(root)?;
-  aeth_devkit_setup::run_with(&ctx, &templates(), dry_run, &deps)
+  aeth_devkit_setup::run_with(&ctx, templates_override, dry_run, &deps)
 }
 
 fn make_project() -> tempfile::TempDir {
@@ -83,11 +95,12 @@ fn make_project() -> tempfile::TempDir {
   dir
 }
 
-/// A lock as uv leaves it with every devkit package at the version the stub venv holds, so
-/// the package step's recorded `uv lock` has nothing to change and the sync is skipped.
+/// A lock as uv leaves it with every devkit package (the templates included) at the version
+/// the stub venv holds, so the package step's recorded `uv lock` has nothing to change and
+/// the sync is skipped.
 fn devkit_lock() -> String {
   format!(
-    "version = 1\n\n[[package]]\nname = \"aeth-devkit\"\nversion = \"{}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-claude-hooks\"\nversion = \"1.0.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-poe-complete\"\nversion = \"1.0.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-container\"\nversion = \"1.4.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n",
+    "version = 1\n\n[[package]]\nname = \"aeth-devkit\"\nversion = \"{}\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-claude-hooks\"\nversion = \"1.0.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-poe-complete\"\nversion = \"1.0.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-container\"\nversion = \"1.4.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n\n[[package]]\nname = \"devkit-templates\"\nversion = \"1.0.0\"\nsource = {{ registry = \"https://idx/+simple\" }}\n",
     aeth_devkit_setup::packages::RUNNING_DEVKIT
   )
 }
@@ -1093,7 +1106,7 @@ fn a_committing_run_resyncs_the_venv_to_the_lock_the_user_gets_back() {
     };
     let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
     let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
-    let changes = aeth_devkit_setup::run_with(&ctx, &templates(), false, &deps).unwrap();
+    let changes = aeth_devkit_setup::run_with(&ctx, Some(&templates()), false, &deps).unwrap();
     assert!(changes.venv_synced, "the lock moved, so the run synced");
     let committed = aeth_devkit_setup::git::commit_changes(root, &changes, &mut bases);
     aeth_devkit_setup::packages::resync_after_replay(root, &runner, &bases, &changes);
@@ -1134,4 +1147,94 @@ fn a_project_that_opts_out_keeps_its_own_release_workflow() {
     again.report(root)
   );
   assert_eq!(read(root, ".github/workflows/release.yml"), own);
+}
+
+#[test]
+fn the_venv_path_bootstraps_the_templates_package_and_renders_the_same_files() {
+  let via_venv = make_project();
+  let via_override = make_project();
+  let changes = run_from_venv(via_venv.path(), false).unwrap();
+  let reference = run(via_override.path(), false).unwrap();
+  let py = read(via_venv.path(), "pyproject.toml");
+  assert!(py.contains("\"devkit-templates>=1.0.0\""), "{py}");
+  assert!(py.contains("devkit-templates = [{ index = \"SFTPyPI\" }]"), "{py}");
+  let entries = changes.files.iter().filter(|f| f.path.ends_with("pyproject.toml")).count();
+  assert_eq!(entries, 1, "one pyproject.toml entry, the bootstrap's details merged into it");
+  // Every other rendered file is what the override renders.
+  let rendered: Vec<String> = reference
+    .files
+    .iter()
+    .map(|f| {
+      f.path
+        .strip_prefix(via_override.path())
+        .unwrap()
+        .to_string_lossy()
+        .replace('\\', "/")
+    })
+    .collect();
+  assert!(rendered.len() > 5, "{rendered:?}");
+  // The root is substituted into a few files (`{project_root}`), in either slash form.
+  let normalized = |root: &Path, rel: &str| {
+    let prefix = aeth_devkit_setup::context::strip_verbatim(root.canonicalize().unwrap())
+      .display()
+      .to_string();
+    // Plain, forward-slashed (`.env`) and JSON-escaped (the Claude settings) spellings.
+    let json = prefix.replace('\\', "\\\\");
+    read(root, rel)
+      .replace(&json, "<root>")
+      .replace(&prefix, "<root>")
+      .replace(&prefix.replace('\\', "/"), "<root>")
+  };
+  for rel in rendered.iter().filter(|r| *r != "pyproject.toml") {
+    assert_eq!(normalized(via_venv.path(), rel), normalized(via_override.path(), rel), "{rel}");
+  }
+  // The floor and the source aside, the pyproject is the same too; whitespace squashed,
+  // since a real run has tombi lay the file out at the end and this harness does not.
+  let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+  let reference_py = read(via_override.path(), "pyproject.toml");
+  assert_eq!(
+    squash(&py)
+      .replace("\"devkit-templates>=1.0.0\",", "")
+      .replace(",\"devkit-templates>=1.0.0\"", "")
+      .replace("devkit-templates=[{index=\"SFTPyPI\"}]", ""),
+    squash(&reference_py),
+  );
+  let again = run_from_venv(via_venv.path(), false).unwrap();
+  assert!(again.is_empty(), "idempotent: {}", again.report(via_venv.path()));
+}
+
+#[test]
+fn the_env_override_renders_without_a_venv_and_must_be_a_directory() {
+  let dir = make_project();
+  let root = dir.path();
+  run(root, false).unwrap();
+  fs::remove_file(root.join(".dockerignore")).unwrap();
+  let exe = env!("CARGO_BIN_EXE_devkit-setup");
+  let out = std::process::Command::new(exe)
+    .arg("--root")
+    .arg(root)
+    .args(["--dry-run", "--no-vscode"])
+    .env("DEVKIT_TEMPLATES", templates())
+    .stdin(std::process::Stdio::null())
+    .output()
+    .unwrap();
+  let stdout = String::from_utf8_lossy(&out.stdout);
+  let stderr = String::from_utf8_lossy(&out.stderr);
+  assert_eq!(out.status.code(), Some(0), "{stdout}{stderr}");
+  assert!(stdout.contains("Would change:") && stdout.contains(".dockerignore"), "{stdout}");
+  assert!(!root.join(".dockerignore").exists(), "a dry run writes nothing");
+  let out = std::process::Command::new(exe)
+    .arg("--root")
+    .arg(root)
+    .args(["--dry-run", "--no-vscode"])
+    .env("DEVKIT_TEMPLATES", root.join("pyproject.toml"))
+    .stdin(std::process::Stdio::null())
+    .output()
+    .unwrap();
+  let stderr = String::from_utf8_lossy(&out.stderr);
+  assert_eq!(out.status.code(), Some(2), "{stderr}");
+  assert!(
+    stderr.contains("DEVKIT_TEMPLATES") && stderr.contains("not a directory"),
+    "{stderr}"
+  );
 }

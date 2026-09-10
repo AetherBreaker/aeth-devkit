@@ -428,7 +428,8 @@ fn union_dependencies(existing: &mut Array, template: &Array) -> Vec<String> {
 }
 
 /// Push with the same leading whitespace as the last element so multi-line arrays stay tidy.
-fn push_like_last(arr: &mut Array, mut v: Value) {
+/// Also the templates bootstrap's, which adds to the dev group before any template is read.
+pub(crate) fn push_like_last(arr: &mut Array, mut v: Value) {
   let prefix = arr
     .iter()
     .last()
@@ -489,6 +490,7 @@ mod tests {
       publish_index: None,
       devkit_index: "SFTPyPI".into(),
       release_workflow: true,
+      templates_dir: None,
     }
   }
 
@@ -618,6 +620,7 @@ mod docker_tests {
       publish_index: None,
       devkit_index: "SFTPyPI".into(),
       release_workflow: true,
+      templates_dir: None,
     }
   }
 

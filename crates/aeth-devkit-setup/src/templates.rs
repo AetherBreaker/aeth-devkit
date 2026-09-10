@@ -1,4 +1,5 @@
-//! Locating and loading templates, with placeholder substitution.
+//! Loading templates, with placeholder substitution, and the override that renders a
+//! working tree instead of the environment's package.
 
 use std::path::{Path, PathBuf};
 
@@ -136,39 +137,19 @@ fn hook_bin(root: &Path) -> String {
   "uv run devkit-hook".to_string()
 }
 
-/// Resolve the templates directory: explicit flag, env var, the Python package next to
-/// this executable, or (dev builds) the source tree.
-pub fn locate(explicit: Option<&Path>) -> Result<PathBuf> {
+/// The directory that renders instead of the environment's `devkit_templates`, if any:
+/// `--templates-dir`, else `DEVKIT_TEMPLATES`, else `[tool.devkit].templates-dir` (validated
+/// at discovery). Each is a working tree: a checkout beside the project, the templates
+/// repository itself, or its CI. `None` means the package in the venv, which
+/// `packages::ensure_templates` installs first when the project lacks it.
+pub fn override_dir(explicit: Option<&Path>, ctx: &ProjectContext) -> Result<Option<PathBuf>> {
   if let Some(p) = explicit {
-    return existing_dir(p.to_path_buf(), "--templates-dir");
+    return existing_dir(p.to_path_buf(), "--templates-dir").map(Some);
   }
   if let Ok(p) = std::env::var("DEVKIT_TEMPLATES") {
-    return existing_dir(PathBuf::from(p), "DEVKIT_TEMPLATES");
+    return existing_dir(PathBuf::from(p), "DEVKIT_TEMPLATES").map(Some);
   }
-  // Devkit's own package data lives beside the interpreter this binary was installed with
-  // (the venv's `Scripts/` or `bin/`), else PATH's; a project's packages are looked up in
-  // the project's venv instead (see `packages::SystemVenv`).
-  if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
-    let found = [exe_dir.join("python.exe"), exe_dir.join("python"), PathBuf::from("python")]
-      .iter()
-      .find_map(|py| crate::packages::probe(py, &crate::packages::DEVKIT));
-    if let Some(found) = found {
-      let templates = found.dir.join("templates");
-      if templates.is_dir() {
-        return Ok(templates);
-      }
-    }
-  }
-  let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
-    .join("..")
-    .join("..")
-    .join("python")
-    .join("aeth_devkit")
-    .join("templates");
-  if dev.is_dir() {
-    return Ok(dev);
-  }
-  bail!("could not locate aeth_devkit templates; pass --templates-dir or set DEVKIT_TEMPLATES")
+  Ok(ctx.templates_dir.clone())
 }
 
 fn existing_dir(p: PathBuf, what: &str) -> Result<PathBuf> {
@@ -215,6 +196,7 @@ mod hook_bin_tests {
       publish_index: None,
       devkit_index: "SFTPyPI".into(),
       release_workflow: true,
+      templates_dir: None,
     }
   }
 
@@ -235,6 +217,54 @@ mod hook_bin_tests {
     std::fs::write(bin.join("devkit-hook"), "").unwrap();
     let out = substitute(r#""cmd": "{hook_bin} stop-ruff""#, &ctx(dir.path()), Escape::Json);
     assert_eq!(out, r#""cmd": "\"$CLAUDE_PROJECT_DIR/.venv/bin/devkit-hook\" stop-ruff""#);
+  }
+}
+
+#[cfg(test)]
+mod override_dir_tests {
+  use super::*;
+  use std::collections::HashSet;
+
+  fn ctx(root: &Path, templates_dir: Option<PathBuf>) -> ProjectContext {
+    ProjectContext {
+      root: root.to_path_buf(),
+      package: "proj".into(),
+      dependencies: HashSet::new(),
+      has_docker: false,
+      name: "proj".into(),
+      version: None,
+      origin: None,
+      docker_services: vec![],
+      docker_legacy_keys: vec![],
+      docker_files: false,
+      silence_unlisted_services_warning: false,
+      python_dir: "src".into(),
+      has_rust: false,
+      publish_index: None,
+      devkit_index: "SFTPyPI".into(),
+      release_workflow: true,
+      templates_dir,
+    }
+  }
+
+  #[test]
+  fn the_flag_wins_over_the_pyproject_setting_and_must_be_a_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a");
+    let b = dir.path().join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    assert_eq!(override_dir(Some(&b), &ctx(dir.path(), Some(a.clone()))).unwrap(), Some(b));
+    // The env branch sits between the two and is the process environment, so it is covered
+    // at binary level (tests/apply.rs), where each run has its own; a unit test setting it
+    // would race the rest of this binary. Asserted only when nothing outside set it.
+    if std::env::var_os("DEVKIT_TEMPLATES").is_none() {
+      assert_eq!(override_dir(None, &ctx(dir.path(), Some(a.clone()))).unwrap(), Some(a));
+      assert_eq!(override_dir(None, &ctx(dir.path(), None)).unwrap(), None);
+    }
+    let missing = dir.path().join("missing");
+    let err = override_dir(Some(&missing), &ctx(dir.path(), None)).unwrap_err().to_string();
+    assert!(err.contains("--templates-dir") && err.contains("missing"), "{err}");
   }
 }
 
@@ -261,6 +291,7 @@ mod publish_index_tests {
       publish_index: publish_index.map(str::to_string),
       devkit_index: "SFTPyPI".into(),
       release_workflow: true,
+      templates_dir: None,
     }
   }
 
@@ -308,6 +339,7 @@ mod docker_placeholder_tests {
       publish_index: None,
       devkit_index: "SFTPyPI".into(),
       release_workflow: true,
+      templates_dir: None,
       name: "proj".into(),
       version: Some("1.2.3".into()),
       origin: origin.map(str::to_string),
