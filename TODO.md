@@ -5,6 +5,10 @@ design exists. Check items off in place; delete them once released.
 
 ## setup-project
 
+- [ ] `template.env` writes `PYTHONPYCACHEPREFIX` unquoted; the value has spaces and
+      backslashes, which poe's envfile loader accepts but uv's `--env-file` parser
+      rejects (`Failed to parse environment file .env at position 4`, the rest of the
+      file still loads). Quote the value so both readers agree.
 - [ ] Completion shell detection follows the launching shell's `PATH`: from PowerShell,
       Git Bash's `bash.exe` (`Gitin`, not on `PATH`) is not seen, so bash completion is
       only installed from a Git Bash run, silently. Probe Git's install directory too, or say

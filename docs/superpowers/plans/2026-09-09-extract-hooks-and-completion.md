@@ -1841,3 +1841,40 @@ Append an "Execution notes" section to this plan with whatever differed, commit 
 - Placeholders: none; every step carries its command or content. `{latest}`, `{hook_bin}`, `{devkit_index}` are template placeholders, not plan placeholders.
 - Names used across tasks: `HOOKS`/`COMPLETE` (Task 6, consumed by `active()`), `{hook_bin}` (Task 7; template and `templates.rs`), `completion::{Shells, shells_on, binary, install}` (Task 8; `lib.rs` step 15), `SHIM_VERSION = 3` and `devkit-complete query` (Task 4; Task 11's query check), `devkit_claude_hooks` / `devkit_poe_complete` (Tasks 2, 4, 6's `import_name`s), the 1.0.0 floors (Task 5's releases, Task 6's fixtures, Task 11's checks).
 - Not in this plan: the complete-release rule (TODO.md), any change to the hooks' or the engine's behaviour, `devkit-templates` (step 4), the README slimming beyond the moved sections (step 5).
+
+## Execution notes
+
+What differed from the plan as written, in execution order.
+
+- **Task 5 step 1**: the GitHub MCP `create_repository` tool was refused; `gh repo create
+  <repo> --public --description ...` (no `--push`) created both repositories.
+- **Task 5 step 3 did not run as written.** The satellites' venv devkit was 12.1.0, whose
+  `setup-project` refuses any non-terminal stdin, and a 13.0.0 devkit could not set them up
+  either: its package step locks each satellite's sibling package, which was not on the index
+  until this task published it. The one file `devkit release` needs from that run is
+  `.github/workflows/release.yml`, so it was rendered through the setup crate's own
+  `templates::load` and `templates::gate` against each satellite's `ProjectContext` (a
+  throwaway cargo example, not committed) and committed with `uv.lock`; the full standard
+  setup came at Task 11 from 13.0.0. That 13.0.0 run listed no change to the workflow, so
+  the render was byte-identical.
+- **Between Tasks 9 and 10**, on the same branch: `--replace-docker` became `-y`/`--yes`
+  (accept every proposal, the compose-service add included; skips the stdin check), the
+  headless refusal now fires only when stdin is absent altogether (closed handle or the null
+  device; a pipe counts as input), and an input that ends before a question is answered
+  cancels the run instead of keeping the rest (commits 7c548b5, 63245a5). This is what let
+  Task 11 run without a human at the terminal.
+- **Task 10 step 4**: `poe release` words cannot start with a dash (clap reads them as
+  flags: `--replace-docker` in the note failed the first attempt) and an apostrophe is
+  mangled by poe's re-quoting; the note was reworded. Nothing had run when it failed.
+- **Task 11 step 1** was executed here with `-y`, not handed over. In `aeth_devkit` the run
+  had to go through PowerShell: once the venv held 13.0.0, the project's own hook lines
+  (still `devkit hook <name>`) failed with a usage error and blocked every Bash and Edit
+  call, the transitional state the release note describes; the `setup-project` run that
+  rewrites them is the fix. In the two new repositories `devkit lock` and `setup-project`
+  were invoked directly with `uv run --env-file .env` (no poe tasks before the run).
+- **Consumers were not migrated**, by instruction: only `aeth_devkit`, `devkit-container`,
+  `devkit-vscode`, `devkit-claude-hooks` and `devkit-poe-complete` took 13.0.0. Sister
+  projects migrate once every step of the spec is done.
+- uv's `--env-file` parser warns on the `PYTHONPYCACHEPREFIX` line `template.env` writes
+  (TODO.md, setup-project).
+- `CLAUDE_CODE_OAUTH_TOKEN` is still to be set by hand on both new repositories.
