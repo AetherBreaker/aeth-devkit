@@ -1171,16 +1171,12 @@ fn the_venv_path_bootstraps_the_templates_package_and_renders_the_same_files() {
   let entries = changes.files.iter().filter(|f| f.path.ends_with("pyproject.toml")).count();
   assert_eq!(entries, 1, "one pyproject.toml entry, the bootstrap's details merged into it");
   // Every other rendered file is what the override renders.
+  // The records carry the discovered root (canonical: the runner's TEMP is an 8.3 name).
+  let reference_root = aeth_devkit_setup::context::strip_verbatim(via_override.path().canonicalize().unwrap());
   let rendered: Vec<String> = reference
     .files
     .iter()
-    .map(|f| {
-      f.path
-        .strip_prefix(via_override.path())
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "/")
-    })
+    .map(|f| f.path.strip_prefix(&reference_root).unwrap().to_string_lossy().replace('\\', "/"))
     .collect();
   assert!(rendered.len() > 5, "{rendered:?}");
   // The root is substituted into a few files (`{project_root}`), in either slash form.
