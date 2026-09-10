@@ -1,4 +1,4 @@
-name: CI
+name: "Verify: Rust checks, Python tests, wheel, template render"
 
 on:
   push:
@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   rust:
-    name: Rust (${{ matrix.os }})
+    name: "Rust: fmt, clippy, tests (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -26,13 +26,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Format
+      - name: cargo fmt --all --check
         run: cargo fmt --all --check
 
-      - name: Clippy
+      - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test
+      - name: cargo test --workspace
         run: cargo test --workspace
 
   # The Rust job deliberately has no Python environment, so crates/aeth-devkit/build.rs cannot
@@ -40,7 +40,7 @@ jobs:
   # This job is what actually exercises generation, on both platforms: Linux covers
   # find_python's bin/python branch and POSIX script paths, which nothing else touches.
   tests:
-    name: Python tests (${{ matrix.os }})
+    name: "Python: pytest and baked task table up to date (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -57,7 +57,7 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Test
+      - name: uv sync, uv run pytest
         run: |
           uv sync
           uv run pytest
@@ -66,7 +66,7 @@ jobs:
         run: git diff --exit-code -- python/aeth_devkit/_tasks_generated.py
 
   wheel:
-    name: Wheel build
+    name: "Wheel: maturin build and devkit CLI smoke (windows-latest)"
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,7 +79,7 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Build wheel and run the CLI
+      - name: maturin develop, then devkit --version, setup-project --help, poe lock --dry-run
         run: |
           uv sync
           uv run maturin develop
@@ -92,7 +92,7 @@ jobs:
   # (a plain run's package step would, and would fail on the commit that bumps the version
   # before its wheel exists).
   render:
-    name: Render the released templates through this tree's devkit
+    name: "Templates: dry-run the released templates through this tree's devkit"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -105,7 +105,7 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Dry-run scratch projects
+      - name: setup-project --dry-run into python, rust and docker scratch projects; each must report a change
         shell: bash
         run: |
           set -euo pipefail
