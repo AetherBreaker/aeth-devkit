@@ -982,7 +982,7 @@ Expected: `Released aeth-devkit 14.0.0`, the workflow green, the local venv at `
 
 ### Task 10: The six devkit repositories take 14.0.0
 
-- [ ] **Step 1: The five that carry `devkit_templates`**
+- [x] **Step 1: The five that carry `devkit_templates`**
 
 In order, `aeth_devkit` first (its own pyproject gains `devkit-templates` through its bootstrap, spec 4.5). `poe lock` moves the `aeth-devkit` pin to 14.0.0 (`devkit-vscode`, `devkit-claude-hooks` and `devkit-poe-complete` have poe tasks since step 3); `poe setup-project -y` bootstraps the templates package, then renders:
 
@@ -994,7 +994,7 @@ done
 
 Expected per repo: an "Update uv.lock" commit, then a "Standardize project configuration with devkit" commit whose `pyproject.toml` adds `"devkit-templates"` (then pinned `>=1.0.0`) and `devkit-templates = [{ index = "SFTPyPI" }]`, whose `uv.lock` locks `devkit-templates 1.0.0`, and whose report lists `pyproject.toml` once. `.claude/settings.local.json` keeps its two `PreToolUse` entries in the four satellites: the hooks merge adds and updates, never removes (b90d71a took them out of the template; taking them out of projects is the later hook rework's job, not this plan's).
 
-- [ ] **Step 2: `devkit-templates` itself, by the other route**
+- [x] **Step 2: `devkit-templates` itself, by the other route**
 
 Its environment must hold 14.0.0 before `[tool.devkit].templates-dir` can be read (13.0.0 refuses the key), and `poe lock` on 13.0.0 would move the runtime floor (Task 7 lands the preference in 14.0.0), so the lock moves by hand first:
 
@@ -1025,7 +1025,7 @@ grep -n 'aeth-devkit' pyproject.toml
 
 Expected: `devkit 14.0.0`; the run renders from the tree with no bootstrap and adds nothing named `devkit-templates`; `poe lock` (14.0.0) reports the dev-group pin at 14.0.0 and `[project].dependencies` still says `aeth-devkit>=13.0.0`.
 
-- [ ] **Step 3: Verify, per repository**
+- [x] **Step 3: Verify, per repository**
 
 ```bash
 cd "/d/SFT Software Projects/SFT Workspace/<repo>"
@@ -1037,7 +1037,7 @@ env -u VIRTUAL_ENV uv run devkit setup-project --check 2>&1 | tail -1
 
 Expected: `devkit 14.0.0`; the floor and the source in every repo but `devkit-templates` (which has only `templates-dir`); `Nothing to do — project already matches the templates.`; `error: unexpected argument '--check' found`. Then push every repo and confirm CI green (the templates repo's render CI now renders through 14.0.0 in its `newest` entry and 13.0.0 in its `floor` entry — both must pass, which is the compatibility guard working).
 
-- [ ] **Step 4: Record**
+- [x] **Step 4: Record**
 
 Append an "Execution notes" section to this plan with whatever differed; commit it on `aeth_devkit` `main` and push. Add anything found along the way to `REMOVAL-CANDIDATES.md`. Remind the user that `CLAUDE_CODE_OAUTH_TOKEN` needs setting by hand on `devkit-templates`. Consumers stay where they are.
 
@@ -1049,3 +1049,66 @@ Append an "Execution notes" section to this plan with whatever differed; commit 
 - **Placeholder scan.** Every code block is complete; the one open contingency (uv_build skipping the dotfile) names its fallback.
 - **Type consistency.** `override_dir` returns `Result<Option<PathBuf>>`; `ensure_templates` returns `Result<PathBuf>`; `run_with(ctx, Option<&Path>, bool, &Deps)`; `advance(ctx, deps, dry_run, &[&DevkitPackage], &[String], &mut Changes)`; `find_requirement_in_groups` returns `Option<Requirement>` like `find_requirement`.
 - **The hard interaction** is the bootstrap's `pyproject.toml`/`uv.lock` edits inside the committing flow. They happen at the same point `advance`'s edits already happen (after `stage_bases`, recorded through `Changes`, merged against HEAD and replayed by `commit_changes`), which is why the bootstrap reuses `advance` rather than locking on its own. Task 9's reviewers are aimed at it.
+
+## Execution notes
+
+What differed from the plan as written, in execution order. Executed inline with a fresh
+reviewer after every task, two whole-branch reviews before the merge and one scoped
+re-review of the fixes.
+
+- **Task 1** as written; one stray branch (`feat/release-watch-repaint`) and 20 re-pointed
+  tags deleted before the push.
+- **Task 2**: the wheel lists 28 entries under `templates/`, the 22 files plus six directory
+  entries. The Task 2 review found that the scratch index had no `publish-url`, so the
+  release workflows' `if-publish-index` block (the only lines carrying `{publish_index}` and
+  `{publish_index_key}`) was gated out of every render and never scanned; the scratch index
+  carries one now, in both CIs. The `template.env` TODO named the wrong cause: the value is
+  quoted, and uv's parser trips on the backslashes of a Windows `{project_root}` inside the
+  quotes. The README no longer states `[tool.devkit].templates-dir` in the present tense.
+- **Task 3**: `sleep` is unavailable in this tool; the run was polled. The 13.0.0 run left
+  `uv.lock` untracked though its report said `uv.lock: updated` (the committing flow treats
+  an untracked-but-present committable file as user state; a TODO entry records it); the
+  lock was committed by hand. The step 6 resolve check needs `aeth-devkit` as a direct
+  dependency too: a source on an `explicit` index covers direct dependencies only, so the
+  transitive `aeth-devkit>=13.0.0` was "not found in the package registry" until listed.
+  The README's **Templates** bullet names that precondition.
+- **Review checkpoint A**: the floor claim (`poe lock` leaves it alone) is scoped to
+  14.0.0 in the README and the pyproject comment; `uv_build>=0.11,<0.13`, since the release
+  runner's uv is 0.12 and warned; `.env` added to the README's file list. The
+  `[tool.pytest.ini_options].testpaths` nit was left (template-owned).
+- **Task 5**: `toml_merge::push_like_last` is `pub(crate)` and used by the bootstrap, so the
+  dev array keeps its multi-line shape. The end-to-end test compares the venv path's render
+  with the override's after normalizing the project root in its three spellings (plain,
+  forward-slashed, JSON-escaped); the Windows runner's `TEMP` is an 8.3 name, so the
+  comparison strips the canonical root. The Task 5 review moved the override resolution
+  before the VS Code prepare step (a wrong `--templates-dir` surfaced only on a second run
+  after a reload) and fixed two help strings still saying "shipped with aeth-devkit".
+- **Task 7 ran before Task 6**, so the Task 5 reviewer's files stayed still while it read.
+- **Task 8**: the render job installs the templates package with `--no-deps` (its
+  `aeth-devkit` floor is a runtime dependency; the job's devkit is the one just built), its
+  scratch index carries a `publish-url`, and it renders a Rust layout too. TODO gained the
+  untracked-lock engine edge; the vendored-gitignore-refresh entry moved to the templates
+  repository's TODO.
+- **Task 9**: both whole-branch reviews said merge after fixes. Fixed (85bf1dc on `main`
+  after the rebase): the stale-lock check is shared (`refuse_stale_lock`) and the bootstrap
+  asks it before writing, so a non-committing run on a stale lock stops with the remedy
+  still possible; `[tool.devkit].templates-dir` existence is checked in `override_dir`, not
+  at discovery, so `docker-pin` never fails on a checkout absent from a machine; the
+  `.gitignore` un-ignore names the fixture snapshot, not the deleted bundle; the `devkit
+  lock` README bullet says a group pin is preferred; tests for the committing flow with the
+  bootstrap, the table-creation path, the pyproject setting end to end and the problem
+  dedupe; the pyproject comparison is byte-exact. Accepted as costs: up to four `uv lock`
+  and two `uv sync --frozen` per bootstrap run (spec 4.0's order); the render job cannot
+  scan placeholders (a dry run writes nothing; the templates repository's CI does); the
+  `# setup-project added:` comment omits the bootstrap's entry (the labelling TODO). The
+  release note gained a sentence about committing `pyproject.toml` edits first, since the
+  first 14.0.0 run edits the dev group of every project.
+- **Task 10** as written. `poe setup-project` in the templates repository reported nothing
+  to do (its tree already matched what 13.0.0 rendered), and its `poe lock` on 14.0.0 moved
+  the dev-group pin to `>=14.0.0` and left the floor at `>=13.0.0`. Its CI `newest` entry
+  renders through 14.0.0 and `floor` through 13.0.0, both green. The four satellites keep
+  the `PreToolUse` entries their local settings already held (the hooks merge adds and
+  updates only; b90d71a took them out of the template).
+- **Consumers were not migrated**, by instruction.
+- `CLAUDE_CODE_OAUTH_TOKEN` is still to be set by hand on `devkit-claude-hooks`,
+  `devkit-poe-complete` and `devkit-templates`.
