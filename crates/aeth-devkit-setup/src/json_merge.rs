@@ -392,15 +392,15 @@ fn reconcile_hook(
   event: &str,
   log: &mut Vec<String>,
 ) -> bool {
-  // Every (group index, entry index) whose entry means this same hook — including the legacy
-  // `.claude/hooks/<snake>.py` spelling, which is the same hook by another name.
+  // Every (group index, entry index) whose entry means this same hook, in either spelling
+  // `hook_key` accepts.
   let mut found: Vec<(usize, usize)> = Vec::new();
   for (gi, g) in arr.iter().enumerate() {
     let Some(hooks) = g.get("hooks").and_then(Value::as_array) else {
       continue;
     };
     for (ei, e) in hooks.iter().enumerate() {
-      if matches_key(e, key) {
+      if hook_key(e).as_deref() == Some(key) {
         found.push((gi, ei));
       }
     }
@@ -461,14 +461,6 @@ fn reconcile_hook(
 
 /// Whether an existing entry is the same hook as template key `key`.
 ///
-/// The legacy spelling is only ever compared *against a template key*, which is what stops
-/// the migration from claiming a script it does not own: a project's own
-/// `.claude/hooks/my_custom_check.py` matches no template key and is left alone, and a
-/// future template hook cannot retroactively adopt an unrelated script either.
-fn matches_key(entry: &Value, key: &str) -> bool {
-  hook_key(entry).as_deref() == Some(key) || legacy_hook_key(entry).as_deref() == Some(key)
-}
-
 /// The `<name>` of a devkit hook command: `… devkit-hook <name>` (the binary, possibly a
 /// quoted venv path) or, from before the hooks had their own package, `… hook <name>`. One
 /// entry per hook name whichever spelling wrote it, so migration updates in place.
@@ -484,19 +476,6 @@ fn hook_key(entry: &Value) -> Option<String> {
   }
   let (_, rest) = cmd.split_once(" hook ")?;
   rest.split_whitespace().next().map(str::to_string)
-}
-
-/// The pre-devkit wiring copied the hooks in as `.claude/hooks/<snake_name>.py` scripts, in
-/// several spellings depending on the shell and platform they were written for. Recognising
-/// them is what makes migration an update in place rather than a second, duplicate entry.
-fn legacy_hook_key(entry: &Value) -> Option<String> {
-  let cmd = entry.get("command")?.as_str()?;
-  // Accept both separators and both variable syntaxes: `$CLAUDE_PROJECT_DIR/.claude/hooks/`,
-  // `%CLAUDE_PROJECT_DIR%\.claude\hooks\`, and a bare relative `.claude/hooks/`.
-  let normalized = cmd.replace('\\', "/");
-  let (_, file) = normalized.rsplit_once(".claude/hooks/")?;
-  let stem = file.split(['"', '\'', ' ']).next()?.strip_suffix(".py")?;
-  Some(stem.replace('_', "-"))
 }
 
 /// `.claude/settings.json`: `hooks` via [`merge_hooks`], everything else via [`deep_merge`].
@@ -615,7 +594,7 @@ mod hooks_tests {
   }
 
   #[test]
-  fn a_users_own_hook_script_is_not_claimed_by_the_fallback() {
+  fn a_users_own_hook_script_is_left_alone() {
     let mine = json!({"type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/my_custom_check.py\"", "timeout": 5});
     let mut target = json!({"Stop": [{"hooks": [mine.clone()]}]});
     let mut log = vec![];
@@ -623,21 +602,6 @@ mod hooks_tests {
     let stop = target["Stop"][0]["hooks"].as_array().unwrap();
     assert_eq!(stop[0], mine, "a non-devkit hook script must survive untouched");
     assert_eq!(stop.len(), 3, "template entries added alongside it: {stop:?}");
-  }
-
-  #[test]
-  fn legacy_python_hook_entries_are_replaced_not_duplicated() {
-    // The fleet's pre-devkit wiring: `python "$CLAUDE_PROJECT_DIR/.claude/hooks/stop_ruff.py"`.
-    let mut target = json!({"Stop": [{"hooks": [
-      {"type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_ruff.py\"", "shell": "bash", "timeout": 30},
-      {"type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_pyright.py\"", "shell": "bash", "timeout": 60}
-    ]}]});
-    let mut log = vec![];
-    merge_hooks(&mut target, &tpl(), &mut log);
-    let stop = target["Stop"][0]["hooks"].as_array().unwrap();
-    assert_eq!(stop.len(), 2, "{stop:?}");
-    assert_eq!(stop[0]["command"], "\"$D/devkit-hook\" stop-ruff");
-    assert_eq!(stop[1]["command"], "\"$D/devkit-hook\" stop-pyright");
   }
 
   #[test]
@@ -653,13 +617,14 @@ mod hooks_tests {
   }
 
   #[test]
-  fn a_legacy_entry_in_a_later_group_is_migrated_not_left_to_run_twice() {
+  fn a_pre_split_entry_in_a_later_group_is_migrated_not_left_to_run_twice() {
     // One hook per group object is an ordinary hand-written shape. Reconciling only the
-    // first matcher-matching group left the second one holding a legacy script, so the hook
-    // ran twice on every Stop — and re-running never healed it, because the state was stable.
+    // first matcher-matching group left the second one holding the old spelling, so the
+    // hook ran twice on every Stop — and re-running never healed it, because the state was
+    // stable.
     let mut target = json!({"Stop": [
-      {"hooks": [{"type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_ruff.py\""}]},
-      {"hooks": [{"type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_pyright.py\""}]}
+      {"hooks": [{"type": "command", "command": "uv run devkit hook stop-ruff"}]},
+      {"hooks": [{"type": "command", "command": "uv run devkit hook stop-pyright"}]}
     ]});
     let mut log = vec![];
     merge_hooks(&mut target, &tpl(), &mut log);
@@ -672,8 +637,8 @@ mod hooks_tests {
       .collect();
     assert_eq!(commands.iter().filter(|c| c.contains("stop-pyright")).count(), 1, "{commands:?}");
     assert!(
-      !commands.iter().any(|c| c.contains(".claude/hooks/")),
-      "legacy left behind: {commands:?}"
+      !commands.iter().any(|c| c.contains(" hook ")),
+      "old spelling left behind: {commands:?}"
     );
   }
 
@@ -688,39 +653,6 @@ mod hooks_tests {
     merge_hooks(&mut target, &tpl(), &mut log);
     assert_eq!(target["PreToolUse"].as_array().unwrap().len(), 1, "{target}");
     assert_eq!(target["PreToolUse"][0]["matcher"], "Write|Edit", "the project's matcher survives");
-  }
-
-  #[test]
-  fn a_users_own_script_that_collides_with_a_template_name_is_still_theirs() {
-    // `stop_clean.py` maps onto the devkit key `stop-clean`, but the template here does not
-    // define that hook — so nothing may claim it. The legacy spelling is only ever compared
-    // against keys the template actually owns.
-    let mine = json!({"type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_clean.py\"", "timeout": 5});
-    let mut target = json!({"Stop": [{"hooks": [mine.clone()]}]});
-    let mut log = vec![];
-    merge_hooks(&mut target, &tpl(), &mut log);
-    let stop = target["Stop"][0]["hooks"].as_array().unwrap();
-    assert_eq!(stop[0], mine, "an unowned script must survive untouched: {stop:?}");
-  }
-
-  #[test]
-  fn legacy_entries_migrate_in_every_spelling() {
-    // Backslashes and `%VAR%` are what a Windows-authored settings.json holds; a bare
-    // relative path is what someone writes by hand. Each used to duplicate instead of migrate.
-    for cmd in [
-      r#"python "$CLAUDE_PROJECT_DIR/.claude/hooks/stop_ruff.py""#,
-      r#"python $CLAUDE_PROJECT_DIR/.claude/hooks/stop_ruff.py"#,
-      r#"python "%CLAUDE_PROJECT_DIR%\.claude\hooks\stop_ruff.py""#,
-      r#"python .claude/hooks/stop_ruff.py"#,
-      r#"py -3 .claude\hooks\stop_ruff.py"#,
-    ] {
-      let mut target = json!({"Stop": [{"hooks": [{"type": "command", "command": cmd}]}]});
-      let mut log = vec![];
-      merge_hooks(&mut target, &tpl(), &mut log);
-      let stop = target["Stop"][0]["hooks"].as_array().unwrap();
-      assert_eq!(stop.len(), 2, "must migrate in place, not duplicate: {cmd} -> {stop:?}");
-      assert_eq!(stop[0]["command"], "\"$D/devkit-hook\" stop-ruff", "{cmd}");
-    }
   }
 
   #[test]

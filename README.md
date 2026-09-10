@@ -74,7 +74,7 @@ run is a byte-for-byte no-op.
   `lint.isort.known-first-party = ["{package}"]` and the import headings — and `tool.tombi`.
 - **Migrations** - `poe_tasks:tasks` include_script → `aeth_devkit:tasks`; drops
   `tool.ruff.extend` / `tool.pyright.extends` pointing at a parent pyproject; rewrites
-  legacy `.claude/hooks/*.py` and `devkit hook` hook commands to `devkit-hook` in place.
+  pre-split `devkit hook` hook commands to `devkit-hook` in place.
 - **VS Code config** - `settings.json` + `extensions.json` deep JSON merge (plus Rust
   overlay); `launch.json` created from template or patched (`envFile` + `PYTHON*` env vars
   on Python launch configs only); `tasks.json` patched only (`PYTHONPYCACHEPREFIX`).
