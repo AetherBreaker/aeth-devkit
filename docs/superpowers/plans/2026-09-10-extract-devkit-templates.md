@@ -109,7 +109,7 @@ Part A publishes `devkit-templates==1.0.0`, set up by 13.0.0. Part B changes `ae
 **Interfaces:**
 - Produces: a local repository on `main`, no remote, no tags, no other branch, whose tree is `python/devkit_templates/templates/**` plus the empty `__init__.py`, LF throughout.
 
-- [ ] **Step 1: Confirm `aeth_devkit` is current and clean**
+- [x] **Step 1: Confirm `aeth_devkit` is current and clean**
 
 ```bash
 WS="/d/SFT Software Projects/SFT Workspace"
@@ -120,7 +120,7 @@ test ! -e "$WS/devkit-templates" && echo "target absent"
 
 Expected: `## main...origin/main`, a clean tree, `22`, "target absent".
 
-- [ ] **Step 2: Filter a throwaway clone down to the templates, renamed into the package**
+- [x] **Step 2: Filter a throwaway clone down to the templates, renamed into the package**
 
 ```bash
 cd "$WS" && git clone --no-local aeth_devkit devkit-templates && cd devkit-templates
@@ -134,7 +134,7 @@ git remote -v; git tag -l | wc -l; git branch
 
 Expected: many commits (templates change often; only history under this path survives, which spec 7 accepts); `0` files outside the renamed directory and `22` in it; no remote; some re-pointed tags; possibly stray branches beside `main`.
 
-- [ ] **Step 3: Tags and stray branches gone, the empty package, LF**
+- [x] **Step 3: Tags and stray branches gone, the empty package, LF**
 
 Write `python/devkit_templates/__init__.py` empty and `.gitattributes` with exactly:
 
@@ -169,7 +169,7 @@ Expected: `0` tags; branch `main` (else `git branch -m main` first); no other br
 - Consumes: Task 1's tree.
 - Produces: a wheel `devkit_templates-1.0.0-py3-none-any.whl` carrying `devkit_templates/templates/**`; a CI that renders the working tree through the declared-floor devkit and the newest devkit into three scratch projects and fails on a render error or an unresolved placeholder.
 
-- [ ] **Step 1: `pyproject.toml`**
+- [x] **Step 1: `pyproject.toml`**
 
 Copy the `[[tool.uv.index]]` block from `$WS/aeth_devkit/pyproject.toml` verbatim into the place marked below. Write:
 
@@ -207,7 +207,7 @@ Copy the `[[tool.uv.index]]` block from `$WS/aeth_devkit/pyproject.toml` verbati
 
 Do not add `[tool.devkit]`: 13.0.0 refuses a key it does not know, and 13.0.0 runs this repository's first `setup-project` (Task 3). The tooling tables (`[tool.coverage]`, `[tool.ruff]`, `[tool.pyright]`, `[tool.pytest.ini_options]`, `[tool.tombi]`) arrive from that run.
 
-- [ ] **Step 2: `.gitignore`, `README.md`, `TODO.md`**
+- [x] **Step 2: `.gitignore`, `README.md`, `TODO.md`**
 
 `.gitignore` (the run's template prepends the standard rules later):
 
@@ -273,7 +273,7 @@ template is read as an unresolved placeholder by that scan; write it another way
 
 (That entry moves here from aeth-devkit's `TODO.md`, which Task 8 drops it from.)
 
-- [ ] **Step 3: `ci/render.sh`**
+- [x] **Step 3: `ci/render.sh`**
 
 One script, runnable locally, that builds a scratch project of a kind, installs the requested devkit into it, runs a plain `setup-project` from the working-tree templates, and scans every rendered file:
 
@@ -324,7 +324,7 @@ echo "render ok: $kind through $(uv run devkit --version)"
 
 Then `chmod +x ci/render.sh` (and `git update-index --chmod=+x ci/render.sh` on Windows, where the bit is not otherwise recorded).
 
-- [ ] **Step 4: `.github/workflows/ci.yml`**
+- [x] **Step 4: `.github/workflows/ci.yml`**
 
 ```yaml
 name: CI
@@ -369,7 +369,7 @@ jobs:
 
 No secrets: the index is anonymously readable (see Global Constraints).
 
-- [ ] **Step 5: The wheel carries the templates; the render script runs locally**
+- [x] **Step 5: The wheel carries the templates; the render script runs locally**
 
 ```bash
 cd "$WS/devkit-templates"
@@ -381,7 +381,7 @@ RUNNER_TEMP="$TEMP" bash ci/render.sh python "aeth-devkit==13.0.0" 2>&1 | tail -
 
 Expected: `ok 22 template files` (the dotfile and the nested paths included — if the dotfile is missing, `uv_build` skipped it and the fallback is hatchling with `[tool.hatch.build.targets.wheel] packages = ["python/devkit_templates"]`; record that in the execution notes); `render ok: python through devkit 13.0.0`. The local render needs the index (anonymous) and takes a minute (it locks and syncs the scratch project).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd "$WS/devkit-templates"
@@ -400,7 +400,7 @@ git log --oneline -2 && git status --short
 **Interfaces:**
 - Produces: `https://github.com/AetherBreaker/devkit-templates`, CI green, release `v1.0.0`, `devkit-templates==1.0.0` on SFTPyPI. Part B's bootstrap resolves this name.
 
-- [ ] **Step 1: Create, push, secrets, `.env`**
+- [x] **Step 1: Create, push, secrets, `.env`**
 
 ```bash
 cd "$WS/devkit-templates"
@@ -416,7 +416,7 @@ cp "$WS/aeth_devkit/.env" .env && git check-ignore -q .env && echo ".env ignored
 
 Expected: `{"name":"devkit-templates","visibility":"PUBLIC","default":"main"}`; both secret names; `.env ignored`.
 
-- [ ] **Step 2: CI green**
+- [x] **Step 2: CI green**
 
 ```bash
 sleep 20; gh run watch --repo AetherBreaker/devkit-templates --exit-status "$(gh run list --repo AetherBreaker/devkit-templates --workflow ci.yml --limit 1 --json databaseId --jq '.[0].databaseId')" 2>&1 | tail -3
@@ -424,7 +424,7 @@ sleep 20; gh run watch --repo AetherBreaker/devkit-templates --exit-status "$(gh
 
 Expected: all six matrix jobs green (both devkit entries resolve to 13.0.0 today). A failure is a Task 2 problem; fix on `main`, push, wait again.
 
-- [ ] **Step 3: `setup-project` by 13.0.0**
+- [x] **Step 3: `setup-project` by 13.0.0**
 
 13.0.0 renders from its own bundled templates, which are this tree's files, and adds the hooks and completion packages (not this project's own name). It runs headless with `-y`:
 
@@ -437,7 +437,7 @@ env -u VIRTUAL_ENV uv run --env-file .env devkit setup-project --no-vscode -y 2>
 
 Expected: `devkit 13.0.0`; one "Standardize project configuration with devkit" commit; `pyproject.toml` gains the tooling tables, `devkit-claude-hooks>=1.0.0`, `devkit-poe-complete>=1.0.0` and their sources; `.github/workflows/release.yml` is the non-Rust template (`grep -c 'uv build --out-dir dist' .github/workflows/release.yml` is `1`, `grep -c maturin` is `0`); the note names the two `UV_INDEX_SFTPYPI_*` secrets (already set).
 
-- [ ] **Step 4: Lock committed, dry-run clean, push**
+- [x] **Step 4: Lock committed, dry-run clean, push**
 
 The run's package step re-locked after its `pyproject.toml` edits; `uv.lock` is still untracked. Lock once more, format, commit:
 
@@ -453,7 +453,7 @@ env -u VIRTUAL_ENV uv run --env-file .env devkit setup-project --dry-run --no-vs
 
 Expected: `Nothing to do — project already matches the templates.` (a second run is a no-op); `## main...origin/main`.
 
-- [ ] **Step 5: Release 1.0.0 and verify**
+- [x] **Step 5: Release 1.0.0 and verify**
 
 ```bash
 cd "$WS/devkit-templates"
@@ -465,7 +465,7 @@ curl -s https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple/devkit-te
 
 Run the release with a long timeout (the workflow builds and publishes). Expected: `Released devkit-templates 1.0.0`; the release holds `devkit_templates-1.0.0-py3-none-any.whl` and `devkit_templates-1.0.0.tar.gz`; both names on the index.
 
-- [ ] **Step 6: The wheel resolves off the index and has the templates where the probe looks**
+- [x] **Step 6: The wheel resolves off the index and has the templates where the probe looks**
 
 ```bash
 S="$TEMP/templates-resolve" && rm -rf "$S" && mkdir -p "$S" && cd "$S"
@@ -497,7 +497,7 @@ One branch, `feat/extract-templates`. Every task ends with a compiling workspace
 **Interfaces:**
 - Produces: a workspace with no bundled templates whose setup tests render the snapshot. The binary can find templates only through `--templates-dir`/`DEVKIT_TEMPLATES` until Task 5; the tests already pass them.
 
-- [ ] **Step 1: Branch and move**
+- [x] **Step 1: Branch and move**
 
 ```bash
 cd "$WS/aeth_devkit" && git switch main && git pull --ff-only && git switch -c feat/extract-templates
@@ -507,15 +507,15 @@ git status --short | head -3; ls python/aeth_devkit; ls crates/aeth-devkit-setup
 
 Expected: `python/aeth_devkit` holds `__init__.py`, `_tasks_source.py`, `_tasks_generated.py` and the scripts; the fixture directory holds the 22 files (renames, so blame follows).
 
-- [ ] **Step 2: Point the test helpers at the snapshot**
+- [x] **Step 2: Point the test helpers at the snapshot**
 
 In `tests/apply.rs`, `templates()` becomes `fixtures().join("templates")`. In `tests/docker.rs`, `templates()` becomes `fixtures().join("templates")` too — its `fixtures()` currently returns `tests/fixtures/docker`; change that helper to return `tests/fixtures` and update its two uses (`fixtures().join("docker")` for the container package dir in `package_dirs`, and any other). The module doc of `apply.rs` ("apply the real templates") becomes "apply the template snapshot under `tests/fixtures/templates` (the templates live in devkit-templates; the engine's tests are hermetic)".
 
-- [ ] **Step 3: The `probe` test no longer expects templates inside `aeth_devkit`**
+- [x] **Step 3: The `probe` test no longer expects templates inside `aeth_devkit`**
 
 In `packages.rs`'s probe test, replace `assert!(found.dir.join("templates").is_dir(), …)` with `assert!(found.dir.join("__init__.py").is_file(), "{}", found.dir.display());`.
 
-- [ ] **Step 4: Run the setup crate's tests**
+- [x] **Step 4: Run the setup crate's tests**
 
 ```bash
 cd "$WS/aeth_devkit" && cargo test -p aeth-devkit-setup 2>&1 | grep -E 'test result|FAILED|panicked' | head
@@ -523,7 +523,7 @@ cd "$WS/aeth_devkit" && cargo test -p aeth-devkit-setup 2>&1 | grep -E 'test res
 
 Expected: every `test result: ok`. (The binary-level tests pass `--templates-dir "$(templates())"`; nothing exercises `locate` without an override.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A && git commit -q -m "test(setup): the templates are a fixture snapshot; the bundle is gone
@@ -543,7 +543,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Consumes: `packages::advance`, `probe`, `Venv`, `Changes::record`, `pyproject::find_requirement`.
 - Produces: `ProjectContext::templates_dir: Option<PathBuf>`; `templates::override_dir(explicit, ctx) -> Result<Option<PathBuf>>`; `packages::TEMPLATES`; `packages::advance(ctx, deps, dry_run, packages, latest, changes)`; `packages::ensure_templates(ctx, deps, dry_run, changes) -> Result<PathBuf>`; `run_with(ctx, templates_override: Option<&Path>, dry_run, deps)`.
 
-- [ ] **Step 1: `[tool.devkit].templates-dir` in `context.rs`**
+- [x] **Step 1: `[tool.devkit].templates-dir` in `context.rs`**
 
 `DEVKIT_KEYS` becomes `&["release-workflow", "templates-dir"]`. Add the field and its parsing beside `release_workflow`:
 
@@ -572,7 +572,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Tests (beside `release_workflow_is_on_unless_tool_devkit_turns_it_off`): the key is read relative to the root; a non-string or a missing directory is an error naming the key.
 
-- [ ] **Step 2: `templates::override_dir` replaces `locate`**
+- [x] **Step 2: `templates::override_dir` replaces `locate`**
 
 Delete `locate` whole (the override branches, the beside-the-binary probe, the source-tree fallback). Add:
 
@@ -595,7 +595,7 @@ pub fn override_dir(explicit: Option<&Path>, ctx: &ProjectContext) -> Result<Opt
 
 Remove imports that only `locate` used. A unit test covers the flag winning over the pyproject setting (build a `ProjectContext` with `templates_dir = Some(a)`, pass `Some(b)`, expect `b`) and a missing flag directory erroring with `--templates-dir` in the message; the env-var branch is covered at binary level in step 8 (a unit test would race other tests on the process environment).
 
-- [ ] **Step 3: `packages.rs`: `TEMPLATES`, `advance` takes its package list, the bootstrap**
+- [x] **Step 3: `packages.rs`: `TEMPLATES`, `advance` takes its package list, the bootstrap**
 
 Add the const beside the others:
 
@@ -685,7 +685,7 @@ fn add_bare_requirement(ctx: &ProjectContext, path: &Path, original: &str, mut d
 
 (`changes.record` writes the file; tombi formats it at the end of the run, so layout here only has to be valid.)
 
-- [ ] **Step 4: Step 0 in `run_with`; `cli` resolves the override after discovery**
+- [x] **Step 4: Step 0 in `run_with`; `cli` resolves the override after discovery**
 
 `run_with`'s signature becomes `run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run: bool, deps: &Deps)`. Its first action after `changes.keep_previews`:
 
@@ -704,7 +704,7 @@ Step 1b becomes `packages::advance(ctx, deps, dry_run, &packages::active(ctx), &
 
 In `cli::run`: delete the `templates::locate` line at the top; after `ctx` is discovered, `let templates_override = crate::templates::override_dir(args.templates_dir.as_deref(), &ctx)?;` and pass `templates_override.as_deref()` into `run_with`. `Args.templates_dir`'s doc: "Render this directory instead of the environment's devkit-templates package (DEVKIT_TEMPLATES and [tool.devkit].templates-dir also set it, in that order of precedence)."
 
-- [ ] **Step 5: Build**
+- [x] **Step 5: Build**
 
 ```bash
 cd "$WS/aeth_devkit" && cargo build --workspace 2>&1 | grep -E '^(error|warning)' -A6 | head -40
@@ -712,7 +712,7 @@ cd "$WS/aeth_devkit" && cargo build --workspace 2>&1 | grep -E '^(error|warning)
 
 Expected: clean. `tests/packages.rs`'s `advance` harness and every `run_with` call in `tests/apply.rs` and `tests/docker.rs` will not compile yet — step 6 and 7.
 
-- [ ] **Step 6: Package-step tests**
+- [x] **Step 6: Package-step tests**
 
 In `tests/packages.rs`: the harness's `packages::advance(&ctx, &deps, dry_run, latest, &mut changes)` becomes `packages::advance(&ctx, &deps, dry_run, &packages::active(&ctx), latest, &mut changes)`. Add a lock variant naming `devkit-templates` (extend `lock_with` with a `devkit-templates` 1.0.0 registry entry, or add `lock_with_templates()`), a `StubVenv` entry `"devkit_templates"` → `Installed { dir: fixtures_root(), version: "1.0.0" }` where `fixtures_root()` is `tests/fixtures` (so `dir.join("templates")` is the snapshot), and:
 
@@ -757,15 +757,15 @@ fn the_templates_repository_never_bootstraps_itself() {
 
 with an `ensure(...)` helper shaped like the file's `advance(...)` helper that calls `packages::ensure_templates` and returns `(PathBuf, Changes)`. Also assert, in the existing `a_project_without_docker_still_gets_the_hooks_and_completion`, that `active` does not contain `devkit-templates` (the bootstrap's package is not the merge's).
 
-- [ ] **Step 7: Apply and Docker harnesses compile against the new arity; one end-to-end bootstrap test**
+- [x] **Step 7: Apply and Docker harnesses compile against the new arity; one end-to-end bootstrap test**
 
 In `tests/apply.rs` and `tests/docker.rs`, every `run_with(&ctx, &templates(), …)` becomes `run_with(&ctx, Some(&templates()), …)` (the override path: no bootstrap, no `uv` calls beyond what the package step already records). Add to `tests/apply.rs` one test through the venv path: the fixture project (whose pyproject has no `devkit-templates`), a `StubVenv` whose `devkit_templates` entry points at `fixtures()` (so the templates dir is the snapshot) at version `1.0.0`, and a `uv.lock` that names `devkit-templates 1.0.0` beside the three packages (extend `devkit_lock()`); run `run_with(&ctx, None, false, &deps)` and assert the run's `pyproject.toml` carries `devkit-templates>=1.0.0` and the source entry, that the rendered files equal a second run with `Some(&templates())` on an identical project (same `Changes::report`), and that a following `run_with(&ctx, None, false, &deps)` is empty (idempotent).
 
-- [ ] **Step 8: Binary-level override precedence**
+- [x] **Step 8: Binary-level override precedence**
 
 In `tests/apply.rs`, beside the existing binary tests (`CARGO_BIN_EXE_devkit-setup`), a test that runs the binary with `.env("DEVKIT_TEMPLATES", templates())` and no `--templates-dir` on the fixture project with `--dry-run --no-vscode` and gets exit 0 and `Would change:` (the env override works without a venv), and one with `DEVKIT_TEMPLATES` pointing at a non-directory expecting exit 2 and `DEVKIT_TEMPLATES` in stderr.
 
-- [ ] **Step 9: Run the crate's tests and commit**
+- [x] **Step 9: Run the crate's tests and commit**
 
 ```bash
 cd "$WS/aeth_devkit" && cargo fmt --all && cargo clippy -p aeth-devkit-setup --all-targets -- -D warnings 2>&1 | grep -E '^(warning|error)' -A6 | head -30
@@ -785,19 +785,19 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Interfaces:**
 - Produces: a `setup-project` whose only dry form is `--dry-run`, exit 0.
 
-- [ ] **Step 1: `cli.rs`**
+- [x] **Step 1: `cli.rs`**
 
 Delete the `check` field and its `#[arg(long)]` doc. `run_reject_headless`: `!(args.yes || args.dry_run)`; its message ends "or use --dry-run". In `run`: `let dry_run = args.dry_run;`; the VS Code skip is `args.no_vscode || !tty || args.yes` (a dry run still opens the review, as today); the nothing-to-write branch returns `ExitCode::SUCCESS` unconditionally (keep the "Nothing to write; the problem(s) above need a hand edit." line); delete `if args.check { return Ok(ExitCode::from(1)); }` after the report. The `run` doc: "Exit codes: 0 ok (a `problem:` line is a finding for a hand edit, not a failure), 3 commit failed (the template changes were rolled back). Errors bubble up for the caller to print (exit 2)."
 
-- [ ] **Step 2: Comments elsewhere**
+- [x] **Step 2: Comments elsewhere**
 
 `changes.rs`: the two `--check` sentences in the `notes`/`problems` docs become "a supported layout is never written; an unsupported one is a `problem:` reported on every run until it is fixed by hand". `docker/mod.rs`: `Mode::DryRun`'s doc says `--dry-run` only; the include-only warning comment says "so this warns instead of being a `problem:`". `packages.rs`: the lock-mismatch comment says "a dry run reports it as a problem: it must not read as clean". `lib.rs` `keep_previews` comment already changed in Task 5.
 
-- [ ] **Step 3: Tests**
+- [x] **Step 3: Tests**
 
 `tests/apply.rs`: in `a_run_without_standard_input_is_refused_unless_nothing_will_be_asked`, replace the two `--check` runs with `--dry-run` ones (both exit 0; after deleting `.dockerignore` assert the output contains `Would change:`). Rewrite `check_fails_on_a_compose_file_the_engine_cannot_edit` as `an_unsupported_compose_shape_is_a_problem_reported_on_every_dry_run`: the `Args` literal loses `check`, `dry_run: true`; assert `changes.problems.len() == 1` and `cli::run` returns `SUCCESS` for the inline-services shape, and that the include-only shape is a warning with no problem. Remove `check: false` from every `Args` literal. `tests/docker.rs`: the three comments mentioning `--check` say `--dry-run`.
 
-- [ ] **Step 4: The task help text, regenerated**
+- [x] **Step 4: The task help text, regenerated**
 
 In `_tasks_source.py`, the setup-project help: "Extra args are passed to devkit setup-project: --dry-run, --no-commit, -y/--yes, --templates-dir PATH." and "from the templates shipped with aeth-devkit" → "from the devkit-templates package". Then:
 
@@ -823,7 +823,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Interfaces:**
 - Produces: `pyproject::find_requirement_in_groups(doc, name) -> Option<Requirement>`; `bump_pin` prefers it.
 
-- [ ] **Step 1: Core helper**
+- [x] **Step 1: Core helper**
 
 Beside `find_requirement`:
 
@@ -842,7 +842,7 @@ pub fn find_requirement_in_groups(doc: &DocumentMut, name: &str) -> Option<Requi
 
 If `find_requirement`'s body is not already factored as a per-table lookup (`requirement_in` above), factor the shared loop into one; that is a lint-free refactor with two callers, not a new small helper.
 
-- [ ] **Step 2: `bump_pin`**
+- [x] **Step 2: `bump_pin`**
 
 ```rust
   let Some(req) = pyproject::find_requirement_in_groups(doc, pkg).or_else(|| pyproject::find_requirement(doc, pkg)) else {
@@ -850,7 +850,7 @@ If `find_requirement`'s body is not already factored as a per-table lookup (`req
 
 with a comment above: "The tooling pin first: a project that also names the package under `[project].dependencies` (devkit-templates, whose floor is its compatibility contract) keeps that requirement." A lock-crate test: a pyproject with `dependencies = ["aeth-devkit>=13.0.0"]` and `dev = ["aeth-devkit>=13.0.0"]`, a stub index at 14.0.0 — after `bump_pin` the dev entry is `>=14.0.0` and the runtime entry is still `>=13.0.0`; and a pyproject with only the runtime entry still gets it bumped (today's behaviour).
 
-- [ ] **Step 3: Test and commit**
+- [x] **Step 3: Test and commit**
 
 ```bash
 cd "$WS/aeth_devkit" && cargo test -p aeth-devkit-lock -p aeth-devkit-core 2>&1 | grep -E 'test result|FAILED'
@@ -866,7 +866,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Files:**
 - Modify: `.github/workflows/ci.yml`, `README.md`, `WORKSPACE.md`, `TODO.md`, `REMOVAL-CANDIDATES.md`.
 
-- [ ] **Step 1: The `render` job**
+- [x] **Step 1: The `render` job**
 
 Append to `.github/workflows/ci.yml` (beside `wheel`): the working-tree binary renders the newest released templates, as a dry run, into two scratch projects:
 
@@ -907,11 +907,11 @@ Append to `.github/workflows/ci.yml` (beside `wheel`): the working-tree binary r
           done
 ```
 
-- [ ] **Step 2: README**
+- [x] **Step 2: README**
 
 In `### devkit setup-project`: the flags sentence becomes "Flags: `--root`, `--templates-dir` (or `DEVKIT_TEMPLATES`, or `[tool.devkit].templates-dir`; a working tree rendered instead of the environment's `devkit-templates` package), `--dry-run`, `--no-commit`, `-y`/`--yes`." Drop `--check` from the stdin sentence ("`-y` or `--dry-run`"). Add a bullet after Project discovery: "**Templates** - read from the project's environment, the `devkit_templates` package (`AetherBreaker/devkit-templates`); a project that lacks it gets `devkit-templates` added to its dev group, locked under the running devkit and synced before anything renders, and `--dry-run` on such a project is an error saying so. Templates are versioned by `uv.lock` like the other devkit packages." In the Docker bullets, replace "`--check` exits 1 on …" with "a `problem:` line on every run for …" and "does not fail `--check`" with "is a warning, not a problem", and "`--dry-run`/`--check` print everything" with "`--dry-run` prints everything". In the VS Code section, "neither `--check` nor `-y`" becomes "not `-y`". Add a short `### devkit-templates` section beside the hooks/completion one: what it is, that `setup-project` installs and reads it, where it lives. In Development: the layout line drops "templates" from `python/aeth_devkit`, and a sentence: "The setup crate's tests render the snapshot under `crates/aeth-devkit-setup/tests/fixtures/templates`; to render a templates checkout instead, pass `--templates-dir` or set `DEVKIT_TEMPLATES`."
 
-- [ ] **Step 3: WORKSPACE.md, TODO.md, REMOVAL-CANDIDATES.md**
+- [x] **Step 3: WORKSPACE.md, TODO.md, REMOVAL-CANDIDATES.md**
 
 `WORKSPACE.md`: add `gh repo clone AetherBreaker/devkit-templates` to the clone list, `devkit-templates` to the `.env` copy loop and to the bring-up loop, and after the bring-up block: "`devkit-templates` renders its own tree (`[tool.devkit].templates-dir`), so it needs no `devkit_templates` in its environment; its `[project].dependencies` floor on `aeth-devkit` is the compatibility contract and is raised by hand, while `poe lock` moves only its dev-group pin."
 
@@ -919,7 +919,7 @@ In `### devkit setup-project`: the flags sentence becomes "Flags: `--root`, `--t
 
 `REMOVAL-CANDIDATES.md`, under aeth-devkit: `packages::DEVKIT` (after `locate`'s beside-the-binary probe went, only the `probe` unit test names it); `Changes::problems` as a distinct list from `warnings` now that no exit code depends on it (it still changes the wording "need a hand edit"; keep or fold, the user's call).
 
-- [ ] **Step 4: The full suite once, and commit**
+- [x] **Step 4: The full suite once, and commit**
 
 ```bash
 cd "$WS/aeth_devkit"
@@ -938,7 +938,7 @@ Expected: every `test result: ok`, pytest green, the task table unchanged since 
 
 ### Task 9: Pull request, reviews, merge, release 14.0.0
 
-- [ ] **Step 1: Push and open the PR**
+- [x] **Step 1: Push and open the PR**
 
 ```bash
 cd "$WS/aeth_devkit" && git push -u origin feat/extract-templates
