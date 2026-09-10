@@ -14,10 +14,12 @@ design exists. Check items off in place; delete them once released.
       markers in `pyproject.toml` and the `AGENTS.md` block are the precedents), so a run
       can update a managed entry, remove one that has left the template, and leave an
       unmarked one alone.
-- [ ] `template.env` writes `PYTHONPYCACHEPREFIX` unquoted; the value has spaces and
-      backslashes, which poe's envfile loader accepts but uv's `--env-file` parser
-      rejects (`Failed to parse environment file .env at position 4`, the rest of the
-      file still loads). Quote the value so both readers agree.
+- [ ] A committable file that is untracked but present before a committing run (a fresh
+      repository's `uv.lock` after a first `uv sync`) is captured as the user's uncommitted
+      state by `git::stage_bases`, so the run's version never reaches the commit and the
+      replay puts the pre-run file back, while the report still says `uv.lock: updated`
+      (seen creating `devkit-templates`; every satellite needed its first lock committed by
+      hand). Commit it as the managed file it is, or say it was left untracked.
 - [ ] Completion shell detection follows the launching shell's `PATH`: from PowerShell,
       Git Bash's `bash.exe` (`Gitin`, not on `PATH`) is not seen, so bash completion is
       only installed from a Git Bash run, silently. Probe Git's install directory too, or say

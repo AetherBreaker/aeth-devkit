@@ -37,3 +37,13 @@ the repository they live in, the evidence, and what removal would cost.
   source on services alone. One template table uses the first, two entries the second. If
   "Docker files without services" stops being a state worth supporting (it already produces a
   warning every run), one gate would do.
+- **`packages::DEVKIT`** (`crates/aeth-devkit-setup/src/packages.rs`): named devkit's own
+  package for the beside-the-binary templates lookup, which went with the templates
+  (14.0.0). Only the `probe` unit test names it now, as a package known to be in the
+  workspace venv. Removal cost: that test probes another package (any of the three
+  satellites), or goes.
+- **`Changes::problems` as a list distinct from `warnings`** (`crates/aeth-devkit-setup/src/changes.rs`):
+  the split existed for `--check`'s exit code (1 on a problem, 0 on a warning), which went
+  in 14.0.0. What is left is the wording: a `problem:` still says "needs a hand edit" and
+  changes the nothing-to-do line. Removal cost: one list, one prefix; the compose-shape
+  tests that count problems become warning counts.
