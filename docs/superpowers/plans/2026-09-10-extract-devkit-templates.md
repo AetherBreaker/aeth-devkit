@@ -22,7 +22,7 @@
 - A dry run never installs anything: on a project whose environment lacks `devkit-templates` it exits 2 with a message saying a plain run adds it. `--dry-run` otherwise exits 0; `problem:` lines are findings for a hand edit, not an exit code. Idempotence is the acceptance test (a second plain run reports nothing to do).
 - The project's own name is never added as a package (spec 4.0): `devkit-templates` renders its own tree through `[tool.devkit].templates-dir` and depends on itself nowhere.
 - `.env` holds live credentials: never print it, never commit it. The SFTPyPI secrets go onto the new repository with `gh secret set` piped from `aeth_devkit/.env`; `.env` is copied into the clone. The index is anonymously readable (aeth-devkit's CI `uv sync` pulls the hooks and completion wheels with no credentials), so CI needs no secrets to render.
-- `setup-project` runs headless with `-y`; the executor runs every `setup-project`. Any Bash command whose text contains `uv add`, `uv remove` or `uv lock` is refused by the project's hook (`pre-bash-protect-deps`) and the auto-mode classifier refuses to edit that hook: use `uv sync` (which re-locks after a `pyproject.toml` edit), `uv sync --upgrade-package <name>`, or the devkit binaries (`poe lock`, `setup-project`), whose own `uv lock` calls are not shell text. Hand any remaining `uv lock` to the user.
+- `setup-project` runs headless with `-y`; the executor runs every `setup-project` and every `uv` command (`uv lock` included) itself. Nothing is handed to the user.
 - Consumers (`aeth_ext`, `IMAPReportCollector`, `ScheduledInvoiceProcessor`, `ScheduledReportAggregator`, `timeclock_entry_processor`, any other) are **not** migrated by this plan: the user's standing instruction is that consumers move once every step of the spec is done. Part C touches only `aeth_devkit`, `devkit-container`, `devkit-vscode`, `devkit-claude-hooks`, `devkit-poe-complete` and `devkit-templates`.
 - `aeth-devkit` conventions (`AGENTS.md`): Conventional Commits with the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`; a `fix` body states bug, cause and fix; comments carry reasoning densely; no single-use helpers of four lines or fewer; tests carry no docstrings and never define intent; on a feature branch run only the named tests while iterating and the full suite once at the end. PRs are rebase-merged. Keep `REMOVAL-CANDIDATES.md` in the repo root current with anything found along the way that no longer pays rent.
 
@@ -439,12 +439,12 @@ Expected: `devkit 13.0.0`; one "Standardize project configuration with devkit" c
 
 - [ ] **Step 4: Lock committed, dry-run clean, push**
 
-`uv.lock` is written by the run's own `uv lock` (not shell text). If it is untracked or the run left `pyproject.toml` unformatted:
+The run's package step re-locked after its `pyproject.toml` edits; `uv.lock` is still untracked. Lock once more, format, commit:
 
 ```bash
 cd "$WS/devkit-templates"
 git status --short
-uv sync 2>&1 | tail -1 && uv run tombi format --quiet pyproject.toml; git status --short
+uv lock 2>&1 | tail -1 && uv run tombi format --quiet pyproject.toml; git status --short
 git add -A && git commit -q -m "chore: lock the dev group setup-project added
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>" ; git push 2>&1 | tail -1
@@ -992,15 +992,16 @@ for r in aeth_devkit devkit-container devkit-vscode devkit-claude-hooks devkit-p
 done
 ```
 
-`poe lock` runs the venv's devkit, whose own `uv lock` call is not shell text, so the hook does not see it. Expected per repo: an "Update uv.lock" commit, then a "Standardize project configuration with devkit" commit whose `pyproject.toml` adds `"devkit-templates"` (then pinned `>=1.0.0`) and `devkit-templates = [{ index = "SFTPyPI" }]`, whose `uv.lock` locks `devkit-templates 1.0.0`, and whose report lists `pyproject.toml` once.
+Expected per repo: an "Update uv.lock" commit, then a "Standardize project configuration with devkit" commit whose `pyproject.toml` adds `"devkit-templates"` (then pinned `>=1.0.0`) and `devkit-templates = [{ index = "SFTPyPI" }]`, whose `uv.lock` locks `devkit-templates 1.0.0`, and whose report lists `pyproject.toml` once. `.claude/settings.local.json` keeps its two `PreToolUse` entries in the four satellites: the hooks merge adds and updates, never removes (b90d71a took them out of the template; taking them out of projects is the later hook rework's job, not this plan's).
 
 - [ ] **Step 2: `devkit-templates` itself, by the other route**
 
-Its environment must hold 14.0.0 before `[tool.devkit].templates-dir` can be read (13.0.0 refuses the key), and `poe lock` on 13.0.0 would move the runtime floor (Task 7 lands the preference in 14.0.0), so:
+Its environment must hold 14.0.0 before `[tool.devkit].templates-dir` can be read (13.0.0 refuses the key), and `poe lock` on 13.0.0 would move the runtime floor (Task 7 lands the preference in 14.0.0), so the lock moves by hand first:
 
 ```bash
 cd "/d/SFT Software Projects/SFT Workspace/devkit-templates"
-env -u VIRTUAL_ENV uv sync --upgrade-package aeth-devkit 2>&1 | tail -2      # the venv to 14.0.0; the floor untouched
+env -u VIRTUAL_ENV uv lock --upgrade-package aeth-devkit 2>&1 | tail -2      # the lock to 14.0.0; both pins untouched
+env -u VIRTUAL_ENV uv sync 2>&1 | tail -1
 env -u VIRTUAL_ENV uv run devkit --version
 ```
 
