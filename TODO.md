@@ -5,6 +5,15 @@ design exists. Check items off in place; delete them once released.
 
 ## setup-project
 
+- [ ] Label the entries setup-project owns inside partially-managed files. The merges that
+      add without overwriting (`.claude/settings*.json` hooks and permissions, `.mcp.json`
+      servers, `.vscode/settings.json` keys, `launch.json`/`tasks.json` configurations)
+      cannot tell a template entry from the project's own, so an entry the template drops
+      stays in every project for good (the `PreToolUse` hooks, b90d71a). Mark what the
+      run writes, entry by entry, in whatever the format allows (the `# setup-project:`
+      markers in `pyproject.toml` and the `AGENTS.md` block are the precedents), so a run
+      can update a managed entry, remove one that has left the template, and leave an
+      unmarked one alone.
 - [ ] `template.env` writes `PYTHONPYCACHEPREFIX` unquoted; the value has spaces and
       backslashes, which poe's envfile loader accepts but uv's `--env-file` parser
       rejects (`Failed to parse environment file .env at position 4`, the rest of the
