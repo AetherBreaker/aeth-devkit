@@ -411,13 +411,13 @@ fn a_compose_file_without_services_warns_and_the_run_goes_on() {
   assert_eq!(read(root, "docker/compose.yaml"), include_only, "left alone");
   assert!(root.join("docker/Dockerfile").is_file(), "the rest of the Docker step still ran");
   // An `include:`-only aggregator is a supported layout, so it warns; only shapes the user
-  // could reformat are `problem:`s.
+  // could reformat are `error:`s.
   assert!(
     changes.warnings.iter().any(|n| n.contains("no top-level `services:` key")),
     "{:?}",
     changes.warnings
   );
-  assert!(changes.problems.is_empty(), "{:?}", changes.problems);
+  assert!(changes.errors.is_empty(), "{:?}", changes.errors);
   // Inline `services:` and an inline service block: nothing can be spliced under them
   // (the top-level `networks` block is still added around an inline service).
   for (text, note) in [
@@ -438,7 +438,7 @@ fn a_compose_file_without_services_warns_and_the_run_goes_on() {
     let out = read(root, "docker/compose.yaml");
     assert!(out.starts_with(text), "the inline part is untouched: {out}");
     assert!(!out.contains("container_name"), "{out}");
-    assert!(changes.problems.iter().any(|n| n.contains(note)), "{text}: {:?}", changes.problems);
+    assert!(changes.errors.iter().any(|n| n.contains(note)), "{text}: {:?}", changes.errors);
   }
 }
 

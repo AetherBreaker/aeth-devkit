@@ -76,9 +76,9 @@ fn refuse_uncommitted_services(root: &Path) -> Result<()> {
   Ok(())
 }
 
-/// Exit codes: 0 ok (a `problem:` line is a finding for a hand edit, not a failure), 3
-/// commit failed (the template changes were rolled back). Errors bubble up for the caller
-/// to print (exit 2).
+/// Exit codes: 0 ok; 1 finished with `error:` findings (drift in a managed file the run
+/// could not edit; everything else was written and committed); 3 commit failed (the
+/// template changes were rolled back). Errors bubble up for the caller to print (exit 2).
 pub fn run(args: &Args) -> Result<ExitCode> {
   let dry_run = args.dry_run;
   let root = crate::context::strip_verbatim(args.root.canonicalize().unwrap_or(args.root.clone()));
@@ -190,9 +190,16 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   for warning in &changes.warnings {
     eprintln!("warning: {warning}");
   }
-  for problem in &changes.problems {
-    println!("problem: {problem}");
+  for error in &changes.errors {
+    eprintln!("error: {error}");
   }
+  // An error is a finding on the repo, not something to write: the run finishes, and the
+  // exit code carries the finding (a commit failure below still wins with 3).
+  let exit = if changes.errors.is_empty() {
+    ExitCode::SUCCESS
+  } else {
+    ExitCode::from(1)
+  };
   if changes.is_empty() {
     // No file differs from its merge base; undo the staging so the user's uncommitted
     // edits to managed files are back in place.
@@ -201,13 +208,12 @@ pub fn run(args: &Args) -> Result<ExitCode> {
       aeth_devkit_core::commit::unstage_clean_base(&root, bases)?;
       crate::packages::resync_after_replay(&root, &runner, bases, &changes);
     }
-    if changes.problems.is_empty() {
+    if changes.errors.is_empty() {
       println!("Nothing to do — project already matches the templates.");
-      return Ok(ExitCode::SUCCESS);
+    } else {
+      println!("Nothing to write; the error(s) above need a hand edit.");
     }
-    // A problem is a finding on the repo, not something to write.
-    println!("Nothing to write; the problem(s) above need a hand edit.");
-    return Ok(ExitCode::SUCCESS);
+    return Ok(exit);
   }
   let header = if dry_run { "Would change:" } else { "Changed:" };
   println!("{header}\n{}", changes.report(&root));
@@ -232,5 +238,5 @@ pub fn run(args: &Args) -> Result<ExitCode> {
       }
     }
   }
-  Ok(ExitCode::SUCCESS)
+  Ok(exit)
 }

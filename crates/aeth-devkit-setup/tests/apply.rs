@@ -585,9 +585,10 @@ fn the_unlisted_services_warning_can_be_silenced() {
 }
 
 #[test]
-fn an_unsupported_compose_shape_is_a_problem_reported_on_every_dry_run() {
+fn an_unsupported_compose_shape_is_an_error_on_every_run_and_exits_1() {
   // A listed service is a declared intent to have the compose file managed, so a shape
-  // the engine cannot edit is a `problem:`; a finding for a hand edit, never an exit code.
+  // the engine cannot edit is an `error:`: the rest of the run still writes, and the exit
+  // code says the project is not clean.
   let dir = make_project();
   let root = dir.path();
   let args = aeth_devkit_setup::cli::Args {
@@ -601,18 +602,18 @@ fn an_unsupported_compose_shape_is_a_problem_reported_on_every_dry_run() {
   };
   run(root, false).unwrap();
   assert_eq!(aeth_devkit_setup::cli::run(&args).unwrap(), std::process::ExitCode::SUCCESS);
-  // An include-only aggregator is a supported layout: a warning, no problem.
+  // An include-only aggregator is a supported layout: a warning, no error.
   write(root, "docker/compose.yaml", "include:\n  - path: other.yaml\n");
   let changes = run(root, true).unwrap();
-  assert!(changes.problems.is_empty(), "{:?}", changes.problems);
+  assert!(changes.errors.is_empty(), "{:?}", changes.errors);
   assert_eq!(changes.warnings.len(), 1, "{:?}", changes.warnings);
-  // A shape the user could reformat is the problem, on this run and the next.
+  // A shape the user could reformat is the error, on this run and the next.
   write(root, "docker/compose.yaml", "services: {imap-report-collector: {image: x}}\n");
   for _ in 0..2 {
     let changes = run(root, true).unwrap();
-    assert!(changes.is_empty(), "no drift, only a problem: {changes:?}");
-    assert_eq!(changes.problems.len(), 1, "{:?}", changes.problems);
-    assert_eq!(aeth_devkit_setup::cli::run(&args).unwrap(), std::process::ExitCode::SUCCESS);
+    assert!(changes.is_empty(), "no drift, only an error: {changes:?}");
+    assert_eq!(changes.errors.len(), 1, "{:?}", changes.errors);
+    assert_eq!(aeth_devkit_setup::cli::run(&args).unwrap(), std::process::ExitCode::from(1));
   }
 }
 

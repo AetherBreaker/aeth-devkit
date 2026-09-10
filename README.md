@@ -41,9 +41,10 @@ a working tree rendered instead of the environment's `devkit-templates` package)
 prompts read stdin, a terminal or a pipe alike; if the input ends before a question is
 answered the run is cancelled (exit 2, the changes rolled back when committing), never
 finished on defaults. A run with no stdin at all (a closed handle or the null device) is
-refused up front unless nothing will be asked: `-y` or `--dry-run`. A dry run exits 0; a
-`problem:` line is a finding for a hand edit, not an exit code. Idempotent — a second run
-is a byte-for-byte no-op.
+refused up front unless nothing will be asked: `-y` or `--dry-run`. An `error:` line
+(stderr) is drift in a managed file the run could not edit; the run still writes and
+commits everything else, then exits 1, dry or not. Otherwise exit 0. Idempotent — a second
+run is a byte-for-byte no-op.
 
 - **Project discovery** - Detects the package name and layout (`src/` vs `python/`), Rust
   (`Cargo.toml` enables the Rust overlays), Docker (`[tool.docker].services` non-empty
@@ -122,11 +123,11 @@ is a byte-for-byte no-op.
   diff; accepting it adds the scaffold block. Keys the standard does not name are never
   touched, and a shape the engine does not model (a flow-style `volumes: [...]` /
   `environment: {...}`, a list-form `build.args`) is judged on its text and reported as a
-  `problem:` rather than edited, so the file is never left unparseable; so is an inline
-  `services:` or an inline service block, which the step leaves whole. A `problem:` is
+  `error:` rather than edited, so the file is never left unparseable; so is an inline
+  `services:` or an inline service block, which the step leaves whole. An `error:` is
   reported on every run until the file is fixed by hand, since a listed service declares
   the file managed. A compose file with no top-level `services:` key is a `warning:` on
-  stderr instead, not a problem:
+  stderr instead, not an error:
   an `include:`-only aggregator is a supported Compose layout whose services live in the
   included files, and writing one here would conflict with them rather than override. The
   Dockerfile is rendered from the installed `devkit-container` package; the package step

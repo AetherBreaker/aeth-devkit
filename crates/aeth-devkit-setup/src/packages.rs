@@ -198,7 +198,7 @@ pub fn latest_requested(template: &str) -> Vec<String> {
 /// binary's version, so such a lock means the venv is out of step with it: the lock step
 /// must not paper over that by moving devkit's entry to match the binary. On a committing
 /// run this is HEAD's lock (the run merges against HEAD), so a lock moved but not committed
-/// reads as stale. A plain run stops; a dry run records a problem (it must not read as
+/// reads as stale. A plain run stops; a dry run records an error (it must not read as
 /// clean), once, though the bootstrap and each `advance` all ask.
 fn refuse_stale_lock(lock: Option<&str>, dry_run: bool, changes: &mut Changes) -> Result<()> {
   if let Some(v) = lock.and_then(|l| locked_registry_version(l, "aeth-devkit"))
@@ -210,8 +210,8 @@ fn refuse_stale_lock(lock: Option<&str>, dry_run: bool, changes: &mut Changes) -
     if !dry_run {
       bail!(message);
     }
-    if !changes.problems.contains(&message) {
-      changes.problems.push(message);
+    if !changes.errors.contains(&message) {
+      changes.errors.push(message);
     }
   }
   Ok(())

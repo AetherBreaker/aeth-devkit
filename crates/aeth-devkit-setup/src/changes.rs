@@ -40,13 +40,14 @@ pub struct Changes {
   /// `warning:` lines (stderr): a managed file devkit deliberately left whole because the
   /// project's layout puts it out of reach, not because anything is wrong with it, or a step
   /// outside the project (the index refresh, the completion install) that failed without
-  /// invalidating the run. Never written: a supported layout is never a `problem:`.
+  /// invalidating the run. Never written: a supported layout is never an `error:`.
   pub warnings: Vec<String>,
-  /// `problem:` lines: drift the run saw in a file it manages but could not edit (a compose
-  /// shape the engine does not model). Never written, never committed; reported on every
-  /// run until it is fixed by hand, since a listed service is a declared intent to have the
-  /// file managed.
-  pub problems: Vec<String>,
+  /// `error:` lines (stderr): drift the run saw in a file it manages but could not edit (a
+  /// compose shape the engine does not model), or a dry run's stale lock. Never written,
+  /// never committed; reported on every run until fixed by hand, since a listed service is
+  /// a declared intent to have the file managed. The run still writes and commits the rest,
+  /// then exits 1 (`cli::run`): a `warning:` would read as clean, and these are not.
+  pub errors: Vec<String>,
   /// The package step ran `uv sync`; a committing run resyncs after the replay when the
   /// lock it synced was HEAD's copy rather than the user's (see `packages::resync_after_replay`).
   pub venv_synced: bool,
@@ -62,7 +63,7 @@ impl Changes {
       managed: Vec::new(),
       notes: Vec::new(),
       warnings: Vec::new(),
-      problems: Vec::new(),
+      errors: Vec::new(),
       venv_synced: false,
     }
   }

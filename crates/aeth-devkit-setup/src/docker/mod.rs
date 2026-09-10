@@ -212,13 +212,13 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
       // Still recorded as managed (the gitignore advisory in `lib` reads that list).
       changes.record_optional(&path, Some(&original), &original, vec![])?;
       if found.is_some() {
-        changes.problems.push(format!(
+        changes.errors.push(format!(
           "{rel} writes `services:` inline, which the compose step cannot edit; switch it to the block form."
         ));
       } else {
         // An `include:`-only aggregator is a supported Compose layout: the services live
         // in the included files, and defining one here would conflict with them rather
-        // than override. Nothing to fix, so this warns instead of being a `problem:`.
+        // than override. Nothing to fix, so this warns instead of being an `error:`.
         changes.warnings.push(format!(
           "{rel} has no top-level `services:` key, so the compose step left it alone. If it only `include:`s other files, devkit cannot manage the services they define; add the app service here by hand, or remove the file to get a scaffold."
         ));
@@ -269,13 +269,13 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
     match tree::child(&lines, &services, name) {
       // `app: {image: x}`: nothing can be inserted under it.
       Some(svc) if svc.is_inline() => {
-        changes.problems.push(format!(
+        changes.errors.push(format!(
           "{rel}: service {name} is written inline, which the compose step cannot edit; switch it to the block form."
         ));
       }
       Some(svc) => {
         let o = compose_rules::service_edits(&lines, &svc, &sc_doc, &sc_svc, name);
-        changes.problems.extend(o.problems);
+        changes.errors.extend(o.errors);
         ask(
           &mut text,
           &format!("service {name}"),
@@ -310,7 +310,7 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
   }
   let lines = tree::split_lines(&text);
   let o = compose_rules::top_level_edits(&lines, &tree::split_lines(&sc.tail));
-  changes.problems.extend(o.problems);
+  changes.errors.extend(o.errors);
   ask(
     &mut text,
     "top level",

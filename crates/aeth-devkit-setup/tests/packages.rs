@@ -242,16 +242,16 @@ fn a_package_locked_from_a_path_gets_no_floor() {
 }
 
 #[test]
-fn a_dry_run_reports_a_lock_on_another_devkit_as_a_problem() {
+fn a_dry_run_reports_a_lock_on_another_devkit_as_an_error() {
   let lock = lock_with("1.4.0").replace(&format!("version = \"{RUNNING_DEVKIT}\""), "version = \"0.0.1\"");
   let dir = project(DOCKER_PYPROJECT, Some(&lock));
   let runner = RecordingRunner::new(0);
   let index = StubIndexClient { versions: vec![] };
   let changes = advance(dir.path(), &runner, &index, &venv(Some("1.4.0")), &latest(), true).unwrap();
   assert!(
-    changes.problems.iter().any(|p| p.contains("0.0.1") && p.contains(RUNNING_DEVKIT)),
+    changes.errors.iter().any(|p| p.contains("0.0.1") && p.contains(RUNNING_DEVKIT)),
     "{:?}",
-    changes.problems
+    changes.errors
   );
   assert!(runner.calls_for("uv").is_empty());
 }
@@ -526,7 +526,7 @@ fn the_bootstrap_creates_the_tables_it_needs_without_empty_headers() {
 }
 
 #[test]
-fn a_stale_lock_is_one_problem_on_a_dry_run_and_stops_a_plain_run_before_any_write() {
+fn a_stale_lock_is_one_error_on_a_dry_run_and_stops_a_plain_run_before_any_write() {
   let stale = lock_with_templates("1.0.0").replace(&format!("version = \"{RUNNING_DEVKIT}\""), "version = \"0.0.1\"");
   let listed = PLAIN_PYPROJECT.replace("\"devkit-poe-complete\"]", "\"devkit-poe-complete\", \"devkit-templates>=1.0.0\"]");
   let dir = project(&listed, Some(&stale));
@@ -534,7 +534,7 @@ fn a_stale_lock_is_one_problem_on_a_dry_run_and_stops_a_plain_run_before_any_wri
   let index = StubIndexClient { versions: vec![] };
   // The bootstrap and its `advance` both ask; one report.
   let (_, changes) = ensure(dir.path(), &runner, &index, &venv_with_templates("1.0.0"), true).unwrap();
-  assert_eq!(changes.problems.len(), 1, "{:?}", changes.problems);
+  assert_eq!(changes.errors.len(), 1, "{:?}", changes.errors);
   assert!(runner.calls_for("uv").is_empty());
   let dir = project(PLAIN_PYPROJECT, Some(&stale));
   let err = ensure(dir.path(), &runner, &index, &venv(None), false).unwrap_err().to_string();
