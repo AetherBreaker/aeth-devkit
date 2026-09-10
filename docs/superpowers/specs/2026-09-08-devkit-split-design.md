@@ -336,7 +336,9 @@ release.
 
 Steps 1 to 4 are done and released (aeth-devkit 14.0.0, devkit-templates 1.1.0); the six repos
 are on 14.0.0. Much of 4.5 happened inside those steps, so step 5 is smaller than its line
-suggests. Consumers are still not migrated: they move after step 5, not during it.
+suggests. ~~Consumers are still not migrated: they move after step 5, not during it.~~ Downstream
+consumer migration (not the devkit satellite repos) is done by the owner by hand, outside any
+plan; no step of this spec covers it.
 
 **Already done, do not redo**: the CI jobs 4.5 names are gone and `devkit-container.yml` /
 `vscode-extension.yml` are deleted; the templates directory is gone and `templates::locate`
@@ -372,10 +374,11 @@ the cross-repo check and stays.
    to that repo's README. "Migrating from `poe-tasks`" is a 7.0.0-era section: keep it only
    if a `poe-tasks` project still exists, else drop it and the `aeth-devkit>=7.0.0` example
    with it.
-4. *Release* `aeth-devkit` (patch or minor; no contract changes unless item 1 removes a gate),
-   then the consumer migration per section 9: `aeth_ext`, `IMAPReportCollector`,
+4. *Release* `aeth-devkit` (patch or minor; no contract changes unless item 1 removes a gate).
+   ~~Then the consumer migration per section 9: `aeth_ext`, `IMAPReportCollector`,
    `ScheduledInvoiceProcessor`, `ScheduledReportAggregator`, `timeclock_entry_processor`,
-   each through `poe setup-project`, twice, the second run reporting nothing to do.
+   each through `poe setup-project`, twice, the second run reporting nothing to do.~~ (Owner's
+   job, by hand; see the note at the top of 7.1.)
 
 Constraints that bind every item: the project's Bash hook refuses `uv add` / `uv remove` /
 `uv lock` (use `uv sync`, `poe lock`, `setup-project`); `poe release` note words cannot start
@@ -416,8 +419,9 @@ multi-line Python in a heredoc.
 
 ## 9. Done means
 
-- Every sister project, after migration: a second `poe setup-project` immediately after the first
-  reports nothing to do, and Claude Code hooks and poe completion work from the new binaries.
+- ~~Every sister project, after migration: a second `poe setup-project` immediately after the first
+  reports nothing to do, and Claude Code hooks and poe completion work from the new binaries.~~
+  (Consumer migration is the owner's, by hand; not a done-criterion of any step.)
 - `ScheduledReportAggregator` builds with `devkit-container` installed from SFTPyPI.
 - The container smoke test is green in the container repo's CI.
 - A templates release flows to a project through `setup-project` with no devkit release. A
