@@ -171,7 +171,10 @@ pub fn run_real(args: &Args) -> Result<ExitCode> {
 
 /// Rewrite `pkg`'s requirement in `doc` to the latest stable version on its index.
 fn bump_pin(doc: &mut DocumentMut, pkg: &str, index: &dyn IndexClient) -> Result<()> {
-  let Some(req) = pyproject::find_requirement(doc, pkg) else {
+  // The tooling pin first: a project that also names the package under
+  // `[project].dependencies` (devkit-templates, whose floor is its compatibility contract)
+  // keeps that requirement.
+  let Some(req) = pyproject::find_requirement_in_groups(doc, pkg).or_else(|| pyproject::find_requirement(doc, pkg)) else {
     println!("No {pkg} pin found in pyproject.toml; skipping pin update");
     return Ok(());
   };
