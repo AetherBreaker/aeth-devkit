@@ -25,10 +25,6 @@ pub struct Args {
   #[arg(long)]
   pub dry_run: bool,
 
-  /// Like --dry-run, but exit non-zero if anything would change.
-  #[arg(long)]
-  pub check: bool,
-
   /// Do not commit the changes. By default, when the project is git-tracked, the changed
   /// files (never env files) are committed with a standard message.
   #[arg(long)]
@@ -49,15 +45,13 @@ pub struct Args {
 }
 
 /// [`run`], refused first when there is no standard input to answer a prompt from (see
-/// `prompt::stdin_present`) unless nothing will be asked: `--yes`, `--dry-run`, `--check`.
+/// `prompt::stdin_present`) unless nothing will be asked: `--yes`, `--dry-run`.
 /// A pipe counts as input: its lines answer the prompts, and running dry mid-way cancels
 /// the run. A launch with no input at all would otherwise block on a question nobody can
 /// answer, so it fails fast instead. Tests call [`run`] directly, which has no such check.
 pub fn run_reject_headless(args: &Args) -> Result<ExitCode> {
-  if !(args.yes || args.dry_run || args.check) && !aeth_devkit_core::prompt::stdin_present() {
-    bail!(
-      "setup-project has no standard input to answer its prompts from; pass -y/--yes to accept every change, or use --dry-run/--check"
-    );
+  if !(args.yes || args.dry_run) && !aeth_devkit_core::prompt::stdin_present() {
+    bail!("setup-project has no standard input to answer its prompts from; pass -y/--yes to accept every change, or use --dry-run");
   }
   run(args)
 }
@@ -82,11 +76,11 @@ fn refuse_uncommitted_services(root: &Path) -> Result<()> {
   Ok(())
 }
 
-/// Exit codes: 0 ok, 1 `--check` found drift or a `problem:` (see `Changes::problems`),
-/// 3 commit failed (the template changes were rolled back). Errors bubble up for the
-/// caller to print (exit 2).
+/// Exit codes: 0 ok (a `problem:` line is a finding for a hand edit, not a failure), 3
+/// commit failed (the template changes were rolled back). Errors bubble up for the caller
+/// to print (exit 2).
 pub fn run(args: &Args) -> Result<ExitCode> {
-  let dry_run = args.dry_run || args.check;
+  let dry_run = args.dry_run;
   let root = crate::context::strip_verbatim(args.root.canonicalize().unwrap_or(args.root.clone()));
   // `IsTerminal` is how std asks "is a human here?": VS Code is only worth opening when
   // one is, not when a pipe is scripting the answers.
@@ -104,9 +98,9 @@ pub fn run(args: &Args) -> Result<ExitCode> {
     println!("note: {e:#}; a Ctrl-C will not wait for a write in progress to finish.");
   }
   // VS Code is consulted only where a human could answer in the terminal anyway: never
-  // for --check (hooks and CI), never without a tty, never when --yes has already
-  // answered. It runs before staging so a "reload and rerun" stop touches nothing.
-  let vs = if args.no_vscode || args.check || !tty || args.yes {
+  // without a tty (hooks and CI), never when --yes has already answered. It runs before
+  // staging so a "reload and rerun" stop touches nothing.
+  let vs = if args.no_vscode || !tty || args.yes {
     None
   } else {
     let opts = crate::vscode::Options::from_env(args.vscode, !dry_run, &root);
@@ -211,9 +205,9 @@ pub fn run(args: &Args) -> Result<ExitCode> {
       println!("Nothing to do — project already matches the templates.");
       return Ok(ExitCode::SUCCESS);
     }
-    // A problem is a finding on the repo (exit 1 for `--check`), not something to write.
+    // A problem is a finding on the repo, not something to write.
     println!("Nothing to write; the problem(s) above need a hand edit.");
-    return Ok(if args.check { ExitCode::from(1) } else { ExitCode::SUCCESS });
+    return Ok(ExitCode::SUCCESS);
   }
   let header = if dry_run { "Would change:" } else { "Changed:" };
   println!("{header}\n{}", changes.report(&root));
@@ -222,9 +216,6 @@ pub fn run(args: &Args) -> Result<ExitCode> {
     && let Err(e) = crate::vscode::session::open_review(vs, &runner, &root, &changes.previews, crate::vscode::session::ACK_TIMEOUT)
   {
     println!("note: could not open the review in VS Code: {e:#}");
-  }
-  if args.check {
-    return Ok(ExitCode::from(1));
   }
   if let Some(bases) = &mut bases {
     let _w = crate::interrupt::Writing::begin();

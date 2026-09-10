@@ -256,7 +256,7 @@ fn dry_run_records_docker_drift_without_writing_or_asking() {
   assert!(prompt.asked.borrow().is_empty());
   assert!(
     changes.files.iter().any(|f| f.path.ends_with("Dockerfile")),
-    "--check must see Docker drift"
+    "a dry run must see Docker drift"
   );
   assert_eq!(read(root, "docker/Dockerfile"), "FROM scratch\n");
 }
@@ -396,7 +396,7 @@ fn adding_a_missing_service_is_asked_past_replace_all_but_not_past_yes() {
     container_name: worker
 "
   ));
-  assert!(run(root, Mode::DryRun, &[], true).0.is_empty(), "--check agrees afterwards");
+  assert!(run(root, Mode::DryRun, &[], true).0.is_empty(), "a dry run agrees afterwards");
 }
 
 #[test]
@@ -410,8 +410,8 @@ fn a_compose_file_without_services_warns_and_the_run_goes_on() {
   let (changes, _, _) = run(root, Mode::ReplaceAll, &[], false);
   assert_eq!(read(root, "docker/compose.yaml"), include_only, "left alone");
   assert!(root.join("docker/Dockerfile").is_file(), "the rest of the Docker step still ran");
-  // An `include:`-only aggregator is a supported layout, so it warns and `--check` still
-  // passes; only shapes the user could reformat are `problem:`s.
+  // An `include:`-only aggregator is a supported layout, so it warns; only shapes the user
+  // could reformat are `problem:`s.
   assert!(
     changes.warnings.iter().any(|n| n.contains("no top-level `services:` key")),
     "{:?}",

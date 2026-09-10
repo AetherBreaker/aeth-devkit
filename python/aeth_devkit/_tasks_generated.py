@@ -130,12 +130,12 @@ _RAW = {'env': {},
                               'options': ['--all-extras'],
                               'type': 'boolean',
                               'help': 'Include all optional dependencies (uv sync --all-extras)'}]},
-           'setup-project': {'help': "Standardize this project's configuration from the templates shipped "
-                                     'with aeth-devkit (cache dirs under .cache/, PYTHONPYCACHEPREFIX in '
-                                     '.env and VS Code, inlined ruff/pyright config, '
+           'setup-project': {'help': "Standardize this project's configuration from the devkit-templates "
+                                     'package (cache dirs under .cache/, PYTHONPYCACHEPREFIX in .env and VS '
+                                     'Code, inlined ruff/pyright config, '
                                      '.gitignore/.gitattributes/.dockerignore). Idempotent. Extra args are '
-                                     'passed to devkit setup-project: --dry-run, --check, --no-commit, '
-                                     '-y/--yes, --templates-dir PATH.',
+                                     'passed to devkit setup-project: --dry-run, --no-commit, -y/--yes, '
+                                     '--templates-dir PATH.',
                              'cmd': 'devkit setup-project'}}}
 
 

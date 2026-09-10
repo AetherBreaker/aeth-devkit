@@ -233,11 +233,11 @@ tasks.add(
   task_name="setup-project",
   task_config={
     "help": (
-      "Standardize this project's configuration from the templates shipped with aeth-devkit "
+      "Standardize this project's configuration from the devkit-templates package "
       "(cache dirs under .cache/, PYTHONPYCACHEPREFIX in .env and VS Code, inlined ruff/pyright "
       "config, .gitignore/.gitattributes/.dockerignore). Idempotent. "
-      "Extra args are passed to devkit setup-project: --dry-run, --check, --no-commit, "
-      "-y/--yes, --templates-dir PATH."
+      "Extra args are passed to devkit setup-project: --dry-run, --no-commit, -y/--yes, "
+      "--templates-dir PATH."
     ),
     "cmd": "devkit setup-project",
   },

@@ -423,7 +423,6 @@ fn an_uncommitted_services_change_cancels_a_committing_run() {
       root: root.to_path_buf(),
       templates_dir: Some(templates()),
       dry_run: false,
-      check: false,
       no_commit: false,
       yes: false,
       vscode: false,
@@ -524,14 +523,27 @@ fn a_run_without_standard_input_is_refused_unless_nothing_will_be_asked() {
     .unwrap();
   let err = String::from_utf8_lossy(&out.stderr);
   assert!(err.contains("pyproject.toml") && !err.contains("no standard input"), "{err}");
-  // Set up once (in-process, no network), then the headless dry forms are accepted: clean
-  // is 0, a deleted managed file is drift (1 for --check, still 0 for --dry-run).
+  // Set up once (in-process, no network), then the headless dry run is accepted: exit 0
+  // clean, and exit 0 with the drift reported after a managed file is deleted.
   super_run(root, false).unwrap();
-  assert_eq!(run(root, &["--check"]).0, Some(0));
-  fs::remove_file(root.join(".dockerignore")).unwrap();
-  assert_eq!(run(root, &["--check"]).0, Some(1), "drift is still reported");
   assert_eq!(run(root, &["--dry-run"]).0, Some(0));
-  assert!(!root.join(".dockerignore").exists(), "dry forms write nothing");
+  fs::remove_file(root.join(".dockerignore")).unwrap();
+  let out = std::process::Command::new(exe)
+    .arg("--root")
+    .arg(root)
+    .arg("--templates-dir")
+    .arg(templates())
+    .arg("--dry-run")
+    .stdin(std::process::Stdio::null())
+    .output()
+    .unwrap();
+  let stdout = String::from_utf8_lossy(&out.stdout);
+  assert_eq!(out.status.code(), Some(0), "{stdout}");
+  assert!(
+    stdout.contains("Would change:") && stdout.contains(".dockerignore"),
+    "drift is reported: {stdout}"
+  );
+  assert!(!root.join(".dockerignore").exists(), "a dry run writes nothing");
 }
 
 #[test]
@@ -573,37 +585,35 @@ fn the_unlisted_services_warning_can_be_silenced() {
 }
 
 #[test]
-fn check_fails_on_a_compose_file_the_engine_cannot_edit() {
+fn an_unsupported_compose_shape_is_a_problem_reported_on_every_dry_run() {
   // A listed service is a declared intent to have the compose file managed, so a shape
-  // the engine cannot edit is a `problem:` and `--check` exits 1 even with no drift.
+  // the engine cannot edit is a `problem:`; a finding for a hand edit, never an exit code.
   let dir = make_project();
   let root = dir.path();
-  let args = |check: bool| aeth_devkit_setup::cli::Args {
+  let args = aeth_devkit_setup::cli::Args {
     root: root.to_path_buf(),
     templates_dir: Some(templates()),
-    dry_run: !check,
-    check,
+    dry_run: true,
     no_commit: true,
     yes: false,
     vscode: false,
     no_vscode: true,
   };
   run(root, false).unwrap();
-  assert_eq!(aeth_devkit_setup::cli::run(&args(true)).unwrap(), std::process::ExitCode::SUCCESS);
-  // An include-only aggregator is a supported layout: a warning, not a check failure.
+  assert_eq!(aeth_devkit_setup::cli::run(&args).unwrap(), std::process::ExitCode::SUCCESS);
+  // An include-only aggregator is a supported layout: a warning, no problem.
   write(root, "docker/compose.yaml", "include:\n  - path: other.yaml\n");
   let changes = run(root, true).unwrap();
   assert!(changes.problems.is_empty(), "{:?}", changes.problems);
   assert_eq!(changes.warnings.len(), 1, "{:?}", changes.warnings);
-  assert_eq!(aeth_devkit_setup::cli::run(&args(true)).unwrap(), std::process::ExitCode::SUCCESS);
-  // A shape the user could reformat still fails.
+  // A shape the user could reformat is the problem, on this run and the next.
   write(root, "docker/compose.yaml", "services: {imap-report-collector: {image: x}}\n");
-  let changes = run(root, true).unwrap();
-  assert!(changes.is_empty(), "no drift, only a problem: {changes:?}");
-  assert_eq!(changes.problems.len(), 1, "{:?}", changes.problems);
-  assert_eq!(aeth_devkit_setup::cli::run(&args(true)).unwrap(), std::process::ExitCode::from(1));
-  // A plain dry run reports it but is not a check.
-  assert_eq!(aeth_devkit_setup::cli::run(&args(false)).unwrap(), std::process::ExitCode::SUCCESS);
+  for _ in 0..2 {
+    let changes = run(root, true).unwrap();
+    assert!(changes.is_empty(), "no drift, only a problem: {changes:?}");
+    assert_eq!(changes.problems.len(), 1, "{:?}", changes.problems);
+    assert_eq!(aeth_devkit_setup::cli::run(&args).unwrap(), std::process::ExitCode::SUCCESS);
+  }
 }
 
 #[test]
@@ -979,7 +989,7 @@ fn release_workflow_is_installed_and_replaced_on_drift() {
     changes.notes
   );
 
-  // Devkit-owned: a hand edit is put back, and it counts as a change (so `--check` fails).
+  // Devkit-owned: a hand edit is put back, and it counts as a change a dry run reports.
   write(root, ".github/workflows/release.yml", "name: mine\n");
   let changes = run(root, true).unwrap();
   assert!(changes.files.iter().any(|f| f.path.ends_with("release.yml")), "{:?}", changes.files);
