@@ -17,7 +17,7 @@
   # addopts passes --cov (pytest-cov) and the config sets asyncio_mode (pytest-asyncio).
   dev = [
     "devkit-claude-hooks>=1.0.0",
-    "devkit-poe-complete>=1.0.0",
+    "devkit-poe-complete>=1.1.0",
     "devkit-templates>=1.1.0",
     "maturin>=1.7,<2",
     "poethepoet>=0.46.0",

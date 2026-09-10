@@ -36,7 +36,7 @@ requires-dist = [{ name = "poethepoet", specifier = ">=0.46.0" }]
 [package.metadata.requires-dev]
 dev = [
     { name = "devkit-claude-hooks", specifier = ">=1.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
-    { name = "devkit-poe-complete", specifier = ">=1.0.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
+    { name = "devkit-poe-complete", specifier = ">=1.1.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "devkit-templates", specifier = ">=1.1.0", index = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" },
     { name = "maturin", specifier = ">=1.7,<2" },
     { name = "poethepoet", specifier = ">=0.46.0" },
@@ -234,12 +234,12 @@ wheels = [
 
 [[package]]
 name = "devkit-poe-complete"
-version = "1.0.0"
+version = "1.1.0"
 source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" }
-sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/e24/d25dbddfe8d8c/devkit_poe_complete-1.0.0.tar.gz", hash = "sha256:e24d25dbddfe8d8c6f9678b85526dbcd11c907f4b189963c80eb34dfa7bd950a" }
+sdist = { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/f33/fc6289fe9e763/devkit_poe_complete-1.1.0.tar.gz", hash = "sha256:f33fc6289fe9e763dd55443c0c4428d3ea25261f060abf7409183961b6b6fa6e" }
 wheels = [
-    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/e4c/c172fef790d5e/devkit_poe_complete-1.0.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e4cc172fef790d5ed8fc1f49f61a8280b213b1ff6ee2bdba6fa55f9115e462c6" },
-    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/7c9/a3cfc35ceac21/devkit_poe_complete-1.0.0-py3-none-win_amd64.whl", hash = "sha256:7c9a3cfc35ceac21232b9c0eee7ba72d812974ef1b9ee87f3b8acdd6b9847b89" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/1e2/b82884af5e8a3/devkit_poe_complete-1.1.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1e2b82884af5e8a358c71364e474441c06486f28d86d47e1abb70357a3ad940a" },
+    { url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+f/1dc/1c607007052a5/devkit_poe_complete-1.1.0-py3-none-win_amd64.whl", hash = "sha256:1dc1c607007052a5fb3af4586279ec6be6c8b41cda8aaf757893f755e137386d" },
 ]
 
 [[package]]
