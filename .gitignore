@@ -259,8 +259,9 @@ persisted_data/
 .env.*
 !.env.example
 
-# Templates shipped in the wheel must never be ignored (template.env matches *.env above)
-!python/aeth_devkit/templates/**
+# The template snapshot the setup tests render must never be ignored (its template.env
+# matches *.env above)
+!crates/aeth-devkit-setup/tests/fixtures/templates/**
 
 # crates/aeth-devkit/build.rs writes the baked task table through a temporary in this
 # directory before renaming it into place. It only survives a build killed mid-write, but it

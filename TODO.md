@@ -47,8 +47,6 @@ design exists. Check items off in place; delete them once released.
       that opts a project out of Dockerfile management.
 - [x] `if-docker` conditional marker for template tables (mirrors `if-dep`; drives the
       `[tool.docker]` item above). Done on `feat/agent-config`.
-- [ ] Vendored gitignore refresh: a `poe` task or script that re-fetches
-      `Python.gitignore` / `Rust.gitignore` from GitHub into the templates.
 - [ ] Consider a `--python-dir` override for projects whose Python package is neither in
       `src/` nor `python/`.
 

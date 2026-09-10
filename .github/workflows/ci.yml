@@ -115,9 +115,16 @@ jobs:
           uv venv "$RUNNER_TEMP/tpl" --python 3.14
           uv pip install --python "$RUNNER_TEMP/tpl/bin/python" --no-deps --index https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple devkit-templates
           tpl="$("$RUNNER_TEMP/tpl/bin/python" -c 'import devkit_templates, os; print(os.path.join(os.path.dirname(devkit_templates.__file__), "templates"))')"
-          for kind in python docker; do
+          for kind in python rust docker; do
             root="$RUNNER_TEMP/scratch-$kind"
-            mkdir -p "$root/src/scratch_app" && : > "$root/src/scratch_app/__init__.py"
+            # A package directory under python/ marks a mixed Rust/Python layout; src/ otherwise.
+            pkg_dir=src; [ "$kind" = rust ] && pkg_dir=python
+            mkdir -p "$root/$pkg_dir/scratch_app"
+            : > "$root/$pkg_dir/scratch_app/__init__.py"
+            if [ "$kind" = rust ]; then
+              printf '[package]\nname = "scratch-app"\nversion = "0.1.0"\nedition = "2024"\n\n[lib]\npath = "src/lib.rs"\n' > "$root/Cargo.toml"
+              mkdir -p "$root/src" && : > "$root/src/lib.rs"
+            fi
             {
               printf '[project]\nname = "scratch-app"\nversion = "0.1.0"\nrequires-python = ">=3.14"\ndependencies = []\n\n'
               if [ "$kind" = docker ]; then printf '[tool.docker]\nservices = ["scratch-app"]\n\n'; fi

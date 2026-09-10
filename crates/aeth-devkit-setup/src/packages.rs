@@ -200,6 +200,29 @@ pub fn latest_requested(template: &str) -> Vec<String> {
     .collect()
 }
 
+/// A lock naming another devkit than the running one. The constraint is the running
+/// binary's version, so such a lock means the venv is out of step with it: the lock step
+/// must not paper over that by moving devkit's entry to match the binary. On a committing
+/// run this is HEAD's lock (the run merges against HEAD), so a lock moved but not committed
+/// reads as stale. A plain run stops; a dry run records a problem (it must not read as
+/// clean), once, though the bootstrap and each `advance` all ask.
+fn refuse_stale_lock(lock: Option<&str>, dry_run: bool, changes: &mut Changes) -> Result<()> {
+  if let Some(v) = lock.and_then(|l| locked_registry_version(l, "aeth-devkit"))
+    && v != RUNNING_DEVKIT
+  {
+    let message = format!(
+      "uv.lock pins aeth-devkit {v} but this devkit is {RUNNING_DEVKIT}; run `uv sync --frozen` so the venv matches the lock (or commit a uv.lock you already moved), then rerun setup-project; to move the project to this devkit instead, run `devkit lock` first"
+    );
+    if !dry_run {
+      bail!(message);
+    }
+    if !changes.problems.contains(&message) {
+      changes.problems.push(message);
+    }
+  }
+  Ok(())
+}
+
 /// Bring `packages` to the newest release the running devkit accepts, write the floors for
 /// the names in `latest` (a bare requirement becomes `name>=<locked>`), and sync the venv.
 /// Twice per run: [`TEMPLATES`] alone from `ensure_templates` before anything renders, then
@@ -216,25 +239,7 @@ pub fn advance(
   let root = &ctx.root;
   let lock_path = root.join("uv.lock");
   let lock_before = crate::read_optional(&lock_path)?;
-  // The constraint is the running binary's version, so a lock that already names another
-  // devkit means the venv is out of step with the lock: the lock step must not paper over
-  // that by moving devkit's entry to match the binary. On a committing run this is HEAD's
-  // lock (the run merges against HEAD), so a lock moved but not committed reads as stale.
-  // A dry run reports it as a problem: it must not read as clean. Once, though this runs
-  // twice per run.
-  if let Some(v) = lock_before.as_deref().and_then(|l| locked_registry_version(l, "aeth-devkit"))
-    && v != RUNNING_DEVKIT
-  {
-    let message = format!(
-      "uv.lock pins aeth-devkit {v} but this devkit is {RUNNING_DEVKIT}; run `uv sync --frozen` so the venv matches the lock (or commit a uv.lock you already moved), then rerun setup-project; to move the project to this devkit instead, run `devkit lock` first"
-    );
-    if !dry_run {
-      bail!(message);
-    }
-    if !changes.problems.contains(&message) {
-      changes.problems.push(message);
-    }
-  }
+  refuse_stale_lock(lock_before.as_deref(), dry_run, changes)?;
   if dry_run {
     for p in packages.iter().filter(|p| deps.venv.installed(&ctx.root, p).is_none()) {
       changes.notes.push(format!(
@@ -266,7 +271,7 @@ pub fn advance(
       // `devkit lock` can fix: the project's sources or index are pointing elsewhere.
       if reason.contains("was not found in the package registry") {
         bail!(
-          "a devkit package is not on the project's index:\n  {reason}\ncheck that [tool.uv.sources] and [[tool.uv.index]] name the index that publishes it"
+          "a devkit package, or one it depends on, is not on the project's index:\n  {reason}\ncheck that [tool.uv.sources] and [[tool.uv.index]] name the index that publishes it (a source covers a direct dependency only, so aeth-devkit must be listed too)"
         );
       }
       bail!(
@@ -421,6 +426,10 @@ pub fn ensure_templates(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool,
       ctx.name
     );
   }
+  // Before anything is written: a plain run on a stale lock stops here with the lock's
+  // remedy still possible (a bare requirement written first would make `uv sync --frozen`
+  // impossible).
+  refuse_stale_lock(crate::read_optional(&root.join("uv.lock"))?.as_deref(), dry_run, changes)?;
   let pyproject_path = root.join("pyproject.toml");
   let text = std::fs::read_to_string(&pyproject_path).context("reading pyproject.toml")?;
   let doc: DocumentMut = text.parse().context("parsing pyproject.toml")?;

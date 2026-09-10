@@ -138,9 +138,9 @@ fn hook_bin(root: &Path) -> String {
 }
 
 /// The directory that renders instead of the environment's `devkit_templates`, if any:
-/// `--templates-dir`, else `DEVKIT_TEMPLATES`, else `[tool.devkit].templates-dir` (validated
-/// at discovery). Each is a working tree: a checkout beside the project, the templates
-/// repository itself, or its CI. `None` means the package in the venv, which
+/// `--templates-dir`, else `DEVKIT_TEMPLATES`, else `[tool.devkit].templates-dir` (joined at
+/// discovery). Each must exist, and is a working tree: a checkout beside the project, the
+/// templates repository itself, or its CI. `None` means the package in the venv, which
 /// `packages::ensure_templates` installs first when the project lacks it.
 pub fn override_dir(explicit: Option<&Path>, ctx: &ProjectContext) -> Result<Option<PathBuf>> {
   if let Some(p) = explicit {
@@ -149,7 +149,11 @@ pub fn override_dir(explicit: Option<&Path>, ctx: &ProjectContext) -> Result<Opt
   if let Ok(p) = std::env::var("DEVKIT_TEMPLATES") {
     return existing_dir(PathBuf::from(p), "DEVKIT_TEMPLATES").map(Some);
   }
-  Ok(ctx.templates_dir.clone())
+  ctx
+    .templates_dir
+    .clone()
+    .map(|p| existing_dir(p, "[tool.devkit].templates-dir"))
+    .transpose()
 }
 
 fn existing_dir(p: PathBuf, what: &str) -> Result<PathBuf> {
@@ -255,16 +259,24 @@ mod override_dir_tests {
     std::fs::create_dir_all(&a).unwrap();
     std::fs::create_dir_all(&b).unwrap();
     assert_eq!(override_dir(Some(&b), &ctx(dir.path(), Some(a.clone()))).unwrap(), Some(b));
-    // The env branch sits between the two and is the process environment, so it is covered
-    // at binary level (tests/apply.rs), where each run has its own; a unit test setting it
-    // would race the rest of this binary. Asserted only when nothing outside set it.
-    if std::env::var_os("DEVKIT_TEMPLATES").is_none() {
-      assert_eq!(override_dir(None, &ctx(dir.path(), Some(a.clone()))).unwrap(), Some(a));
-      assert_eq!(override_dir(None, &ctx(dir.path(), None)).unwrap(), None);
-    }
     let missing = dir.path().join("missing");
     let err = override_dir(Some(&missing), &ctx(dir.path(), None)).unwrap_err().to_string();
     assert!(err.contains("--templates-dir") && err.contains("missing"), "{err}");
+    // The env branch sits between the two and is the process environment: a unit test
+    // setting it would race the rest of this binary, so it is covered at binary level
+    // (tests/apply.rs). Here, whatever the environment holds is what must win or yield.
+    match std::env::var_os("DEVKIT_TEMPLATES") {
+      Some(env) => {
+        let env = PathBuf::from(env);
+        assert_eq!(override_dir(None, &ctx(dir.path(), Some(a.clone()))).unwrap(), Some(env));
+      }
+      None => {
+        assert_eq!(override_dir(None, &ctx(dir.path(), Some(a.clone()))).unwrap(), Some(a));
+        assert_eq!(override_dir(None, &ctx(dir.path(), None)).unwrap(), None);
+        let err = override_dir(None, &ctx(dir.path(), Some(missing.clone()))).unwrap_err().to_string();
+        assert!(err.contains("[tool.devkit].templates-dir") && err.contains("missing"), "{err}");
+      }
+    }
   }
 }
 

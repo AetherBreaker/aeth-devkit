@@ -1194,17 +1194,13 @@ fn the_venv_path_bootstraps_the_templates_package_and_renders_the_same_files() {
   for rel in rendered.iter().filter(|r| *r != "pyproject.toml") {
     assert_eq!(normalized(via_venv.path(), rel), normalized(via_override.path(), rel), "{rel}");
   }
-  // The floor and the source aside, the pyproject is the same too; whitespace squashed,
-  // since a real run has tombi lay the file out at the end and this harness does not.
-  let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+  // The floor line and the source line aside, the pyproject is byte for byte the same
+  // (tombi lays the file out at the end of a real run; the harness does not run it).
+  let floor = "\n    \"devkit-templates>=1.0.0\",";
+  let source = "\ndevkit-templates = [{ index = \"SFTPyPI\" }]";
+  assert!(py.contains(floor) && py.contains(source), "{py}");
   let reference_py = read(via_override.path(), "pyproject.toml");
-  assert_eq!(
-    squash(&py)
-      .replace("\"devkit-templates>=1.0.0\",", "")
-      .replace(",\"devkit-templates>=1.0.0\"", "")
-      .replace("devkit-templates=[{index=\"SFTPyPI\"}]", ""),
-    squash(&reference_py),
-  );
+  assert_eq!(py.replacen(floor, "", 1).replacen(source, "", 1), reference_py);
   let again = run_from_venv(via_venv.path(), false).unwrap();
   assert!(again.is_empty(), "idempotent: {}", again.report(via_venv.path()));
 }
@@ -1242,5 +1238,104 @@ fn the_env_override_renders_without_a_venv_and_must_be_a_directory() {
   assert!(
     stderr.contains("DEVKIT_TEMPLATES") && stderr.contains("not a directory"),
     "{stderr}"
+  );
+}
+
+#[test]
+fn a_committing_run_bootstraps_the_templates_package_once_and_replays_the_users_edit() {
+  let dir = make_project();
+  let root = dir.path();
+  // HEAD's lock predates the package; the recorded `uv lock` adds it, as uv would.
+  let with_templates = read(root, "uv.lock");
+  let templates_entry =
+    "\n[[package]]\nname = \"devkit-templates\"\nversion = \"1.0.0\"\nsource = { registry = \"https://idx/+simple\" }\n";
+  assert!(with_templates.contains(templates_entry));
+  write(root, "uv.lock", &with_templates.replace(templates_entry, ""));
+  git_init(root);
+  git(root, &["add", "-A"]);
+  git(root, &["commit", "-q", "-m", "init"]);
+  // An unrelated uncommitted edit, at the top where nothing the run writes lands.
+  let head_py = read(root, "pyproject.toml");
+  write(root, "pyproject.toml", &format!("# the user's note\n{head_py}"));
+  let runner = aeth_devkit_core::process::RecordingRunner::new(0);
+  runner.script("gh", &["api"], 0, "v1.1.0\n");
+  runner.script_with_effect("uv", &["lock"], 0, move |cwd| {
+    std::fs::write(cwd.join("uv.lock"), &with_templates).unwrap()
+  });
+  let index = aeth_devkit_core::index::StubIndexClient { versions: vec![] };
+  let mut map = std::collections::HashMap::new();
+  for (name, version, dir) in [
+    ("devkit_container", "1.4.0", fixtures().join("docker")),
+    ("devkit_claude_hooks", "1.0.0", fixtures().join("docker")),
+    ("devkit_poe_complete", "1.0.0", fixtures().join("docker")),
+    ("devkit_templates", "1.0.0", fixtures()),
+  ] {
+    map.insert(
+      name.to_string(),
+      aeth_devkit_setup::packages::Installed {
+        dir,
+        version: version.into(),
+      },
+    );
+  }
+  let venv = aeth_devkit_setup::packages::StubVenv(map);
+  let deps = aeth_devkit_setup::Deps {
+    docker: aeth_devkit_setup::docker::Deps {
+      runner: &runner,
+      prompt: &aeth_devkit_core::prompt::ScriptedPrompt::new(&[]),
+      reviewer: None,
+      mode: aeth_devkit_setup::docker::Mode::Yes,
+    },
+    index: &index,
+    venv: &venv,
+  };
+  let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
+  let mut bases = aeth_devkit_setup::git::stage_bases(root).unwrap();
+  let changes = aeth_devkit_setup::run_with(&ctx, None, false, &deps).unwrap();
+  let committed = aeth_devkit_setup::git::commit_changes(root, &changes, &mut bases);
+  aeth_devkit_setup::packages::resync_after_replay(root, &runner, &bases, &changes);
+  assert!(committed.unwrap().is_some());
+  assert_eq!(changes.files.iter().filter(|f| f.path.ends_with("pyproject.toml")).count(), 1);
+  let head = git(root, &["show", "HEAD:pyproject.toml"]);
+  assert_eq!(head.matches("\"devkit-templates>=1.0.0\"").count(), 1, "{head}");
+  assert_eq!(head.matches("devkit-templates = [{ index = \"SFTPyPI\" }]").count(), 1, "{head}");
+  assert!(!head.contains("the user's note"), "the edit stays out of the commit");
+  assert!(git(root, &["show", "HEAD:uv.lock"]).contains("name = \"devkit-templates\""));
+  let py = read(root, "pyproject.toml");
+  assert!(py.starts_with("# the user's note\n"), "the edit is back: {py}");
+  assert_eq!(py.matches("\"devkit-templates>=1.0.0\"").count(), 1, "{py}");
+  // The edit is the only uncommitted change beside the fixture's tracked `.env` (env
+  // files are merged in place and never committed).
+  let status = git(root, &["status", "--short"]);
+  assert!(status.contains("M pyproject.toml") && !status.contains("uv.lock"), "{status}");
+}
+
+#[test]
+fn the_pyproject_setting_renders_without_a_flag_or_the_env_var() {
+  let dir = make_project();
+  let root = dir.path();
+  run(root, false).unwrap();
+  // Absolute, so a join with the root yields it as is; forward slashes need no escaping.
+  let tpl = templates().to_string_lossy().replace('\\', "/");
+  let py = read(root, "pyproject.toml");
+  write(root, "pyproject.toml", &format!("{py}\n[tool.devkit]\ntemplates-dir = \"{tpl}\"\n"));
+  fs::remove_file(root.join(".dockerignore")).unwrap();
+  let exe = env!("CARGO_BIN_EXE_devkit-setup");
+  let out = std::process::Command::new(exe)
+    .arg("--root")
+    .arg(root)
+    .args(["--dry-run", "--no-vscode"])
+    .env_remove("DEVKIT_TEMPLATES")
+    .stdin(std::process::Stdio::null())
+    .output()
+    .unwrap();
+  let stdout = String::from_utf8_lossy(&out.stdout);
+  let stderr = String::from_utf8_lossy(&out.stderr);
+  assert_eq!(out.status.code(), Some(0), "{stdout}{stderr}");
+  assert!(stdout.contains("Would change:") && stdout.contains(".dockerignore"), "{stdout}");
+  // The report lists a changed file as `<path>: <verb>`; notes may mention the file too.
+  assert!(
+    !stdout.lines().any(|l| l.starts_with("pyproject.toml")),
+    "the setting is the project's, left alone: {stdout}"
   );
 }
