@@ -36,6 +36,11 @@ design exists. Check items off in place; delete them once released.
       drift without asking, so a hunk kept in `setup-project` does not survive the next pin.
       Consider a mechanism for project-specific Dockerfile edits, or a `[tool.devkit]` setting
       that opts a project out of Dockerfile management.
+- [ ] `--dry-run` never reports a pending devkit-package advance: the package step resolves
+      through `uv lock`, which a dry run cannot run, so it notes only packages missing from
+      the venv. A plain run right after a clean dry run can still change `pyproject.toml`
+      and `uv.lock` (seen 2026-09-10, devkit-poe-complete 1.0.0 to 1.1.0). Either query
+      the index in the dry run and say what would move, or say the step was skipped.
 - [ ] Consider a `--python-dir` override for projects whose Python package is neither in
       `src/` nor `python/`.
 

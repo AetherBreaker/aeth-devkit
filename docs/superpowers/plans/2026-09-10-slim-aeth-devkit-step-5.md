@@ -874,3 +874,12 @@ git push
 - Item 4 (release): Task 10, minor. Consumer migration is struck out of the spec and not here.
 - "Decided: the bake stays": nothing here touches `build.rs`.
 - Nothing in this plan runs `uv add`, `uv remove` or `uv lock`.
+
+## Execution notes (2026-09-10, inline)
+
+- Tasks 1 to 10 ran as written; every targeted test and the full suites in both repositories passed.
+- Task 2: `cargo fmt` split the `exit` binding across lines; no other formatting change.
+- Task 3: the rewritten later-group test passed before the removal (on the `devkit hook` path) and after it, as intended.
+- Task 4: clippy raised nothing after `format.rs` went; `TaskArg` stays used by the engine.
+- Task 6: `devkit-poe-complete` 1.1.0 released (`v1.1.0`, workflow run 34534950270).
+- Task 10: before the release, a `setup-project --dry-run` on this repo said "Nothing to do" while the plain run that followed advanced `devkit-poe-complete` to 1.1.0 and committed (3bd4799). By design a dry run does not run `uv lock`, so it reports missing packages only, never a pending advance; recorded in `TODO.md`. `aeth-devkit` 14.1.0 released (`v14.1.0`, workflow run 34535890189).
