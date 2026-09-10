@@ -40,10 +40,10 @@ for r in aeth-devkit devkit-container devkit-vscode devkit-claude-hooks devkit-p
 done
 ```
 
-`devkit-templates` renders its own tree (`[tool.devkit].templates-dir`), so it needs no
-`devkit_templates` from the index in its environment; its `[project].dependencies` floor on
-`aeth-devkit` is the compatibility contract and is raised by hand, while `poe lock` moves
-only its dev-group pin.
+`devkit-templates` renders its own tree: its committed `pyproject.toml` sets
+`[tool.devkit].templates-dir`, so it needs no `devkit_templates` from the index in its
+environment. Its `[project].dependencies` floor on `aeth-devkit` is the compatibility
+contract and is raised by hand, while `poe lock` moves only its dev-group pin.
 
 `devkit-vscode` also needs `npm ci`; its `poe setup-project` needs `aeth-devkit>=12.1.0` in its
 venv, which `uv sync` provides. `devkit-claude-hooks` and `devkit-poe-complete` build their
