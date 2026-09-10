@@ -60,12 +60,6 @@ pub const TEMPLATES: DevkitPackage = DevkitPackage {
   import_name: "devkit_templates",
 };
 
-/// devkit itself; named by the `probe` unit test.
-pub const DEVKIT: DevkitPackage = DevkitPackage {
-  name: "aeth-devkit",
-  import_name: "aeth_devkit",
-};
-
 /// The devkit packages this project should carry: the hooks and the completion for every
 /// project, the container for Docker projects. The container's condition is
 /// `[tool.docker].services`, the same `if-docker-services` gate the template adds the
@@ -596,13 +590,13 @@ source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+s
     let venv = StubVenv(map);
     let root = Path::new("/p");
     assert_eq!(venv.installed(root, &CONTAINER), Some(installed));
-    assert_eq!(venv.installed(root, &DEVKIT), None);
+    assert_eq!(venv.installed(root, &TEMPLATES), None);
   }
 
   #[test]
   fn the_probe_reads_the_workspace_venv() {
-    // The workspace venv has aeth-devkit installed editable, which is the layout a
-    // dist-info scan beside the package would miss; skipped where there is no venv (CI's
+    // devkit-templates is in the workspace venv (the dev group carries it), so the probe
+    // is exercised against a real site-packages; skipped where there is no venv (CI's
     // Rust job builds without one).
     let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join(".venv");
     let Some(python) = ["Scripts/python.exe", "bin/python"]
@@ -612,7 +606,7 @@ source = { registry = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+s
     else {
       return;
     };
-    let found = probe(&python, &DEVKIT).expect("aeth-devkit is installed in the workspace venv");
+    let found = probe(&python, &TEMPLATES).expect("devkit-templates is installed in the workspace venv");
     assert!(parse_lenient(&found.version).is_some(), "{:?}", found.version);
     assert!(found.dir.join("__init__.py").is_file(), "{}", found.dir.display());
     assert_eq!(
