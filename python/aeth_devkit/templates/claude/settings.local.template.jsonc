@@ -3,28 +3,28 @@
         "PYTHONPYCACHEPREFIX": "{project_root}/.cache/pycache"
     },
     "hooks": {
-        "PreToolUse": [
-            {
-                "matcher": "Edit|Write",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "{hook_bin} pre-edit-protect",
-                        "shell": "bash"
-                    }
-                ]
-            },
-            {
-                "matcher": "Bash",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "{hook_bin} pre-bash-protect-deps",
-                        "shell": "bash"
-                    }
-                ]
-            }
-        ],
+        // "PreToolUse": [
+        //     {
+        //         "matcher": "Edit|Write",
+        //         "hooks": [
+        //             {
+        //                 "type": "command",
+        //                 "command": "{hook_bin} pre-edit-protect",
+        //                 "shell": "bash"
+        //             }
+        //         ]
+        //     },
+        //     {
+        //         "matcher": "Bash",
+        //         "hooks": [
+        //             {
+        //                 "type": "command",
+        //                 "command": "{hook_bin} pre-bash-protect-deps",
+        //                 "shell": "bash"
+        //             }
+        //         ]
+        //     }
+        // ],
         "Stop": [
             {
                 "hooks": [

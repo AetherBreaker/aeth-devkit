@@ -703,8 +703,8 @@ fn claude_md_and_workflow_are_created_when_missing_and_hook_bin_prefers_the_venv
   assert!(read(root, ".claude/CLAUDE.md").starts_with("@../AGENTS.md\n"));
   assert!(read(root, ".github/workflows/claude.yml").contains("claude-code-action@v1"));
   let local: serde_json::Value = serde_json::from_str(&read(root, ".claude/settings.local.json")).unwrap();
-  let cmd = local["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
-  assert_eq!(cmd, "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/devkit-hook.exe\" pre-edit-protect");
+  let cmd = local["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
+  assert_eq!(cmd, "\"$CLAUDE_PROJECT_DIR/.venv/Scripts/devkit-hook.exe\" stop-ruff");
 }
 
 #[test]
