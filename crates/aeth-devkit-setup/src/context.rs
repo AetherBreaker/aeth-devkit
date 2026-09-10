@@ -54,6 +54,10 @@ pub struct ProjectContext {
   /// in `[tool.devkit]`, the table the split spec reserves for devkit-level project
   /// settings; the template seeds nothing there, and a key devkit does not know is an error.
   pub release_workflow: bool,
+  /// `[tool.devkit].templates-dir`: a directory to render instead of the environment's
+  /// `devkit_templates` package, relative to the project root. The templates repository
+  /// rendering its own tree; also any project that keeps a checkout beside it.
+  pub templates_dir: Option<PathBuf>,
 }
 
 /// The index name assumed for devkit's packages when the project declares no source for
@@ -61,7 +65,7 @@ pub struct ProjectContext {
 pub const DEFAULT_DEVKIT_INDEX: &str = "SFTPyPI";
 
 /// Every key `[tool.devkit]` may hold; anything else is refused (see `discover`).
-const DEVKIT_KEYS: &[&str] = &["release-workflow"];
+const DEVKIT_KEYS: &[&str] = &["release-workflow", "templates-dir"];
 
 impl ProjectContext {
   pub fn discover(root: &Path) -> Result<Self> {
@@ -188,6 +192,19 @@ impl ProjectContext {
         )
       })?,
     };
+    let templates_dir = match devkit.and_then(|d| d.get("templates-dir")) {
+      None => None,
+      Some(item) => {
+        let rel = item
+          .as_str()
+          .with_context(|| format!("[tool.devkit].templates-dir must be a string, got {}", item.to_string().trim()))?;
+        let dir = root.join(rel);
+        if !dir.is_dir() {
+          bail!("[tool.devkit].templates-dir: {} is not a directory", dir.display());
+        }
+        Some(dir)
+      }
+    };
 
     Ok(Self {
       root,
@@ -206,6 +223,7 @@ impl ProjectContext {
       publish_index,
       devkit_index,
       release_workflow,
+      templates_dir,
     })
   }
 
@@ -431,6 +449,35 @@ mod publish_index_detection {
 #[cfg(test)]
 mod devkit_settings {
   use super::*;
+
+  #[test]
+  fn templates_dir_is_read_relative_to_the_root_and_must_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("tpl")).unwrap();
+    std::fs::write(
+      dir.path().join("pyproject.toml"),
+      "[project]\nname = \"p\"\n\n[tool.devkit]\ntemplates-dir = \"tpl\"\n",
+    )
+    .unwrap();
+    let ctx = ProjectContext::discover(dir.path()).unwrap();
+    assert_eq!(ctx.templates_dir, Some(ctx.root.join("tpl")));
+    std::fs::write(
+      dir.path().join("pyproject.toml"),
+      "[project]\nname = \"p\"\n\n[tool.devkit]\ntemplates-dir = \"missing\"\n",
+    )
+    .unwrap();
+    let err = ProjectContext::discover(dir.path()).unwrap_err().to_string();
+    assert!(err.contains("templates-dir") && err.contains("missing"), "{err}");
+    std::fs::write(
+      dir.path().join("pyproject.toml"),
+      "[project]\nname = \"p\"\n\n[tool.devkit]\ntemplates-dir = true\n",
+    )
+    .unwrap();
+    let err = ProjectContext::discover(dir.path()).unwrap_err().to_string();
+    assert!(err.contains("templates-dir") && err.contains("string"), "{err}");
+    std::fs::write(dir.path().join("pyproject.toml"), "[project]\nname = \"p\"\n").unwrap();
+    assert!(ProjectContext::discover(dir.path()).unwrap().templates_dir.is_none());
+  }
 
   #[test]
   fn release_workflow_is_on_unless_tool_devkit_turns_it_off() {

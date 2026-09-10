@@ -1,5 +1,5 @@
-//! `devkit setup-project` — standardize a project's configuration from the templates shipped
-//! with `aeth-devkit`.
+//! `devkit setup-project` — standardize a project's configuration from the templates in the
+//! `devkit-templates` package of the project's environment.
 
 pub mod changes;
 pub mod cli;
@@ -40,11 +40,20 @@ pub struct Deps<'a> {
 /// `pyproject.toml` to HEAD; `cli` refuses a `[tool.docker].services` that differs between
 /// the two rather than merge on one and switch on the other.
 /// Returns the collected change log; nothing is written when `dry_run` is set.
-pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps: &Deps) -> Result<Changes> {
+pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run: bool, deps: &Deps) -> Result<Changes> {
   let mut changes = Changes::new(dry_run);
   // Previews feed the VS Code review at the end of a dry run, and a reviewer present is
-  // the sign one will open; without it (`--check` in CI) nobody pays for the copies.
+  // the sign one will open; without it (a headless dry run) nobody pays for the copies.
   changes.keep_previews = deps.docker.reviewer.is_some();
+
+  // 0. The templates: an override renders a working tree; otherwise the environment's
+  //    devkit-templates, installed first when the project lacks it, since nothing renders
+  //    without it (spec 4.0). Before the merge, whose template this reads.
+  let templates_dir = match templates_override {
+    Some(dir) => dir.to_path_buf(),
+    None => packages::ensure_templates(ctx, deps, dry_run, &mut changes)?,
+  };
+  let templates_dir = templates_dir.as_path();
 
   // 1. pyproject.toml
   let pyproject_template = templates::load(templates_dir, "pyproject.toml", ctx, templates::Escape::Toml)?;
@@ -58,7 +67,14 @@ pub fn run_with(ctx: &ProjectContext, templates_dir: &Path, dry_run: bool, deps:
 
   // 1b. The devkit packages (spec 4.0): list, lock under the running devkit, sync. Before
   //     the Docker step, which renders the Dockerfile from the installed container package.
-  packages::advance(ctx, deps, dry_run, &packages::latest_requested(&pyproject_template), &mut changes)?;
+  packages::advance(
+    ctx,
+    deps,
+    dry_run,
+    &packages::active(ctx),
+    &packages::latest_requested(&pyproject_template),
+    &mut changes,
+  )?;
 
   // 2. .vscode/settings.json and extensions.json — deep merge, plus a Rust overlay
   //    (`vscode/<name>.rust.json`) for projects that also contain a crate.

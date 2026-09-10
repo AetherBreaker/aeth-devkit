@@ -52,7 +52,15 @@ pub const COMPLETE: DevkitPackage = DevkitPackage {
   import_name: "devkit_poe_complete",
 };
 
-/// devkit itself, for the lookups that read its own package data (the templates).
+/// The templates `setup-project` renders. The one package that must be in the environment
+/// before any template is read (spec 4.0 "order within a run"), so the run bootstraps it by
+/// this name ahead of the pyproject merge (`ensure_templates`); it is not in `active`.
+pub const TEMPLATES: DevkitPackage = DevkitPackage {
+  name: "devkit-templates",
+  import_name: "devkit_templates",
+};
+
+/// devkit itself; named by the `probe` unit test.
 pub const DEVKIT: DevkitPackage = DevkitPackage {
   name: "aeth-devkit",
   import_name: "aeth_devkit",
@@ -192,11 +200,19 @@ pub fn latest_requested(template: &str) -> Vec<String> {
     .collect()
 }
 
-/// Bring the active devkit packages to the newest release the running devkit accepts, write
-/// the floors the template marked `{latest}`, and sync the venv. Runs after the pyproject
-/// merge has listed the packages and before anything reads them from the venv.
-pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: &[String], changes: &mut Changes) -> Result<()> {
-  let packages = active(ctx);
+/// Bring `packages` to the newest release the running devkit accepts, write the floors for
+/// the names in `latest` (a bare requirement becomes `name>=<locked>`), and sync the venv.
+/// Twice per run: [`TEMPLATES`] alone from `ensure_templates` before anything renders, then
+/// [`active`] after the pyproject merge has listed those and before anything reads them
+/// from the venv.
+pub fn advance(
+  ctx: &ProjectContext,
+  deps: &crate::Deps,
+  dry_run: bool,
+  packages: &[&DevkitPackage],
+  latest: &[String],
+  changes: &mut Changes,
+) -> Result<()> {
   let root = &ctx.root;
   let lock_path = root.join("uv.lock");
   let lock_before = crate::read_optional(&lock_path)?;
@@ -204,7 +220,8 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
   // devkit means the venv is out of step with the lock: the lock step must not paper over
   // that by moving devkit's entry to match the binary. On a committing run this is HEAD's
   // lock (the run merges against HEAD), so a lock moved but not committed reads as stale.
-  // A dry run reports it as a problem: `--check` must not pass a project a plain run refuses.
+  // A dry run reports it as a problem: it must not read as clean. Once, though this runs
+  // twice per run.
   if let Some(v) = lock_before.as_deref().and_then(|l| locked_registry_version(l, "aeth-devkit"))
     && v != RUNNING_DEVKIT
   {
@@ -214,7 +231,9 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
     if !dry_run {
       bail!(message);
     }
-    changes.problems.push(message);
+    if !changes.problems.contains(&message) {
+      changes.problems.push(message);
+    }
   }
   if dry_run {
     for p in packages.iter().filter(|p| deps.venv.installed(&ctx.root, p).is_none()) {
@@ -230,7 +249,7 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
   // `aeth-devkit==<running>` rides beside the packages allowed to move. Every other locked
   // package stays a preference, as spec 4.0 wants.
   let mut args: Vec<String> = vec!["lock".into()];
-  for p in &packages {
+  for p in packages {
     args.push("--upgrade-package".into());
     args.push(p.name.into());
   }
@@ -274,10 +293,10 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
   let mut doc: DocumentMut = text.parse().context("parsing pyproject.toml")?;
   let mut pinned: Vec<String> = Vec::new();
   let mut locked_all: Vec<(&DevkitPackage, String)> = Vec::new();
-  for p in &packages {
+  for p in packages {
     let locked = locked_version(&lock_after, p.name).with_context(|| {
       format!(
-        "{} is not in uv.lock after locking; the merge lists every active devkit package in pyproject.toml, so the lock should carry it",
+        "{} is not in uv.lock after locking; pyproject.toml should list it (the merge or the templates bootstrap adds it)",
         p.name
       )
     })?;
@@ -333,7 +352,7 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
           .push(format!("could not check {url} for a newer {}: {e:#}", p.name)),
       }
     }
-    locked_all.push((p, locked));
+    locked_all.push((*p, locked));
   }
   if !pinned.is_empty() {
     changes.record(&pyproject_path, &text, &doc.to_string(), pinned)?;
@@ -387,6 +406,83 @@ pub fn advance(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, latest: 
   );
   changes.record_optional(&lock_path, lock_before.as_deref(), &lock_after, vec![detail])?;
   Ok(())
+}
+
+/// The templates directory from the project's environment, installing `devkit-templates`
+/// first when the project lacks it (spec 4.0): a bare requirement and its source by this
+/// name, since no template is readable yet, then [`advance`] for this one package (the
+/// lock under `aeth-devkit==<running>`, the `>=<locked>` floor, the sync). The templates
+/// repository never carries itself; it renders its own tree through an override.
+pub fn ensure_templates(ctx: &ProjectContext, deps: &crate::Deps, dry_run: bool, changes: &mut Changes) -> Result<PathBuf> {
+  let root = &ctx.root;
+  if normalize_dist_name(&ctx.name) == normalize_dist_name(TEMPLATES.name) {
+    bail!(
+      "{} is the templates package itself; render its own tree with --templates-dir, DEVKIT_TEMPLATES or [tool.devkit].templates-dir",
+      ctx.name
+    );
+  }
+  let pyproject_path = root.join("pyproject.toml");
+  let text = std::fs::read_to_string(&pyproject_path).context("reading pyproject.toml")?;
+  let doc: DocumentMut = text.parse().context("parsing pyproject.toml")?;
+  let listed = find_requirement(&doc, TEMPLATES.name).is_some();
+  if dry_run && (!listed || deps.venv.installed(root, &TEMPLATES).is_none()) {
+    bail!(
+      "devkit-templates is not in this project's environment; a plain run adds it to the dev group, locks it under aeth-devkit=={RUNNING_DEVKIT} and syncs, then renders. A dry run cannot."
+    );
+  }
+  if !listed {
+    add_bare_requirement(ctx, &pyproject_path, &text, doc, changes)?;
+  }
+  advance(ctx, deps, dry_run, &[&TEMPLATES], &[TEMPLATES.name.to_string()], changes)?;
+  let installed = deps.venv.installed(root, &TEMPLATES).context(
+    "devkit-templates is not in the project's environment after locking and syncing; is it elsewhere (UV_PROJECT_ENVIRONMENT)?",
+  )?;
+  Ok(installed.dir.join("templates"))
+}
+
+/// `devkit-templates` into the dev group and `[tool.uv.sources]`, bare: `advance` writes the
+/// floor right after. Intermediate tables are implicit so no empty `[tool]` header appears.
+fn add_bare_requirement(ctx: &ProjectContext, path: &Path, original: &str, mut doc: DocumentMut, changes: &mut Changes) -> Result<()> {
+  use toml_edit::{Array, InlineTable, Table, Value};
+  let mut log = Vec::new();
+  let groups = doc
+    .entry("dependency-groups")
+    .or_insert(Item::Table(Table::new()))
+    .as_table_mut()
+    .context("[dependency-groups] must be a table")?;
+  let dev = groups
+    .entry("dev")
+    .or_insert(Item::Value(Value::Array(Array::new())))
+    .as_array_mut()
+    .context("[dependency-groups].dev must be an array")?;
+  crate::toml_merge::push_like_last(dev, Value::from(TEMPLATES.name));
+  log.push(format!("dependency-groups.dev: added \"{}\"", TEMPLATES.name));
+  let mut implicit = Table::new();
+  implicit.set_implicit(true);
+  let tool = doc
+    .entry("tool")
+    .or_insert(Item::Table(implicit.clone()))
+    .as_table_mut()
+    .context("[tool] must be a table")?;
+  let uv = tool
+    .entry("uv")
+    .or_insert(Item::Table(implicit))
+    .as_table_mut()
+    .context("[tool.uv] must be a table")?;
+  let sources = uv
+    .entry("sources")
+    .or_insert(Item::Table(Table::new()))
+    .as_table_like_mut()
+    .context("[tool.uv.sources] must be a table")?;
+  if !sources.contains_key(TEMPLATES.name) {
+    let mut entry = InlineTable::new();
+    entry.insert("index", Value::from(ctx.devkit_index.as_str()));
+    let mut arr = Array::new();
+    arr.push(Value::InlineTable(entry));
+    sources.insert(TEMPLATES.name, Item::Value(Value::Array(arr)));
+    log.push(format!("added tool.uv.sources.{}", TEMPLATES.name));
+  }
+  changes.record(path, original, &doc.to_string(), log)
 }
 
 /// After a committing run has put the user's `uv.lock` back — merged with this run's

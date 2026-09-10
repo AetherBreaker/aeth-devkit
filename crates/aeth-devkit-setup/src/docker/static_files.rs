@@ -157,6 +157,7 @@ mod tests {
       publish_index: None,
       devkit_index: "SFTPyPI".into(),
       release_workflow: true,
+      templates_dir: None,
     };
     assert_eq!(render(&ctx, &venv).unwrap().unwrap(), "RUN mv /tmp/repo/python /app/python\n");
     assert_eq!(render(&ctx, &crate::packages::StubVenv::default()).unwrap(), None);

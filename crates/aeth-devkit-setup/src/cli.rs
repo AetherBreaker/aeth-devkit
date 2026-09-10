@@ -14,7 +14,9 @@ pub struct Args {
   #[arg(long, default_value = ".")]
   pub root: PathBuf,
 
-  /// Directory containing the templates (defaults to the installed aeth_devkit package).
+  /// Render this directory instead of the environment's devkit-templates package
+  /// (DEVKIT_TEMPLATES and [tool.devkit].templates-dir also set it, in that order of
+  /// precedence).
   #[arg(long)]
   pub templates_dir: Option<PathBuf>,
 
@@ -84,7 +86,6 @@ fn refuse_uncommitted_services(root: &Path) -> Result<()> {
 /// caller to print (exit 2).
 pub fn run(args: &Args) -> Result<ExitCode> {
   let dry_run = args.dry_run || args.check;
-  let templates = crate::templates::locate(args.templates_dir.as_deref())?;
   let root = crate::context::strip_verbatim(args.root.canonicalize().unwrap_or(args.root.clone()));
   // `IsTerminal` is how std asks "is a human here?": VS Code is only worth opening when
   // one is, not when a pipe is scripting the answers.
@@ -129,6 +130,7 @@ pub fn run(args: &Args) -> Result<ExitCode> {
 
   // Discovered before staging (see `run_with`).
   let ctx = crate::context::ProjectContext::discover(&root)?;
+  let templates_override = crate::templates::override_dir(args.templates_dir.as_deref(), &ctx)?;
   // When committing, the committable managed files are merged against their `HEAD`
   // content, so the commit carries only this run's changes and the user's uncommitted
   // edits are replayed back on top afterwards (see `aeth_devkit_core::commit`).
@@ -160,7 +162,7 @@ pub fn run(args: &Args) -> Result<ExitCode> {
       index: &index,
       venv: &crate::packages::SystemVenv,
     };
-    let mut c = crate::run_with(&ctx, &templates, dry_run, &deps)?;
+    let mut c = crate::run_with(&ctx, templates_override.as_deref(), dry_run, &deps)?;
     if !dry_run {
       match crate::format::format_pyproject(&root, &crate::format::SystemRunner, &mut c)? {
         crate::format::Outcome::Formatted(_) => {}
