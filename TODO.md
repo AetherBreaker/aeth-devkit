@@ -32,25 +32,10 @@ design exists. Check items off in place; delete them once released.
       `# setup-project:` marker nested inside a sub-table of a table the project lacks, or
       inside a template array, would ship into the project's file. No template line does
       this today.
-- [ ] Sister-project Docker migration (after the aeth-devkit major that lands the
-      `devkit-container` split, PR #16): in each of aeth_ext, IMAPReportCollector,
-      ScheduledInvoiceProcessor, ScheduledReportAggregator — add
-      `[tool.docker].services = ["<service>"]`, commit it, `poe lock` (takes the new devkit),
-      `poe setup-project` (adds `devkit-container` to the lock and venv; answer `replace` for
-      the Dockerfile, review the compose diff), fold `chown_paths` into
-      `required_persisted_dirs`, delete `chown_paths`/`mkdirs`, delete `docker/entrypoint.sh`
-      and `docker/scripts/`, then `poe docker-pin` and push. Coolify redeploys on the
-      `docker/` change; watch the first build of each pull `devkit-container` from SFTPyPI.
-      ScheduledInvoiceProcessor and ScheduledReportAggregator first move `file_holding` /
-      `timeclock_playground` to temp dirs (on their own TODO lists, high priority).
-- [ ] IMAPReportCollector: `[tool.docker].mkdirs = [""]` is a data bug (would have chowned
-      `/app`); goes away with the migration above.
 - [ ] Dockerfile customisation: `docker/Dockerfile` is devkit-owned and `docker-pin` replaces
       drift without asking, so a hunk kept in `setup-project` does not survive the next pin.
       Consider a mechanism for project-specific Dockerfile edits, or a `[tool.devkit]` setting
       that opts a project out of Dockerfile management.
-- [x] `if-docker` conditional marker for template tables (mirrors `if-dep`; drives the
-      `[tool.docker]` item above). Done on `feat/agent-config`.
 - [ ] Consider a `--python-dir` override for projects whose Python package is neither in
       `src/` nor `python/`.
 
@@ -78,7 +63,6 @@ design exists. Check items off in place; delete them once released.
       later wheel repos (all three indicators), the sister projects' `docker-pin` runs that
       consume them, and `rescind-release.sh` (a rollback must remove all three, in the reverse
       order, so a half-rescind is caught the same way).
-- [ ] Release 7.0.0 (`aeth-devkit`), then migrate downstream projects per README.
 - [ ] **TUI for the release watch** (shelved 2026-09-04; work committed, unpushed, on
       `feat/release-watch-repaint`). That branch dropped `gh run watch` for our own column view
       (`watch.rs`) repainted in the terminal's normal buffer (`repaint.rs`), which sidesteps the
@@ -123,85 +107,13 @@ design exists. Check items off in place; delete them once released.
       listed dotted key paths the merge never touched. Nothing used it, so it went with the
       bloat. If a project ever needs to hold a template-managed key, re-add it as a
       `[tool.devkit]` setting once the core merge is ironclad, not before.
-- [ ] Now that `vscode-extension-v1` has shipped: delete `.vscode/extension/` and
-      `install.ps1` from aeth_ext and aeth_ext-2, and the
-      `~/.vscode/extensions/local.[drekker-]add-to-runtime-base-*` junction (setup-project
-      prints a note while they exist).
 - [ ] Fix system-level `init.defaultBranch = master` in
       `C:\Program Files\Git\etc\gitconfig` (needs an elevated shell; user config already
       overrides it to `main`).
 
 ## Script migration to Rust
 
-Planned order (each command is its own crate under `crates/`; the `devkit` binary
-dispatches):
+The one shell script left; it becomes its own crate under `crates/` and the `devkit`
+binary dispatches, like the others did.
 
-- [x] `lock.sh` → `devkit lock` (7.0.0)
-- [x] `docker-pin-latest.sh` → `devkit docker-pin`. Agreed requirements:
-  - [x] **Rename** — command and poe task become `docker-pin` (it pins any version, not just
-        latest); `release-and-pin` keeps its name.
-  - [x] **Crate layout** — thin `crates/aeth-devkit-pin` (clap `Args` + orchestration, `run_real`
-        dispatched from `devkit`); reusable pieces (compose discovery, version resolution,
-        GitHub tags client, pin edit) live in `aeth-devkit-core` so a future in-process
-        `release-and-pin` can call the raw functions directly (no subprocess).
-  - [x] **Index config from pyproject** — kill the hardcoded SFTPyPI URL. Query *every*
-        `[[tool.uv.index]]` with a `publish-url` via its simple `url` (existing `IndexClient`).
-        Explicit version must exist on ALL of them (missing from any = failed release, name
-        the index); latest = `latest_stable` over the *intersection* of version sets.
-  - [x] **GitHub via `gh` CLI** through the `Runner` trait (`gh api ... --paginate`): picks up
-        auth, no rate-limit issues, no 100-tag cap, testable with `RecordingRunner`.
-  - [x] **Block-aware compose edit** — format-preserving line edit scoped to service blocks
-        that build *this* project: `PACKAGE_NAME` (normalized) == `project.name`, or
-        `GIT_REPO` == origin remote (normalized https/ssh/.git/case). All matching blocks
-        move together, each change reported; no match = error listing what was found.
-        Mode (git/pypi) follows from which match kind hits, not key order in the file.
-  - [x] **Preflights before any edit** — resolve → validate → behind-check → edit → commit → push:
-    - Complete-release check (mode-independent): remote tag `v<ver>` AND GitHub release AND
-      present on every publish index. Index check skipped only when no publish index is
-      configured; GitHub checks skipped only when origin is not a GitHub remote. Applies to
-      resolved-latest as well as explicit versions; failure lists exactly what is missing.
-    - Behind-origin check (`fetch` + `behind_count`) when pushing; fail before touching files.
-  - [x] **Commit only the compose path** (`commit_paths`, not bare `git commit` which sweeps
-        the user's staged files). Message: `chore: pin <name> to <version>`.
-  - [x] **Dirty compose file** — apply the pin to the HEAD blob and commit via
-        `commit_files_on_head` (user's index/worktree untouched), then write the 3-way merge
-        (worktree over base + pin) back to the worktree so the user's uncommitted changes ride
-        on top. Merge conflict = abort before committing anything.
-  - [x] **Flags** — `--version/-V`, `--dry-run`, `--no-commit` (edit only, implies no push),
-        `--no-push`, `--compose-file <path>`.
-  - [x] **Compose discovery** — anchored at the git repo root; walk shallowest-first with
-        Docker name precedence (`compose.yaml` > `compose.yml` > `docker-compose.yaml` >
-        `docker-compose.yml`) within each directory; first hit wins (single compose file
-        assumed; extend later if ever needed). Skip known-irrelevant dirs (`.git`, `.venv`,
-        `.cache`, `__pycache__`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`,
-        `node_modules`, root Cargo `target/`). Always print the chosen file.
-  - [x] **Version handling via `pep440_rs` end to end** — explicit input accepted with or
-        without `v` prefix, parsed on entry (error if unparseable); all membership checks
-        (indexes, git tags) use parsed equality, not string equality; latest via
-        `latest_stable` (no hand-rolled regex filters). Written form: `GIT_TAG` = `v` + the
-        actual tag spelling found on the remote; `PACKAGE_VERSION` = PEP 440 normalized.
-  - [x] **Poe wiring + script removal** — the poe task becomes `docker-pin` running
-        `devkit docker-pin` with declared poe args mirroring the flags (lock-task
-        style); delete `docker-pin-latest.sh`. README: move the command out of the
-        shell-script table and add its per-command Rust feature-reference bullets.
-  - [x] **Migrate `release-and-pin` in the same pass** (both constituents are then Rust):
-        a thin `ReleaseAndPin` subcommand in the `devkit` binary crate composing
-        `aeth_devkit_release` + pin lib in-process (no subprocesses). Release lib entry
-        point grows a structured outcome (released version + released/aborted) so the
-        composition knows what to pin; `devkit release` behavior unchanged. `--dry-run`
-        runs release's dry-run then *skips* the pin step ("dry run: skipping docker pin" —
-        an unpublished version cannot pass pin's preflights). All other args forward to
-        release verbatim; the pin step runs with the released version and full preflights
-        (free post-release verification). Poe task: `devkit release-and-pin $POE_EXTRA_ARGS`.
-- [x] `release.sh` → `devkit release` (spec: `docs/specs/2026-08-26-devkit-release-design.md`)
 - [ ] `rescind-release.sh`
-
-## Housekeeping
-
-- [ ] `uv run ruff format python` — `python/aeth_devkit/__init__.py` has pre-existing
-      formatting drift now visible with the inlined ruff config.
-- [ ] IMAPReportCollector: `tool.coverage.run.source_pkgs` still lists
-      `scheduled_invoice_processor` (copy-paste leftover); remove after `setup-project`
-      unions in the correct name.
-- [ ] Rename remaining `master` default branches if desired: `ScheduledReportAggregator`,
-      `apscheduler-stubs`.
