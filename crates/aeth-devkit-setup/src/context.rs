@@ -450,7 +450,7 @@ mod devkit_settings {
   use super::*;
 
   #[test]
-  fn templates_dir_is_read_relative_to_the_root_and_must_exist() {
+  fn templates_dir_is_read_relative_to_the_root_and_must_be_a_string() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("tpl")).unwrap();
     std::fs::write(

@@ -1304,8 +1304,7 @@ fn a_committing_run_bootstraps_the_templates_package_once_and_replays_the_users_
   let py = read(root, "pyproject.toml");
   assert!(py.starts_with("# the user's note\n"), "the edit is back: {py}");
   assert_eq!(py.matches("\"devkit-templates>=1.0.0\"").count(), 1, "{py}");
-  // The edit is the only uncommitted change beside the fixture's tracked `.env` (env
-  // files are merged in place and never committed).
+  // The edit is back as an unstaged change, and the lock went into the commit.
   let status = git(root, &["status", "--short"]);
   assert!(status.contains("M pyproject.toml") && !status.contains("uv.lock"), "{status}");
 }

@@ -57,9 +57,9 @@ is a byte-for-byte no-op.
   to its dev group with its index source, locked under the running devkit and synced before
   anything renders; `--dry-run` on such a project is an error saying so. The package
   depends on `aeth-devkit`, and a uv source covers a direct dependency only, so the project
-  must list `aeth-devkit` itself with the same index source (every devkit-managed project
-  does, in its dev group). Templates are versioned by `uv.lock` like the other devkit
-  packages. `--templates-dir`,
+  must list `aeth-devkit` itself with the same index source (a project that runs devkit
+  from its own environment already does). Templates are versioned by `uv.lock` like the
+  other devkit packages. `--templates-dir`,
   `DEVKIT_TEMPLATES` and `[tool.devkit].templates-dir` (in that order of precedence, each
   an existing directory) render a working tree instead, with no bootstrap; the templates
   repository renders its own tree that way.
