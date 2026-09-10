@@ -5,6 +5,10 @@ design exists. Check items off in place; delete them once released.
 
 ## setup-project
 
+- [ ] Template `ci.yml` in devkit-templates and have `setup-project` install a test-running
+      workflow when it detects the project runs tests: pytest for a Python project, cargo test
+      for a Rust one, both for a mixed tree. Names follow the AGENTS.md workflow-naming
+      convention (`Verify: ...` workflow, `<Area>: <what runs>` jobs, the command as the step).
 - [ ] Label the entries setup-project owns inside partially-managed files. The merges that
       add without overwriting (`.claude/settings*.json` hooks and permissions, `.mcp.json`
       servers, `.vscode/settings.json` keys, `launch.json`/`tasks.json` configurations)
