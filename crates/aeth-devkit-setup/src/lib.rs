@@ -57,10 +57,17 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
   };
   let templates_dir = templates_dir.as_path();
 
-  // 0b. The gates (spec 2.5): every expression in every template this run can render,
-  //     evaluated once. The compose and Dockerfile templates come from the container
-  //     package, so they are swept from there.
-  let gates = gates_for(ctx, Some(templates_dir), deps.venv, None)?;
+  // 0b. The gates (spec 2.5): every expression in the templates package, evaluated once
+  //     against the working copy's pyproject as it is now. The container package's two
+  //     templates join the table after the package step below has installed them, against
+  //     this same document, so an adopting or upgrading run renders what it just installed.
+  let pyproject_text = std::fs::read_to_string(ctx.root.join("pyproject.toml")).context("reading pyproject.toml")?;
+  let pyproject_doc: toml_edit::DocumentMut = pyproject_text.parse().context("parsing pyproject.toml")?;
+  let facts = gate::Facts {
+    rust: ctx.has_rust,
+    docker_files: ctx.docker_files,
+  };
+  let mut gates = gate::Gates::build(&gate::collect_dir(templates_dir)?, &pyproject_doc, None, &facts)?;
 
   // 1. pyproject.toml
   let pyproject_template = templates::load(templates_dir, "pyproject.toml", ctx, templates::Escape::Toml, &gates)?;
@@ -82,6 +89,7 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
     &packages::latest_requested(&pyproject_template),
     &mut changes,
   )?;
+  gates.extend(&container_templates(&ctx.root, deps.venv)?, &pyproject_doc, &facts)?;
 
   // 2. .vscode/settings.json and extensions.json — deep merge, plus a Rust overlay
   //    (`vscode/<name>.rust.json`) for projects that also contain a crate.
@@ -396,22 +404,11 @@ fn load_with_rust_overlay(templates_dir: &Path, name: &str, ctx: &ProjectContext
   Ok(template)
 }
 
-/// The gates for one render: every template under `templates_dir` (when given) plus the two
-/// templates of the installed container package, swept and evaluated against the working
-/// copy's `pyproject.toml`, and against `head_pyproject` when a committing run must refuse a
-/// gate that differs (spec 2.5). `docker-pin` passes no templates dir: it renders only the
-/// container's Dockerfile.
-pub fn gates_for(
-  ctx: &ProjectContext,
-  templates_dir: Option<&Path>,
-  venv: &dyn packages::Venv,
-  head_pyproject: Option<&str>,
-) -> Result<gate::Gates> {
-  let mut templates = match templates_dir {
-    Some(dir) => gate::collect_dir(dir)?,
-    None => Vec::new(),
-  };
-  if let Some(installed) = venv.installed(&ctx.root, &packages::CONTAINER) {
+/// The two templates of the container package as the venv holds it now, `(name, text)`;
+/// empty when the package (or a template) is absent.
+pub fn container_templates(root: &Path, venv: &dyn packages::Venv) -> Result<Vec<(String, String)>> {
+  let mut templates = Vec::new();
+  if let Some(installed) = venv.installed(root, &packages::CONTAINER) {
     for file in [docker::static_files::TEMPLATE_FILE, docker::scaffold::TEMPLATE_FILE] {
       let path = installed.dir.join(file);
       if path.is_file() {
@@ -422,6 +419,25 @@ pub fn gates_for(
       }
     }
   }
+  Ok(templates)
+}
+
+/// The gates for a render outside `run_with`: every template under `templates_dir` (when
+/// given) plus the container package's as installed now, swept and evaluated against the
+/// working copy's `pyproject.toml`, and against `head_pyproject` when a committing run must
+/// refuse a gate that differs (spec 2.5). `docker-pin` passes no templates dir: it renders
+/// only the container's Dockerfile.
+pub fn gates_for(
+  ctx: &ProjectContext,
+  templates_dir: Option<&Path>,
+  venv: &dyn packages::Venv,
+  head_pyproject: Option<&str>,
+) -> Result<gate::Gates> {
+  let mut templates = match templates_dir {
+    Some(dir) => gate::collect_dir(dir)?,
+    None => Vec::new(),
+  };
+  templates.extend(container_templates(&ctx.root, venv)?);
   let text = std::fs::read_to_string(ctx.root.join("pyproject.toml")).context("reading pyproject.toml")?;
   let doc: toml_edit::DocumentMut = text.parse().context("parsing pyproject.toml")?;
   let head = head_pyproject

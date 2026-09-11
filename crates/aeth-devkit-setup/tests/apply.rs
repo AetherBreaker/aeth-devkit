@@ -450,6 +450,93 @@ fn an_uncommitted_services_change_cancels_a_committing_run() {
   }
 }
 
+/// A venv where `devkit_container` arrives with the run's `uv sync`, as it does for a
+/// project adopting or upgrading the package: absent before, `container` after.
+struct LateContainer<'a> {
+  base: aeth_devkit_setup::packages::StubVenv,
+  runner: &'a aeth_devkit_core::process::RecordingRunner,
+  container: aeth_devkit_setup::packages::Installed,
+}
+
+impl aeth_devkit_setup::packages::Venv for LateContainer<'_> {
+  fn installed(
+    &self,
+    root: &Path,
+    package: &aeth_devkit_setup::packages::DevkitPackage,
+  ) -> Option<aeth_devkit_setup::packages::Installed> {
+    if package.import_name != "devkit_container" {
+      return self.base.installed(root, package);
+    }
+    let synced = self
+      .runner
+      .calls_for("uv")
+      .iter()
+      .any(|args| args.first().map(String::as_str) == Some("sync"));
+    synced.then(|| self.container.clone())
+  }
+}
+
+#[test]
+fn a_container_package_installed_by_the_run_has_its_gates_swept_before_the_docker_step() {
+  // The package step installs devkit-container mid-run; the Dockerfile it brings carries a
+  // gate the templates package never mentions, and the Docker step renders it anyway.
+  let dir = make_project();
+  let root = dir.path();
+  let site = tempfile::tempdir().unwrap();
+  for entry in fs::read_dir(fixtures().join("docker")).unwrap() {
+    let entry = entry.unwrap();
+    fs::copy(entry.path(), site.path().join(entry.file_name())).unwrap();
+  }
+  let dockerfile = site.path().join("template.Dockerfile");
+  let text = fs::read_to_string(&dockerfile).unwrap();
+  fs::write(
+    &dockerfile,
+    format!("{text}# !if rust:\nRUN cargo --version\n# !end\nRUN echo gated-rendered\n"),
+  )
+  .unwrap();
+  let runner = aeth_devkit_core::process::RecordingRunner::new(0);
+  runner.script("gh", &["api"], 0, "v1.1.0\n");
+  let index = aeth_devkit_core::index::StubIndexClient { versions: vec![] };
+  let mut map = std::collections::HashMap::new();
+  for (name, version, dir) in [
+    ("devkit_claude_hooks", "1.0.0", fixtures().join("docker")),
+    ("devkit_poe_complete", "1.0.0", fixtures().join("docker")),
+    ("devkit_templates", "1.0.0", fixtures()),
+  ] {
+    map.insert(
+      name.to_string(),
+      aeth_devkit_setup::packages::Installed {
+        dir,
+        version: version.into(),
+      },
+    );
+  }
+  let venv = LateContainer {
+    base: aeth_devkit_setup::packages::StubVenv(map),
+    runner: &runner,
+    container: aeth_devkit_setup::packages::Installed {
+      dir: site.path().to_path_buf(),
+      version: "1.4.0".into(),
+    },
+  };
+  let deps = aeth_devkit_setup::Deps {
+    docker: aeth_devkit_setup::docker::Deps {
+      runner: &runner,
+      prompt: &aeth_devkit_core::prompt::ScriptedPrompt::new(&[]),
+      reviewer: None,
+      mode: aeth_devkit_setup::docker::Mode::Yes,
+    },
+    index: &index,
+    venv: &venv,
+  };
+  let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
+  assert!(ctx.has_docker, "the fixture project lists a service");
+  aeth_devkit_setup::run_with(&ctx, Some(&templates()), false, &deps).unwrap();
+  let rendered = read(root, "docker/Dockerfile");
+  assert!(rendered.contains("RUN echo gated-rendered"), "{rendered}");
+  assert!(!rendered.contains("cargo --version") && !rendered.contains("!if"), "{rendered}");
+}
+
 #[test]
 fn a_pyproject_edit_that_flips_a_gate_cancels_a_committing_run() {
   // `[tool.mypy]` in the template is gated on `dep("mypy")`; adding mypy to the working copy

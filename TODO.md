@@ -43,6 +43,18 @@ design exists. Check items off in place; delete them once released.
       the index in the dry run and say what would move, or say the step was skipped.
 - [ ] Consider a `--python-dir` override for projects whose Python package is neither in
       `src/` nor `python/`.
+- [ ] **A testing-only render surface for templates** (raised 2026-09-11 by devkit-container's
+      render check). Today each satellite gets a bespoke route into the parser as its need
+      arises: `--templates-dir` reads the templates package from a working tree, and nothing
+      reads the container package's `template.Dockerfile` / `compose.template.yaml` from one.
+      devkit-container tried the obvious workaround (a scratch project with a `path` source to
+      its wheel) and setup-project's own merge rewrote the source to the index and advanced the
+      package, so the check rendered the released templates, not the checkout's. Design one
+      versatile, testing-only CLI parameter whose goal is "render one or more given templates
+      through the real parser against a given `pyproject.toml`, to stdout or a directory, with no
+      bootstrap and no package step", covering every template source (the templates package, the
+      container package, a lone file) in one mechanism; then move the templates repo's and
+      devkit-container's render checks onto it and retire the per-satellite tricks.
 
 ## Release / packaging
 

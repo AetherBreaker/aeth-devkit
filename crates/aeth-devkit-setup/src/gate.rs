@@ -180,26 +180,37 @@ impl Gates {
   /// is given, against it too: a gate whose verdicts differ is the refusal (2.5). A missing
   /// HEAD file is passed as an empty document.
   pub fn build(templates: &[(String, String)], doc: &DocumentMut, head: Option<&DocumentMut>, facts: &Facts) -> Result<Gates> {
-    let mut exprs: Vec<(String, String)> = Vec::new();
-    for (name, text) in templates {
-      for e in expressions(text, Format::for_target(name)).map_err(|e| anyhow!("template {name}: {e:#}"))? {
-        if !exprs.iter().any(|(_, x)| x == &e) {
-          exprs.push((name.clone(), e));
-        }
-      }
-    }
-    let verdicts = verdicts_for(&exprs, doc, facts)?;
+    let mut gates = Gates::default();
+    let exprs = gates.extend(templates, doc, facts)?;
     if let Some(head) = head {
       let at_head = verdicts_for(&exprs, head, facts)?;
       for (name, e) in &exprs {
-        if verdicts.get(e) != at_head.get(e) {
+        if gates.verdicts.get(e) != at_head.get(e) {
           bail!(
             "pyproject.toml is not committed: the gate `{e}` in {name} evaluates differently against HEAD; commit that change, then rerun setup-project"
           );
         }
       }
     }
-    Ok(Gates { verdicts })
+    Ok(gates)
+  }
+
+  /// Sweep `templates` for expressions the table lacks and evaluate them against `doc`; one
+  /// already present was evaluated against the same document and is left alone. For the
+  /// templates a run can only read after its package step has installed them (the container
+  /// package's), swept once, later, against the document the first sweep saw (2.5). Returns
+  /// the `(template, expression)` pairs added.
+  pub fn extend(&mut self, templates: &[(String, String)], doc: &DocumentMut, facts: &Facts) -> Result<Vec<(String, String)>> {
+    let mut exprs: Vec<(String, String)> = Vec::new();
+    for (name, text) in templates {
+      for e in expressions(text, Format::for_target(name)).map_err(|e| anyhow!("template {name}: {e:#}"))? {
+        if !self.verdicts.contains_key(&e) && !exprs.iter().any(|(_, x)| x == &e) {
+          exprs.push((name.clone(), e));
+        }
+      }
+    }
+    self.verdicts.extend(verdicts_for(&exprs, doc, facts)?);
+    Ok(exprs)
   }
 
   /// The swept verdict for `expr`; an expression the sweep never saw is a bug.
