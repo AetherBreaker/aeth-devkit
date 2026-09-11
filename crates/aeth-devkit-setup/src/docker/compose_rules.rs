@@ -1,13 +1,16 @@
-//! The compose standard as a rule table. Every standard *value* comes from the rendered
-//! scaffold block for the same service, so the template is the single source of truth and
-//! the rules only say which kind of check each key gets.
+//! The compose standard as a rule table read from the scaffold's `# !rule <kind>`
+//! annotations (spec 2.6). Every standard *value* comes from the rendered scaffold block for
+//! the same service, so the template is the single source of truth: it says which keys are
+//! enforced, which kind of check each gets, and what the standard value is.
+
+use anyhow::{Context as _, Result, bail};
 
 use aeth_devkit_core::compose::tree::{self, Edit, Node};
 use aeth_devkit_core::github::normalize_repo;
 
 /// How a key is compared with the scaffold (see the spec's rule table).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
+pub enum Kind {
   /// Rewritten when the scalar differs; inserted when missing.
   Exact,
   /// Inserted (with its scaffold subtree) when missing; never changed.
@@ -22,22 +25,74 @@ enum Kind {
   ExactList,
 }
 
-const RULES: &[(&[&str], Kind)] = &[
-  (&["container_name"], Kind::Exact),
-  (&["build", "context"], Kind::Exact),
-  (&["build", "dockerfile"], Kind::Exact),
-  (&["build", "args", "GIT_REPO"], Kind::Repo),
-  (&["build", "args", "GIT_TAG"], Kind::Presence),
-  (&["restart"], Kind::Presence),
-  (&["volumes"], Kind::VolumeTarget),
-  (&["environment"], Kind::EnvKeys),
-  (&["networks"], Kind::Presence),
-  (&["healthcheck", "test"], Kind::ExactList),
-  (&["healthcheck", "interval"], Kind::Exact),
-  (&["healthcheck", "timeout"], Kind::Exact),
-  (&["healthcheck", "retries"], Kind::Exact),
-  (&["healthcheck", "start_period"], Kind::Exact),
-];
+impl Kind {
+  fn parse(s: &str) -> Option<Kind> {
+    Some(match s {
+      "exact" => Kind::Exact,
+      "presence" => Kind::Presence,
+      "repo" => Kind::Repo,
+      "volume-target" => Kind::VolumeTarget,
+      "env-keys" => Kind::EnvKeys,
+      "exact-list" => Kind::ExactList,
+      _ => return None,
+    })
+  }
+}
+
+/// One `# !rule <kind>` annotation: the key it sits above, as a path relative to the service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rule {
+  pub path: Vec<String>,
+  pub kind: Kind,
+}
+
+pub const RULE_MARKER: &str = "# !rule ";
+
+/// Strip the rule lines from a scaffold block and return them keyed by the annotated key's
+/// path, `skip` leading mapping levels dropped (`services`, the service). A rule line must
+/// be followed by a mapping key (spec 2.6).
+pub fn parse_rules(lines: &[String], skip: usize) -> Result<(Vec<String>, Vec<Rule>)> {
+  let mut out = Vec::with_capacity(lines.len());
+  let mut rules = Vec::new();
+  let mut pending: Option<(Kind, usize)> = None;
+  let mut stack: Vec<(usize, String)> = Vec::new();
+  for (i, line) in lines.iter().enumerate() {
+    let trimmed = line.trim();
+    if let Some(kind) = trimmed.strip_prefix(RULE_MARKER) {
+      if let Some((_, at)) = pending {
+        bail!("line {}: a rule line follows another rule line (line {})", i + 1, at + 1);
+      }
+      let kind = Kind::parse(kind.trim()).with_context(|| format!("line {}: unknown rule kind `{}`", i + 1, kind.trim()))?;
+      pending = Some((kind, i));
+      continue;
+    }
+    out.push(line.clone());
+    let key = (!trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with("- "))
+      .then(|| trimmed.split_once(':').map(|(k, _)| k.trim().to_string()))
+      .flatten();
+    let Some(key) = key else {
+      if let Some((_, at)) = pending {
+        bail!("line {}: `# !rule` must be followed by a key, not `{trimmed}`", at + 1);
+      }
+      continue;
+    };
+    let indent = line.len() - line.trim_start().len();
+    while stack.last().is_some_and(|(d, _)| *d >= indent) {
+      stack.pop();
+    }
+    stack.push((indent, key));
+    if let Some((kind, _)) = pending.take() {
+      rules.push(Rule {
+        path: stack.iter().skip(skip).map(|(_, k)| k.clone()).collect(),
+        kind,
+      });
+    }
+  }
+  if let Some((_, at)) = pending {
+    bail!("line {}: `# !rule` at the end of the block annotates nothing", at + 1);
+  }
+  Ok((out, rules))
+}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
@@ -61,12 +116,15 @@ fn subtree_under(lines: &[String], parent: &Node, sc_lines: &[String], sc_node: 
 
 /// Edits bringing `svc` (in `lines`) up to `sc_svc` (the same service's scaffold block in
 /// `sc_lines`). Rules whose path the scaffold lacks (a gated-out `environment`) are skipped.
-pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: &Node, name: &str) -> Outcome {
+pub fn service_edits(lines: &[String], svc: &Node, sc_lines: &[String], sc_svc: &Node, name: &str, rules: &[Rule]) -> Outcome {
   let mut out = Outcome::default();
   // Dotted prefixes inserted or replaced wholesale; deeper rules under them are already
   // satisfied and must not add a second copy.
   let mut settled: Vec<String> = Vec::new();
-  for (path, kind) in RULES {
+  for Rule { path, kind } in rules {
+    let path: Vec<&str> = path.iter().map(String::as_str).collect();
+    let path = path.as_slice();
+    let kind = *kind;
     let dotted = path.join(".");
     if settled.iter().any(|p| dotted.starts_with(&format!("{p}."))) {
       continue;
@@ -347,31 +405,45 @@ mod tests {
   const STD: &str = "\
 services:
   app:
+    # !rule exact
     container_name: app
     build:
+      # !rule exact
       context: .
+      # !rule exact
       dockerfile: docker/Dockerfile
       args:
+        # !rule repo
         GIT_REPO: https://github.com/o/r.git
+        # !rule presence
         GIT_TAG: {git_tag}
+    # !rule presence
     restart: no
+    # !rule volume-target
     volumes:
       - type: bind
         source: /data/app_files
         target: /app/persisted_data
+    # !rule env-keys
     environment:
       - ALERTS_EMAIL=info@sweetfiretobacco.com
       - ALERTS_EMAIL_PWD=${ALERTS_EMAIL_PWD:?}
       - ALERTS_RECIPIENTS=[\"jacob.ogden@sweetfiretobacco.com\"]
+    # !rule presence
     networks:
       - coolify
     healthcheck:
+      # !rule exact-list
       test:
         - CMD-SHELL
         - bash -ec 'heartbeat'
+      # !rule exact
       interval: 30s
+      # !rule exact
       timeout: 5s
+      # !rule exact
       retries: 3
+      # !rule exact
       start_period: 15s
 ";
   const TAIL: &str = "\nnetworks:\n  coolify:\n    external: true\n";
@@ -383,10 +455,10 @@ services:
 
   fn run_full(doc: &str) -> (String, Outcome) {
     let lines = split_lines(doc);
-    let sc = split_lines(STD);
+    let (sc, rules) = parse_rules(&split_lines(STD), 2).unwrap();
     let sc_svc = child(&sc, &top_level(&sc, "services").unwrap(), "app").unwrap();
     let svc = child(&lines, &top_level(&lines, "services").unwrap(), "app").unwrap();
-    let mut o = service_edits(&lines, &svc, &sc, &sc_svc, "app");
+    let mut o = service_edits(&lines, &svc, &sc, &sc_svc, "app", &rules);
     let t = top_level_edits(&lines, &split_lines(TAIL));
     o.edits.extend(t.edits);
     o.details.extend(t.details);
@@ -689,10 +761,41 @@ networks:
   #[test]
   fn the_repo_rule_skips_itself_without_an_origin() {
     let lines = split_lines("services:\n  app:\n    build:\n      args:\n        GIT_REPO: x\n");
-    let sc = split_lines(&STD.replace("https://github.com/o/r.git", ""));
+    let (sc, rules) = parse_rules(&split_lines(&STD.replace("https://github.com/o/r.git", "")), 2).unwrap();
     let sc_svc = child(&sc, &top_level(&sc, "services").unwrap(), "app").unwrap();
     let svc = child(&lines, &top_level(&lines, "services").unwrap(), "app").unwrap();
-    let o = service_edits(&lines, &svc, &sc, &sc_svc, "app");
+    let o = service_edits(&lines, &svc, &sc, &sc_svc, "app", &rules);
     assert!(!o.details.iter().any(|d| d.contains("GIT_REPO")), "{:?}", o.details);
+  }
+
+  #[test]
+  fn rules_are_read_from_annotations_and_stripped() {
+    let block = split_lines(
+      "  app:\n    # !rule exact\n    container_name: app\n    build:\n      # !rule exact\n      context: .\n      args:\n        # !rule repo\n        GIT_REPO: x\n    # !rule volume-target\n    volumes:\n      - type: bind\n        target: /app/persisted_data\n    healthcheck:\n      # !rule exact-list\n      test:\n        - CMD\n      # !rule exact\n      interval: 30s\n    plain: 1\n",
+    );
+    let (clean, rules) = parse_rules(&block, 1).unwrap();
+    assert!(clean.iter().all(|l| !l.contains("!rule")), "{clean:?}");
+    assert_eq!(clean.len(), block.len() - 6);
+    let paths: Vec<(String, Kind)> = rules.iter().map(|r| (r.path.join("."), r.kind)).collect();
+    assert_eq!(
+      paths,
+      vec![
+        ("container_name".to_string(), Kind::Exact),
+        ("build.context".to_string(), Kind::Exact),
+        ("build.args.GIT_REPO".to_string(), Kind::Repo),
+        ("volumes".to_string(), Kind::VolumeTarget),
+        ("healthcheck.test".to_string(), Kind::ExactList),
+        ("healthcheck.interval".to_string(), Kind::Exact),
+      ]
+    );
+    for (bad, needle) in [
+      ("  app:\n    # !rule exact\n    - item\n", "followed by a key"),
+      ("  app:\n    # !rule exact\n", "annotates nothing"),
+      ("  app:\n    # !rule bogus\n    x: 1\n", "unknown rule kind"),
+      ("  app:\n    # !rule exact\n    # !rule exact\n    x: 1\n", "another rule line"),
+    ] {
+      let e = parse_rules(&split_lines(bad), 1).unwrap_err().to_string();
+      assert!(e.contains(needle), "{bad:?}: {e}");
+    }
   }
 }

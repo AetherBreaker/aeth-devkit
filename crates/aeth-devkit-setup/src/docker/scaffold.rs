@@ -4,28 +4,35 @@
 use std::cell::{OnceCell, RefCell};
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 
 use aeth_devkit_core::github;
 use aeth_devkit_core::process::Runner;
 use aeth_devkit_core::version::{latest_stable_common, parse_lenient};
 
 use crate::context::ProjectContext;
+use crate::docker::compose_rules::{self, Rule};
+use crate::gate::{Format, Gates};
+use crate::packages::{self, Venv};
 use crate::templates;
 
-pub const BLOCK_START: &str = "# setup-project: service-block";
-pub const BLOCK_END: &str = "# setup-project: end-service-block";
+/// The template's file name inside the installed `devkit_container` package (spec section 3).
+pub const TEMPLATE_FILE: &str = "compose.template.yaml";
+pub const BLOCK_START: &str = "# !service-block:";
+pub const BLOCK_END: &str = "# !end service-block";
 
 /// `head` + one `block` per service + `tail` is a complete compose file. The block still
-/// carries `{service}` and `{git_tag}`; every other placeholder was substituted on load.
+/// carries `{service}` and `{git_tag}`; every other placeholder was substituted on load, and
+/// its `# !rule` lines were lifted into `rules`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scaffold {
   pub head: String,
   pub block: String,
   pub tail: String,
+  pub rules: Vec<Rule>,
 }
 
-/// Split an already substituted and gated template at its block markers.
+/// Split an already substituted and gated template at its block markers and lift the rules.
 pub fn parse(template: &str) -> Result<Scaffold> {
   let mut head = String::new();
   let mut block = String::new();
@@ -56,14 +63,28 @@ pub fn parse(template: &str) -> Result<Scaffold> {
   if !matches!(part, Part::Tail) {
     bail!("compose template is missing the `{BLOCK_START}` / `{BLOCK_END}` markers");
   }
-  Ok(Scaffold { head, block, tail })
+  let (block_lines, rules) = compose_rules::parse_rules(&aeth_devkit_core::compose::tree::split_lines(&block), 1)?;
+  let mut block = block_lines.join("\n");
+  block.push('\n');
+  Ok(Scaffold { head, block, tail, rules })
 }
 
-/// Load, substitute, gate on aeth_ext, and split the compose template.
-pub fn load(templates_dir: &Path, ctx: &ProjectContext) -> Result<Scaffold> {
-  let raw = templates::load(templates_dir, "docker/compose.yaml", ctx, templates::Escape::None)?;
-  let uses = ctx.uses_aeth_ext();
-  parse(&templates::gate(&raw, &|name| name == "aeth-ext" && uses))
+/// The compose template from the installed container package (its `compose.template.yaml`),
+/// gated and substituted; until a release of `devkit-container` carries it, the templates
+/// package's copy (spec section 3, the fallback that step 3 of the release order removes).
+pub fn load(ctx: &ProjectContext, venv: &dyn Venv, templates_dir: &Path, gates: &Gates) -> Result<Scaffold> {
+  let from_container = venv
+    .installed(&ctx.root, &packages::CONTAINER)
+    .map(|i| i.dir.join(TEMPLATE_FILE))
+    .filter(|p| p.is_file());
+  let raw = match from_container {
+    Some(path) => {
+      let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+      templates::substitute(&gates.apply(&text, Format::Yaml, TEMPLATE_FILE)?, ctx, templates::Escape::None)
+    }
+    None => templates::load(templates_dir, "docker/compose.yaml", ctx, templates::Escape::None, gates)?,
+  };
+  parse(&raw)
 }
 
 pub fn service_block(sc: &Scaffold, service: &str) -> String {
@@ -147,13 +168,21 @@ mod tests {
   use aeth_devkit_core::process::RecordingRunner;
   use std::collections::HashSet;
 
-  const TPL: &str = "services:\n# setup-project: service-block\n  {service}:\n    container_name: {service}\n    build:\n      args:\n        GIT_TAG: {git_tag}\n# setup-project: end-service-block\n\nnetworks:\n  coolify:\n    external: true\n";
+  const TPL: &str = "services:\n# !service-block:\n  {service}:\n    # !rule exact\n    container_name: {service}\n    build:\n      args:\n        GIT_TAG: {git_tag}\n# !end service-block\n\nnetworks:\n  coolify:\n    external: true\n";
 
   #[test]
   fn splits_and_renders_one_block_per_service() {
     let sc = parse(TPL).unwrap();
     assert_eq!(sc.head, "services:\n");
     assert!(sc.block.starts_with("  {service}:\n"));
+    assert!(!sc.block.contains("!rule"), "{}", sc.block);
+    assert_eq!(
+      sc.rules,
+      vec![Rule {
+        path: vec!["container_name".into()],
+        kind: compose_rules::Kind::Exact
+      }]
+    );
     assert_eq!(sc.tail, "\nnetworks:\n  coolify:\n    external: true\n");
     let out = render_file(&sc, &["a".into(), "b".into()]);
     assert_eq!(

@@ -15,6 +15,8 @@
   aeth-devkit-core = { workspace = true }
   anyhow     = { workspace = true }
   clap       = { workspace = true }
+  monty       = { workspace = true }
+  monty-types = { workspace = true }
   regex      = { workspace = true }
   serde      = { workspace = true }
   serde_json = { workspace = true }

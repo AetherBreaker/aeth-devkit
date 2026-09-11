@@ -451,6 +451,39 @@ fn an_uncommitted_services_change_cancels_a_committing_run() {
 }
 
 #[test]
+fn a_pyproject_edit_that_flips_a_gate_cancels_a_committing_run() {
+  // `[tool.mypy]` in the template is gated on `dep("mypy")`; adding mypy to the working copy
+  // without committing it flips that gate, which the run refuses before staging anything.
+  let dir = make_project();
+  let root = dir.path();
+  let committed = read(root, "pyproject.toml");
+  git_init(root);
+  git(root, &["add", "-A"]);
+  git(root, &["commit", "-q", "-m", "init"]);
+  let edited = committed.replacen(
+    "[dependency-groups]\n  dev = [",
+    "[dependency-groups]\n  dev = [\n    \"mypy>=1\",",
+    1,
+  );
+  assert_ne!(committed, edited, "the fixture's dev group must be where this expects it");
+  write(root, "pyproject.toml", &edited);
+  let err = aeth_devkit_setup::cli::run(&aeth_devkit_setup::cli::Args {
+    root: root.to_path_buf(),
+    templates_dir: Some(templates()),
+    dry_run: false,
+    no_commit: false,
+    yes: false,
+    vscode: false,
+    no_vscode: true,
+  })
+  .unwrap_err()
+  .to_string();
+  assert!(err.contains("not committed") && err.contains("dep(\"mypy\")"), "{err}");
+  assert_eq!(read(root, "pyproject.toml"), edited, "nothing touched");
+  assert_eq!(git(root, &["rev-list", "--count", "HEAD"]), "1");
+}
+
+#[test]
 fn tool_docker_is_seeded_only_where_docker_files_exist() {
   // Docker files but no table: both keys are seeded, `services` stays empty, nothing
   // Docker-specific runs, and the reminder to list the service fires.

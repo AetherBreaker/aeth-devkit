@@ -107,31 +107,7 @@ impl ProjectContext {
     .to_string();
     let package = find_package_in(&root.join(&python_dir)).unwrap_or_else(|| normalize_import_name(&project_name));
 
-    let mut dependencies = HashSet::new();
-    let mut collect = |item: Option<&toml_edit::Item>| {
-      if let Some(arr) = item.and_then(|i| i.as_array()) {
-        for v in arr.iter() {
-          if let Some(s) = v.as_str() {
-            dependencies.insert(dependency_name(s));
-          }
-        }
-      }
-    };
-    collect(doc.get("project").and_then(|p| p.get("dependencies")));
-    if let Some(t) = doc
-      .get("project")
-      .and_then(|p| p.get("optional-dependencies"))
-      .and_then(|o| o.as_table_like())
-    {
-      for (_, v) in t.iter() {
-        collect(Some(v));
-      }
-    }
-    if let Some(t) = doc.get("dependency-groups").and_then(|g| g.as_table_like()) {
-      for (_, v) in t.iter() {
-        collect(Some(v));
-      }
-    }
+    let dependencies = dependencies_of(&doc);
 
     let docker = doc.get("tool").and_then(|t| t.get("docker"));
     let docker_services = services_key(&doc)?.unwrap_or_default();
@@ -241,6 +217,37 @@ impl ProjectContext {
     let replaced = value.replace("${workspaceFolder}", &self.root.to_string_lossy());
     PathBuf::from(replaced.replace('/', std::path::MAIN_SEPARATOR_STR))
   }
+}
+
+/// Normalised names of every declared dependency: `[project].dependencies`, every
+/// optional-dependencies extra, every dependency group.
+pub fn dependencies_of(doc: &toml_edit::DocumentMut) -> HashSet<String> {
+  let mut dependencies = HashSet::new();
+  let mut collect = |item: Option<&toml_edit::Item>| {
+    if let Some(arr) = item.and_then(|i| i.as_array()) {
+      for v in arr.iter() {
+        if let Some(s) = v.as_str() {
+          dependencies.insert(dependency_name(s));
+        }
+      }
+    }
+  };
+  collect(doc.get("project").and_then(|p| p.get("dependencies")));
+  if let Some(t) = doc
+    .get("project")
+    .and_then(|p| p.get("optional-dependencies"))
+    .and_then(|o| o.as_table_like())
+  {
+    for (_, v) in t.iter() {
+      collect(Some(v));
+    }
+  }
+  if let Some(t) = doc.get("dependency-groups").and_then(|g| g.as_table_like()) {
+    for (_, v) in t.iter() {
+      collect(Some(v));
+    }
+  }
+  dependencies
 }
 
 /// `[tool.docker].services` as written: `None` when the key is absent. The only Docker

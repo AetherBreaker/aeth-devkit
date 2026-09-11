@@ -8,6 +8,7 @@ use similar::TextDiff;
 use crate::changes::Changes;
 use crate::context::ProjectContext;
 use crate::docker::Consent;
+use crate::gate::{Format, Gates};
 use crate::packages::Venv;
 use crate::templates;
 use crate::vscode::protocol::Proposal;
@@ -24,13 +25,14 @@ pub const TEMPLATE_FILE: &str = "template.Dockerfile";
 /// The Dockerfile as the installed devkit-container renders it for this project, or `None`
 /// when the package is not in the venv. The version rendered is the version the image will
 /// install, because both come from the same locked package.
-pub fn render(ctx: &ProjectContext, venv: &dyn Venv) -> Result<Option<String>> {
+pub fn render(ctx: &ProjectContext, venv: &dyn Venv, gates: &Gates) -> Result<Option<String>> {
   let Some(installed) = venv.installed(&ctx.root, &crate::packages::CONTAINER) else {
     return Ok(None);
   };
   let path = installed.dir.join(TEMPLATE_FILE);
   let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-  Ok(Some(templates::substitute(&text, ctx, templates::Escape::None)))
+  let gated = gates.apply(&text, Format::Dockerfile, TEMPLATE_FILE)?;
+  Ok(Some(templates::substitute(&gated, ctx, templates::Escape::None)))
 }
 
 /// The text as diffed and as VS Code shows it: LF line endings, no byte-order mark. Neither
@@ -52,14 +54,14 @@ pub fn unified_diff(rel: &str, old: &str, new: &str) -> String {
     .to_string()
 }
 
-pub fn apply(ctx: &ProjectContext, venv: &dyn Venv, consent: &Consent, changes: &mut Changes) -> Result<()> {
+pub fn apply(ctx: &ProjectContext, venv: &dyn Venv, consent: &Consent, gates: &Gates, changes: &mut Changes) -> Result<()> {
   for target in TARGETS {
     let rel = format!("docker/{target}");
     let path = ctx.root.join("docker").join(target);
     let original = crate::read_optional(&path)?;
     // On a plain run the package step has already installed the package, so `None` here
     // means a dry run on a project that has not adopted it yet.
-    let Some(rendered) = render(ctx, venv)? else {
+    let Some(rendered) = render(ctx, venv, gates)? else {
       changes.notes.push(format!(
         "{rel} was not rendered: devkit-container is not installed in this venv yet; a plain run installs it and renders the file."
       ));
@@ -159,8 +161,22 @@ mod tests {
       release_workflow: true,
       templates_dir: None,
     };
-    assert_eq!(render(&ctx, &venv).unwrap().unwrap(), "RUN mv /tmp/repo/python /app/python\n");
-    assert_eq!(render(&ctx, &crate::packages::StubVenv::default()).unwrap(), None);
+    let gates = Gates::default();
+    assert_eq!(
+      render(&ctx, &venv, &gates).unwrap().unwrap(),
+      "RUN mv /tmp/repo/python /app/python\n"
+    );
+    assert_eq!(render(&ctx, &crate::packages::StubVenv::default(), &gates).unwrap(), None);
+    // A gated template renders through the swept verdicts: `rust` is a fact of the project.
+    let text = "FROM x\n# !if rust:\nRUN cargo\n# !end\n";
+    std::fs::write(venv.0["devkit_container"].dir.join(TEMPLATE_FILE), text).unwrap();
+    let doc: toml_edit::DocumentMut = "[project]\nname = \"p\"\n".parse().unwrap();
+    let templates = [(TEMPLATE_FILE.to_string(), text.to_string())];
+    for (rust, want) in [(true, "FROM x\nRUN cargo\n"), (false, "FROM x\n")] {
+      let facts = crate::gate::Facts { rust, docker_files: false };
+      let gates = Gates::build(&templates, &doc, None, &facts).unwrap();
+      assert_eq!(render(&ctx, &venv, &gates).unwrap().unwrap(), want);
+    }
   }
 
   #[test]
