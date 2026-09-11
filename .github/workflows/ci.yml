@@ -132,6 +132,12 @@ jobs:
               # publish-url: the release workflow's publish block renders only with one.
               printf '[[tool.uv.index]]\nname = "SFTPyPI"\nurl = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple"\npublish-url = "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/"\nexplicit = true\n'
             } > "$root/pyproject.toml"
+            # A Docker project is refused without devkit-container in its environment (a plain
+            # run installs it; a dry run cannot), so the scratch venv gets the release.
+            if [ "$kind" = docker ]; then
+              uv venv "$root/.venv" --python 3.14
+              uv pip install --python "$root/.venv/bin/python" --index "https://pypi.sweetfiretobacco.com/jacob.ogden/internal/+simple" devkit-container
+            fi
             target/debug/devkit setup-project --root "$root" --templates-dir "$tpl" --dry-run --no-vscode | tee "$root/out.txt"
             grep -q '^Would change:' "$root/out.txt"
           done
