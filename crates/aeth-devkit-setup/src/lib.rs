@@ -7,6 +7,7 @@ pub mod completion;
 pub mod context;
 pub mod docker;
 pub mod format;
+pub mod gate;
 pub mod gate_eval;
 pub mod git;
 pub mod interrupt;
