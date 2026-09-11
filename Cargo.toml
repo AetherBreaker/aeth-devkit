@@ -3,7 +3,7 @@
   members  = ["crates/*"]
 
 [workspace.package]
-  version = "15.0.0"
+  version = "15.0.1"
   edition = "2024"
   publish = false
 
