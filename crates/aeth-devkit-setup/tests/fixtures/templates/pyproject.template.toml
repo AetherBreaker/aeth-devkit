@@ -6,7 +6,7 @@
 # Placeholders: {package} → the project's import name; {python_dir} → "src", or "python"
 # for mixed Rust/Python projects where src/ belongs to cargo.
 
-# setup-project: if-docker-services
+# S!if keys("tool.docker.services"):
 [project]
   # devkit-container: the image-side helper (build-time queries and the entrypoint) and the
   # Dockerfile template. setup-project keeps its floor at the newest release the installed
@@ -51,7 +51,7 @@
   [tool.coverage.lcov]
     output = ".cache/coverage.lcov"
 
-# setup-project: if-docker
+# S!if keys("tool.docker.services") or docker_files:
 [tool.docker]
   # Compose services setup-project validates against the standard; the only Docker switch.
   # Empty = no Docker handling. Side services are simply not listed.
@@ -62,7 +62,7 @@
   # all): use tempfile paths.
   required_persisted_dirs = ["persisted_data"]
 
-# setup-project: if-dep mypy
+# S!if dep("mypy"):
 [tool.mypy]
   cache_dir = ".cache/mypy"
 
@@ -246,7 +246,6 @@
     trailing-comment-alignment      = true
 
 [tool.uv.sources]
-  # setup-project: if-docker-services
-  devkit-container    = [{ index = "{devkit_index}" }]
+  devkit-container    = [{ index = "{devkit_index}" }]  # !if keys("tool.docker.services")
   devkit-claude-hooks = [{ index = "{devkit_index}" }]
   devkit-poe-complete = [{ index = "{devkit_index}" }]

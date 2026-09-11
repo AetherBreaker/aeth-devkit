@@ -93,9 +93,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      # setup-project: if-no-publish-index
+      # !if not publish_index:
       id-token: write
-      # setup-project: end
+      # !end
     steps:
       - uses: actions/checkout@v4
         with:
@@ -132,14 +132,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" dist/* --clobber
 
-      # setup-project: if-publish-index
+      # !if publish_index:
       - name: Publish to {publish_index}
         env:
           UV_PUBLISH_USERNAME: ${{ secrets.UV_INDEX_{publish_index_key}_USERNAME }}
           UV_PUBLISH_PASSWORD: ${{ secrets.UV_INDEX_{publish_index_key}_PASSWORD }}
         run: uv publish --index {publish_index} dist/*.whl dist/*.tar.gz
-      # setup-project: end
-      # setup-project: if-no-publish-index
+      # !end
+      # !if not publish_index:
       - name: Publish to PyPI
         run: uv publish --trusted-publishing always dist/*.whl dist/*.tar.gz
-      # setup-project: end
+      # !end
