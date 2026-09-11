@@ -17,6 +17,8 @@ use aeth_devkit_core::prompt::Prompt;
 
 use crate::changes::Changes;
 use crate::context::ProjectContext;
+use crate::gate::Gates;
+use crate::packages::Venv;
 use crate::vscode::protocol::{Proposal, Response, Reviewer};
 
 /// How consent questions are answered for this run.
@@ -165,11 +167,11 @@ fn partial(p: &Proposal, accepted: &[usize]) -> Result<Decision> {
 
 /// Everything Docker: the Dockerfile from the installed container package first, then the
 /// compose file from the templates, then advisories.
-pub fn apply(ctx: &ProjectContext, templates_dir: &Path, deps: &crate::Deps, changes: &mut Changes) -> Result<()> {
+pub fn apply(ctx: &ProjectContext, templates_dir: &Path, deps: &crate::Deps, gates: &Gates, changes: &mut Changes) -> Result<()> {
   let docker = &deps.docker;
   let consent = Consent::new(docker.prompt, docker.reviewer, docker.mode);
-  static_files::apply(ctx, deps.venv, &consent, changes)?;
-  compose(ctx, templates_dir, docker.runner, &consent, changes)
+  static_files::apply(ctx, deps.venv, &consent, gates, changes)?;
+  compose(ctx, templates_dir, deps.venv, docker.runner, &consent, gates, changes)
 }
 
 /// The compose file: created whole from the scaffold when absent; otherwise one diff per
@@ -177,11 +179,19 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, deps: &crate::Deps, cha
 /// and one for the top-level keys. Each diff is computed against the text as accepted so
 /// far, so a hunk never straddles two services and a partial answer leaves later line
 /// numbers valid.
-fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, consent: &Consent, changes: &mut Changes) -> Result<()> {
+fn compose(
+  ctx: &ProjectContext,
+  templates_dir: &Path,
+  venv: &dyn Venv,
+  runner: &dyn Runner,
+  consent: &Consent,
+  gates: &Gates,
+  changes: &mut Changes,
+) -> Result<()> {
   use aeth_devkit_core::compose::find_compose_file;
   use aeth_devkit_core::compose::tree::{self, Edit};
 
-  let sc = scaffold::load(templates_dir, ctx)?;
+  let sc = scaffold::load(ctx, venv, templates_dir, gates)?;
   let tag = scaffold::GitTag::new(runner, ctx);
   let Some(path) = find_compose_file(&ctx.root)? else {
     let text = tag.fill(&scaffold::render_file(&sc, &ctx.docker_services));
@@ -274,7 +284,7 @@ fn compose(ctx: &ProjectContext, templates_dir: &Path, runner: &dyn Runner, cons
         ));
       }
       Some(svc) => {
-        let o = compose_rules::service_edits(&lines, &svc, &sc_doc, &sc_svc, name);
+        let o = compose_rules::service_edits(&lines, &svc, &sc_doc, &sc_svc, name, &sc.rules);
         changes.errors.extend(o.errors);
         ask(
           &mut text,

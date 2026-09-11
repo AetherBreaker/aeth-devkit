@@ -176,6 +176,38 @@ fn without_the_container_package_the_dockerfile_is_skipped_with_a_note() {
 }
 
 #[test]
+fn the_templates_copy_is_the_fallback_without_a_container_compose_template() {
+  // A container package released before it carried `compose.template.yaml`: the compose
+  // scaffold comes from the templates package instead, and the run still creates the file.
+  let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
+  let root = dir.path();
+  let site = tempfile::tempdir().unwrap();
+  for entry in fs::read_dir(fixtures().join("docker")).unwrap() {
+    let entry = entry.unwrap();
+    if entry.file_name() != "compose.template.yaml" {
+      fs::copy(entry.path(), site.path().join(entry.file_name())).unwrap();
+    }
+  }
+  let mut dirs = package_dirs();
+  dirs.0.get_mut("devkit_container").unwrap().dir = site.path().to_path_buf();
+  let prompt = ScriptedPrompt::new(&[]);
+  let runner = RecordingRunner::new(0);
+  runner.script("gh", &["api"], 0, "v1.1.0\n");
+  let index = StubIndexClient { versions: vec![] };
+  let docker = Deps {
+    runner: &runner,
+    prompt: &prompt,
+    reviewer: None,
+    mode: Mode::Ask,
+  };
+  let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
+  aeth_devkit_setup::run_with(&ctx, Some(&templates()), false, &deps(docker, &index, &dirs)).unwrap();
+  let compose = read(root, "docker/compose.yaml");
+  assert!(compose.contains("  demo-app:\n    container_name: demo-app\n"), "{compose}");
+  assert!(!compose.contains("!rule"), "{compose}");
+}
+
+#[test]
 fn without_aeth_ext_the_alerts_block_is_absent() {
   let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
   let root = dir.path();

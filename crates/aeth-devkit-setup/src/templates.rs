@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 
 use crate::context::ProjectContext;
+use crate::gate::{Format, Gates};
 
 /// How placeholder values must be escaped for the file type they are inserted into.
 #[derive(Debug, Clone, Copy)]
@@ -31,27 +32,29 @@ pub fn template_file_name(target: &str) -> String {
   }
 }
 
-/// Read a template (by its target name, e.g. `pyproject.toml`) and substitute
-/// `{project_root}` / `{package}` / `{python_dir}` / `{hook_bin}` / `{publish_index}` /
-/// `{publish_index_key}` / `{devkit_index}` / `{git_repo}`. `{git_tag}` and `{service}` are
-/// deliberately left in place for the Docker scaffold, which fills them per block, and
-/// `{latest}` for the pyproject merger.
-pub fn load(templates_dir: &Path, name: &str, ctx: &ProjectContext, escape: Escape) -> Result<String> {
+/// Read a template (by its target name, e.g. `pyproject.toml`), render its gates, then
+/// substitute the placeholders (see [`substitute`]).
+pub fn load(templates_dir: &Path, name: &str, ctx: &ProjectContext, escape: Escape, gates: &Gates) -> Result<String> {
   let path = templates_dir.join(template_file_name(name));
   let text = std::fs::read_to_string(&path).with_context(|| format!("reading template {}", path.display()))?;
-  Ok(substitute(&text, ctx, escape))
+  let gated = gates.apply(&text, Format::for_target(name), name)?;
+  Ok(substitute(&gated, ctx, escape))
 }
 
 /// Like [`load`], but returns `None` when the template file does not exist (used for
 /// optional overlays such as `vscode/extensions.rust.json`).
-pub fn load_optional(templates_dir: &Path, name: &str, ctx: &ProjectContext, escape: Escape) -> Result<Option<String>> {
+pub fn load_optional(templates_dir: &Path, name: &str, ctx: &ProjectContext, escape: Escape, gates: &Gates) -> Result<Option<String>> {
   let path = templates_dir.join(template_file_name(name));
   if !path.is_file() {
     return Ok(None);
   }
-  load(templates_dir, name, ctx, escape).map(Some)
+  load(templates_dir, name, ctx, escape, gates).map(Some)
 }
 
+/// Substitute `{project_root}` / `{package}` / `{python_dir}` / `{hook_bin}` /
+/// `{publish_index}` / `{publish_index_key}` / `{devkit_index}` / `{git_repo}`. `{git_tag}`
+/// and `{service}` are deliberately left in place for the Docker scaffold, which fills them
+/// per block, and `{latest}` for the pyproject merger.
 pub fn substitute(text: &str, ctx: &ProjectContext, escape: Escape) -> String {
   let root = ctx.root.to_string_lossy();
   let esc = |s: &str| -> String {
@@ -91,31 +94,6 @@ pub fn git_repo(ctx: &ProjectContext) -> String {
     Some(path) => format!("https://github.com/{path}.git"),
     None => origin.to_string(),
   }
-}
-
-/// Block markers for line-based templates: `# setup-project: if-<name>` … `end` survives
-/// only when `enabled(name)`, `if-no-<name>` … `end` only when it does not. Marker lines
-/// are dropped either way; they may be indented and the lines inside keep their own
-/// indentation. Unknown marker lines pass through untouched.
-pub fn gate(text: &str, enabled: &dyn Fn(&str) -> bool) -> String {
-  let mut out = String::with_capacity(text.len());
-  // `Some(keep)` while inside a block, saying whether its lines are emitted.
-  let mut block: Option<bool> = None;
-  for line in text.lines() {
-    match line.trim().strip_prefix("# setup-project: ") {
-      Some("end") => block = None,
-      // `if-no-` must be tried first: `if-no-x` also starts with `if-`.
-      Some(m) if m.starts_with("if-no-") => block = Some(!enabled(&m["if-no-".len()..])),
-      Some(m) if m.starts_with("if-") => block = Some(enabled(&m["if-".len()..])),
-      _ => {
-        if block.unwrap_or(true) {
-          out.push_str(line);
-          out.push('\n');
-        }
-      }
-    }
-  }
-  out
 }
 
 /// How a hook line invokes `devkit-hook`: the project environment's own console script when
@@ -320,19 +298,6 @@ mod publish_index_tests {
     assert_eq!(out, "my-index MY_INDEX");
     assert_eq!(substitute("[{publish_index}]", &ctx(None), Escape::None), "[]");
   }
-
-  const GATED: &str = "a\n# setup-project: if-publish-index\nidx1\n  # setup-project: end\nb\n  # setup-project: if-no-publish-index\n  pypi\n  # setup-project: end\nc\n";
-
-  #[test]
-  fn gate_keeps_exactly_one_variant_and_no_markers() {
-    assert_eq!(gate(GATED, &|n| n == "publish-index"), "a\nidx1\nb\nc\n");
-    assert_eq!(gate(GATED, &|_| false), "a\nb\n  pypi\nc\n");
-  }
-
-  #[test]
-  fn gate_leaves_unmarked_text_alone() {
-    assert_eq!(gate("x\n  y\n", &|_| true), "x\n  y\n");
-  }
 }
 
 #[cfg(test)]
@@ -384,12 +349,5 @@ mod docker_placeholder_tests {
       Escape::None,
     );
     assert_eq!(out, "https://github.com/o/r.git {git_tag} {service} src");
-  }
-
-  #[test]
-  fn gate_handles_any_marker_name() {
-    let t = "a\n# setup-project: if-aeth-ext\nx\n# setup-project: end\n# setup-project: if-no-aeth-ext\ny\n# setup-project: end\n";
-    assert_eq!(gate(t, &|n| n == "aeth-ext"), "a\nx\n");
-    assert_eq!(gate(t, &|_| false), "a\ny\n");
   }
 }

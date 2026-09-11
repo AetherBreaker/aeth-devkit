@@ -307,7 +307,8 @@ fn dockerfile_drift(root: &Path, doc: &DocumentMut, deps: &Deps, dry_run: bool) 
     }
   }
   // `installed()` answered just above, and `render` asks the same venv.
-  let rendered = render(&ctx, deps.venv)?.expect("the installed package renders");
+  let gates = aeth_devkit_setup::gates_for(&ctx, None, deps.venv, None)?;
+  let rendered = render(&ctx, deps.venv, &gates)?.expect("the installed package renders");
   let rel = "docker/Dockerfile";
   // Absent is a state; unreadable (locked by an editor, not UTF-8) is an error, or a present
   // file would be judged deleted, or refreshed against nothing.

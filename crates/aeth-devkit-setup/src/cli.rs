@@ -56,10 +56,11 @@ pub fn run_reject_headless(args: &Args) -> Result<ExitCode> {
   run(args)
 }
 
-/// A committing run merges into HEAD's pyproject but takes the Docker switch from the
-/// working copy; a `[tool.docker].services` that differs between the two would produce a
-/// commit the switch does not describe, or a duplicate key once the edit is replayed.
-/// Not automated away: the commit is the user's to make.
+/// The `services` half of the refusal (`gates_for` with HEAD's pyproject is the other): a
+/// committing run merges into HEAD's pyproject but takes the Docker switch from the working
+/// copy; a `[tool.docker].services` that differs between the two would produce a commit the
+/// switch does not describe, or a duplicate key once the edit is replayed. Not automated
+/// away: the commit is the user's to make.
 fn refuse_uncommitted_services(root: &Path) -> Result<()> {
   let head = match aeth_devkit_core::git::head_blob(root, "pyproject.toml")? {
     Some(bytes) => {
@@ -135,6 +136,17 @@ pub fn run(args: &Args) -> Result<ExitCode> {
   let committing = !dry_run && !args.no_commit && crate::git::is_git_tracked(&root);
   if committing {
     refuse_uncommitted_services(&root)?;
+    // Every gate the run will evaluate must agree between HEAD and the working copy (spec
+    // 2.5). Before the first run installs the templates package there is nothing to sweep
+    // but the container's templates; the `services` check above still applies.
+    let head = aeth_devkit_core::git::head_blob(&root, "pyproject.toml")?
+      .map(|b| String::from_utf8_lossy(&b).into_owned())
+      .unwrap_or_default();
+    let venv = crate::packages::SystemVenv;
+    let templates_dir = templates_override
+      .clone()
+      .or_else(|| crate::packages::Venv::installed(&venv, &root, &crate::packages::TEMPLATES).map(|i| i.dir.join("templates")));
+    crate::gates_for(&ctx, templates_dir.as_deref(), &venv, Some(&head))?;
   }
   let mut bases = if committing {
     let _w = crate::interrupt::Writing::begin();

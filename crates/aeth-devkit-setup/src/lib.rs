@@ -57,8 +57,13 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
   };
   let templates_dir = templates_dir.as_path();
 
+  // 0b. The gates (spec 2.5): every expression in every template this run can render,
+  //     evaluated once. The compose and Dockerfile templates come from the container
+  //     package, so they are swept from there.
+  let gates = gates_for(ctx, Some(templates_dir), deps.venv, None)?;
+
   // 1. pyproject.toml
-  let pyproject_template = templates::load(templates_dir, "pyproject.toml", ctx, templates::Escape::Toml)?;
+  let pyproject_template = templates::load(templates_dir, "pyproject.toml", ctx, templates::Escape::Toml, &gates)?;
   {
     let path = ctx.root.join("pyproject.toml");
     let original = std::fs::read_to_string(&path).context("reading pyproject.toml")?;
@@ -82,13 +87,19 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
   //    (`vscode/<name>.rust.json`) for projects that also contain a crate.
   for name in ["settings.json", "extensions.json"] {
     let path = ctx.root.join(".vscode").join(name);
-    let template = templates::load(templates_dir, &format!("vscode/{name}"), ctx, templates::Escape::Json)?;
+    let template = templates::load(templates_dir, &format!("vscode/{name}"), ctx, templates::Escape::Json, &gates)?;
     let original = read_optional(&path)?;
     let mut log = Vec::new();
     let mut merged = json_merge::merge_json_file(original.as_deref(), &template, &mut log)?;
     if ctx.has_rust {
       let (stem, _) = name.rsplit_once('.').unwrap_or((name, ""));
-      let overlay = templates::load_optional(templates_dir, &format!("vscode/{stem}.rust.json"), ctx, templates::Escape::Json)?;
+      let overlay = templates::load_optional(
+        templates_dir,
+        &format!("vscode/{stem}.rust.json"),
+        ctx,
+        templates::Escape::Json,
+        &gates,
+      )?;
       if let Some(overlay) = overlay {
         merged = json_merge::merge_json_file(Some(&merged), &overlay, &mut log)?;
       }
@@ -98,7 +109,7 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
 
   // 3. .vscode/launch.json — create or patch
   let launch_path = ctx.root.join(".vscode").join("launch.json");
-  let launch_template = templates::load(templates_dir, "vscode/launch.json", ctx, templates::Escape::Json)?;
+  let launch_template = templates::load(templates_dir, "vscode/launch.json", ctx, templates::Escape::Json, &gates)?;
   let launch_original = read_optional(&launch_path)?;
   let mut env_files = Vec::new();
   {
@@ -116,7 +127,7 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
   }
 
   // 5. .env and any other env file referenced by launch.json
-  let env_template = templates::load(templates_dir, "env", ctx, templates::Escape::None)?;
+  let env_template = templates::load(templates_dir, "env", ctx, templates::Escape::None, &gates)?;
   let mut env_targets = vec![ctx.root.join(".env")];
   for f in env_files {
     let resolved = ctx.resolve_workspace_var(&f);
@@ -135,7 +146,7 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
   //    appended to the template first, so its rules count as template rules).
   {
     let path = ctx.root.join(".gitignore");
-    let template = load_with_rust_overlay(templates_dir, "gitignore", ctx)?;
+    let template = load_with_rust_overlay(templates_dir, "gitignore", ctx, &gates)?;
     let original = read_optional(&path)?;
     let mut log = Vec::new();
     let merged = lines::merge_gitignore(original.as_deref(), &template, &mut log);
@@ -145,7 +156,7 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
   // 7. .gitattributes — line union
   {
     let path = ctx.root.join(".gitattributes");
-    let template = templates::load(templates_dir, "gitattributes", ctx, templates::Escape::None)?;
+    let template = templates::load(templates_dir, "gitattributes", ctx, templates::Escape::None, &gates)?;
     let original = read_optional(&path)?;
     let mut log = Vec::new();
     let merged = lines::line_union(original.as_deref(), &template, &mut log);
@@ -155,7 +166,7 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
   // 8. .dockerignore — line union, only for projects that have a Docker setup
   if ctx.has_docker {
     let path = ctx.root.join(".dockerignore");
-    let template = load_with_rust_overlay(templates_dir, "dockerignore", ctx)?;
+    let template = load_with_rust_overlay(templates_dir, "dockerignore", ctx, &gates)?;
     let original = read_optional(&path)?;
     let mut log = Vec::new();
     let merged = lines::line_union(original.as_deref(), &template, &mut log);
@@ -165,17 +176,16 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
   // 8b. Docker: the Dockerfile from the installed container package replaced whole and the
   //     compose file edited in place, each behind consent (see `docker`).
   if ctx.has_docker {
-    docker::apply(ctx, templates_dir, deps, &mut changes)?;
+    docker::apply(ctx, templates_dir, deps, &gates, &mut changes)?;
   }
 
   // 9. AGENTS.md — devkit-managed block; text outside the markers belongs to the project.
   {
     let path = ctx.root.join("AGENTS.md");
-    let template = templates::load(templates_dir, "AGENTS.md", ctx, templates::Escape::None)?;
+    let template = templates::load(templates_dir, "AGENTS.md", ctx, templates::Escape::None, &gates)?;
     let original = read_optional(&path)?;
     let mut log = Vec::new();
-    let block = md_block::apply_if_dep(&template, ctx, &mut log);
-    let merged = md_block::merge_managed_block(original.as_deref(), &block, &mut log)?;
+    let merged = md_block::merge_managed_block(original.as_deref(), &template, &mut log)?;
     changes.record_optional(&path, original.as_deref(), &merged, log)?;
   }
 
@@ -191,7 +201,7 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
     if path.is_file() {
       continue;
     }
-    let template = templates::load(templates_dir, template_name, ctx, templates::Escape::None)?;
+    let template = templates::load(templates_dir, template_name, ctx, templates::Escape::None, &gates)?;
     changes.record_optional(&path, None, &template, vec!["created from template".into()])?;
   }
 
@@ -210,11 +220,7 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
     } else {
       "github/workflows/release.yml"
     };
-    let raw = templates::load(templates_dir, template_name, ctx, templates::Escape::None)?;
-    let rendered = templates::gate(&raw, &|name| match name {
-      "publish-index" => ctx.publish_index.is_some(),
-      _ => false,
-    });
+    let rendered = templates::load(templates_dir, template_name, ctx, templates::Escape::None, &gates)?;
     let original = read_optional(&path)?;
     let devkit_owned = original.as_deref().is_some_and(|o| o.starts_with(DEVKIT_WORKFLOW_HEADER));
     let first_install = !devkit_owned;
@@ -259,7 +265,7 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
     (".claude/settings.local.json", "claude/settings.local.json"),
   ] {
     let path = ctx.root.join(rel);
-    let template = templates::load(templates_dir, template_name, ctx, templates::Escape::Json)?;
+    let template = templates::load(templates_dir, template_name, ctx, templates::Escape::Json, &gates)?;
     let original = read_optional(&path)?;
     let mut log = Vec::new();
     let merged = json_merge::merge_claude_settings(original.as_deref(), &template, &mut log)?;
@@ -269,7 +275,7 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
   // 12. .mcp.json — add missing servers, never edit one the project already defines.
   {
     let path = ctx.root.join(".mcp.json");
-    let template = templates::load(templates_dir, ".mcp.json", ctx, templates::Escape::Json)?;
+    let template = templates::load(templates_dir, ".mcp.json", ctx, templates::Escape::Json, &gates)?;
     let original = read_optional(&path)?;
     let mut log = Vec::new();
     let merged = json_merge::merge_mcp_file(original.as_deref(), &template, &mut log)?;
@@ -371,15 +377,15 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
 /// Assemble a line-based template (`gitignore`, `dockerignore`) from its layers, in order:
 /// the vendored base, the `rust.<name>` overlay (only when the project contains a crate),
 /// then the `devkit.<name>` additions — so project-specific rules always come last.
-fn load_with_rust_overlay(templates_dir: &Path, name: &str, ctx: &ProjectContext) -> Result<String> {
-  let mut template = templates::load(templates_dir, name, ctx, templates::Escape::None)?;
+fn load_with_rust_overlay(templates_dir: &Path, name: &str, ctx: &ProjectContext, gates: &gate::Gates) -> Result<String> {
+  let mut template = templates::load(templates_dir, name, ctx, templates::Escape::None, gates)?;
   let mut layers = Vec::new();
   if ctx.has_rust {
     layers.push(format!("rust.{name}"));
   }
   layers.push(format!("devkit.{name}"));
   for layer in layers {
-    if let Some(overlay) = templates::load_optional(templates_dir, &layer, ctx, templates::Escape::None)? {
+    if let Some(overlay) = templates::load_optional(templates_dir, &layer, ctx, templates::Escape::None, gates)? {
       if !template.ends_with('\n') {
         template.push('\n');
       }
@@ -388,6 +394,48 @@ fn load_with_rust_overlay(templates_dir: &Path, name: &str, ctx: &ProjectContext
     }
   }
   Ok(template)
+}
+
+/// The gates for one render: every template under `templates_dir` (when given) plus the two
+/// templates of the installed container package, swept and evaluated against the working
+/// copy's `pyproject.toml`, and against `head_pyproject` when a committing run must refuse a
+/// gate that differs (spec 2.5). `docker-pin` passes no templates dir: it renders only the
+/// container's Dockerfile.
+pub fn gates_for(
+  ctx: &ProjectContext,
+  templates_dir: Option<&Path>,
+  venv: &dyn packages::Venv,
+  head_pyproject: Option<&str>,
+) -> Result<gate::Gates> {
+  let mut templates = match templates_dir {
+    Some(dir) => gate::collect_dir(dir)?,
+    None => Vec::new(),
+  };
+  if let Some(installed) = venv.installed(&ctx.root, &packages::CONTAINER) {
+    for file in [docker::static_files::TEMPLATE_FILE, docker::scaffold::TEMPLATE_FILE] {
+      let path = installed.dir.join(file);
+      if path.is_file() {
+        templates.push((
+          file.to_string(),
+          std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?,
+        ));
+      }
+    }
+  }
+  let text = std::fs::read_to_string(ctx.root.join("pyproject.toml")).context("reading pyproject.toml")?;
+  let doc: toml_edit::DocumentMut = text.parse().context("parsing pyproject.toml")?;
+  let head = head_pyproject
+    .map(|t| t.parse::<toml_edit::DocumentMut>().context("parsing HEAD's pyproject.toml"))
+    .transpose()?;
+  gate::Gates::build(
+    &templates,
+    &doc,
+    head.as_ref(),
+    &gate::Facts {
+      rust: ctx.has_rust,
+      docker_files: ctx.docker_files,
+    },
+  )
 }
 
 pub(crate) fn read_optional(path: &Path) -> Result<Option<String>> {
