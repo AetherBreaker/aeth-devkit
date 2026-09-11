@@ -2,7 +2,6 @@
 //! tail, plus the lazily resolved `{git_tag}` placeholder.
 
 use std::cell::{OnceCell, RefCell};
-use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
 
@@ -69,22 +68,24 @@ pub fn parse(template: &str) -> Result<Scaffold> {
   Ok(Scaffold { head, block, tail, rules })
 }
 
-/// The compose template from the installed container package (its `compose.template.yaml`),
-/// gated and substituted; until a release of `devkit-container` carries it, the templates
-/// package's copy (spec section 3, the fallback that step 3 of the release order removes).
-pub fn load(ctx: &ProjectContext, venv: &dyn Venv, templates_dir: &Path, gates: &Gates) -> Result<Scaffold> {
-  let from_container = venv
+/// The compose template from the installed container package, gated and substituted
+/// (spec section 3). A package without it is older than the release that ships it.
+pub fn load(ctx: &ProjectContext, venv: &dyn Venv, gates: &Gates) -> Result<Scaffold> {
+  let installed = venv
     .installed(&ctx.root, &packages::CONTAINER)
-    .map(|i| i.dir.join(TEMPLATE_FILE))
-    .filter(|p| p.is_file());
-  let raw = match from_container {
-    Some(path) => {
-      let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-      templates::substitute(&gates.apply(&text, Format::Yaml, TEMPLATE_FILE)?, ctx, templates::Escape::None)
-    }
-    None => templates::load(templates_dir, "docker/compose.yaml", ctx, templates::Escape::None, gates)?,
-  };
-  parse(&raw)
+    .context("devkit-container is not installed in this environment; a plain run installs it")?;
+  let path = installed.dir.join(TEMPLATE_FILE);
+  let text = std::fs::read_to_string(&path).with_context(|| {
+    format!(
+      "devkit-container {} has no {TEMPLATE_FILE}: the compose template ships with the binary from 2.0.0; run setup-project on a plain run to advance the package",
+      installed.version
+    )
+  })?;
+  parse(&templates::substitute(
+    &gates.apply(&text, Format::Yaml, TEMPLATE_FILE)?,
+    ctx,
+    templates::Escape::None,
+  ))
 }
 
 pub fn service_block(sc: &Scaffold, service: &str) -> String {

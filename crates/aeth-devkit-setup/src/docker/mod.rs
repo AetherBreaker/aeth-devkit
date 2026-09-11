@@ -8,7 +8,6 @@ pub mod scaffold;
 pub mod static_files;
 
 use std::cell::Cell;
-use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
@@ -166,12 +165,12 @@ fn partial(p: &Proposal, accepted: &[usize]) -> Result<Decision> {
 }
 
 /// Everything Docker: the Dockerfile from the installed container package first, then the
-/// compose file from the templates, then advisories.
-pub fn apply(ctx: &ProjectContext, templates_dir: &Path, deps: &crate::Deps, gates: &Gates, changes: &mut Changes) -> Result<()> {
+/// compose file from the same package, then advisories.
+pub fn apply(ctx: &ProjectContext, deps: &crate::Deps, gates: &Gates, changes: &mut Changes) -> Result<()> {
   let docker = &deps.docker;
   let consent = Consent::new(docker.prompt, docker.reviewer, docker.mode);
   static_files::apply(ctx, deps.venv, &consent, gates, changes)?;
-  compose(ctx, templates_dir, deps.venv, docker.runner, &consent, gates, changes)
+  compose(ctx, deps.venv, docker.runner, &consent, gates, changes)
 }
 
 /// The compose file: created whole from the scaffold when absent; otherwise one diff per
@@ -181,7 +180,6 @@ pub fn apply(ctx: &ProjectContext, templates_dir: &Path, deps: &crate::Deps, gat
 /// numbers valid.
 fn compose(
   ctx: &ProjectContext,
-  templates_dir: &Path,
   venv: &dyn Venv,
   runner: &dyn Runner,
   consent: &Consent,
@@ -191,7 +189,7 @@ fn compose(
   use aeth_devkit_core::compose::find_compose_file;
   use aeth_devkit_core::compose::tree::{self, Edit};
 
-  let sc = scaffold::load(ctx, venv, templates_dir, gates)?;
+  let sc = scaffold::load(ctx, venv, gates)?;
   let tag = scaffold::GitTag::new(runner, ctx);
   let Some(path) = find_compose_file(&ctx.root)? else {
     let text = tag.fill(&scaffold::render_file(&sc, &ctx.docker_services));

@@ -184,7 +184,7 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
   // 8b. Docker: the Dockerfile from the installed container package replaced whole and the
   //     compose file edited in place, each behind consent (see `docker`).
   if ctx.has_docker {
-    docker::apply(ctx, templates_dir, deps, &gates, &mut changes)?;
+    docker::apply(ctx, deps, &gates, &mut changes)?;
   }
 
   // 9. AGENTS.md — devkit-managed block; text outside the markers belongs to the project.

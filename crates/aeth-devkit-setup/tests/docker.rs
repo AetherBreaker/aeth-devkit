@@ -141,7 +141,9 @@ fn fresh_project_gets_dockerfile_and_compose_then_is_idempotent() {
 }
 
 #[test]
-fn without_the_container_package_the_dockerfile_is_skipped_with_a_note() {
+fn without_the_container_package_a_dry_run_is_refused_naming_the_plain_run() {
+  // A listed service means Docker is managed, and the compose scaffold has no source but
+  // the container package: a plain run installs it first; a dry run cannot, so it stops.
   let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
   let root = dir.path();
   let prompt = ScriptedPrompt::new(&[]);
@@ -156,55 +158,61 @@ fn without_the_container_package_the_dockerfile_is_skipped_with_a_note() {
     mode: Mode::DryRun,
   };
   let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
-  let changes = aeth_devkit_setup::run_with(&ctx, Some(&templates()), true, &deps(docker, &index, &dirs)).unwrap();
-  // A dry run records what it would write, so the file list is the evidence: no Dockerfile,
-  // but the rest of the Docker step (the compose file) still ran.
+  let err = aeth_devkit_setup::run_with(&ctx, Some(&templates()), true, &deps(docker, &index, &dirs))
+    .unwrap_err()
+    .to_string();
   assert!(
-    !changes.files.iter().any(|f| f.path.ends_with("Dockerfile")),
-    "{}",
-    changes.report(root)
+    err.contains("devkit-container is not installed") && err.contains("a plain run installs it"),
+    "{err}"
   );
-  assert!(changes.files.iter().any(|f| f.path.ends_with("compose.yaml") && f.created));
-  assert!(
-    changes
-      .notes
-      .iter()
-      .any(|n| n.contains("docker/Dockerfile") && n.contains("devkit-container")),
-    "{:?}",
-    changes.notes
-  );
+  assert!(!root.join("docker").exists(), "a dry run writes nothing");
 }
 
 #[test]
-fn the_templates_copy_is_the_fallback_without_a_container_compose_template() {
-  // A container package released before it carried `compose.template.yaml`: the compose
-  // scaffold comes from the templates package instead, and the run still creates the file.
-  let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
-  let root = dir.path();
+fn a_container_package_without_the_compose_template_is_refused_with_the_version_named() {
+  // Only a devkit-container older than the one that ships the template lacks it; the run
+  // says so instead of rendering nothing.
+  let dir = project(&["demo-app"], "https://github.com/o/r.git");
   let site = tempfile::tempdir().unwrap();
-  for entry in fs::read_dir(fixtures().join("docker")).unwrap() {
-    let entry = entry.unwrap();
-    if entry.file_name() != "compose.template.yaml" {
-      fs::copy(entry.path(), site.path().join(entry.file_name())).unwrap();
-    }
+  let pkg = site.path().join("devkit_container");
+  std::fs::create_dir_all(&pkg).unwrap();
+  std::fs::copy(
+    fixtures().join("docker").join("template.Dockerfile"),
+    pkg.join("template.Dockerfile"),
+  )
+  .unwrap();
+  let mut map = std::collections::HashMap::new();
+  map.insert(
+    "devkit_container".to_string(),
+    Installed {
+      dir: pkg,
+      version: "1.4.0".into(),
+    },
+  );
+  for name in ["devkit_claude_hooks", "devkit_poe_complete"] {
+    map.insert(
+      name.to_string(),
+      Installed {
+        dir: fixtures().join("docker"),
+        version: "1.0.0".into(),
+      },
+    );
   }
-  let mut dirs = package_dirs();
-  dirs.0.get_mut("devkit_container").unwrap().dir = site.path().to_path_buf();
+  let venv = StubVenv(map);
   let prompt = ScriptedPrompt::new(&[]);
   let runner = RecordingRunner::new(0);
-  runner.script("gh", &["api"], 0, "v1.1.0\n");
   let index = StubIndexClient { versions: vec![] };
   let docker = Deps {
     runner: &runner,
     prompt: &prompt,
     reviewer: None,
-    mode: Mode::Ask,
+    mode: Mode::Yes,
   };
-  let ctx = aeth_devkit_setup::context::ProjectContext::discover(root).unwrap();
-  aeth_devkit_setup::run_with(&ctx, Some(&templates()), false, &deps(docker, &index, &dirs)).unwrap();
-  let compose = read(root, "docker/compose.yaml");
-  assert!(compose.contains("  demo-app:\n    container_name: demo-app\n"), "{compose}");
-  assert!(!compose.contains("!rule"), "{compose}");
+  let ctx = aeth_devkit_setup::context::ProjectContext::discover(dir.path()).unwrap();
+  let err = aeth_devkit_setup::run_with(&ctx, Some(&templates()), false, &deps(docker, &index, &venv))
+    .unwrap_err()
+    .to_string();
+  assert!(err.contains("compose.template.yaml") && err.contains("1.4.0"), "{err}");
 }
 
 #[test]

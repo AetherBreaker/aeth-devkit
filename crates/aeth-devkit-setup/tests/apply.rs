@@ -95,6 +95,16 @@ fn make_project() -> tempfile::TempDir {
   dir
 }
 
+/// [`make_project`] with no Docker service: the binary's runs below go through the real
+/// environment, which holds no `devkit-container`, and a Docker project without it is refused
+/// (the plain run installs it; a dry run cannot). These tests are about other things.
+fn make_project_without_docker() -> tempfile::TempDir {
+  let dir = make_project();
+  let py = read(dir.path(), "pyproject.toml").replace("services    = [\"imap-report-collector\"]", "services    = []");
+  write(dir.path(), "pyproject.toml", &py);
+  dir
+}
+
 /// A lock as uv leaves it with every devkit package (the templates included) at the version
 /// the stub venv holds, so the package step's recorded `uv lock` has nothing to change and
 /// the sync is skipped.
@@ -606,7 +616,7 @@ fn a_run_without_standard_input_is_refused_unless_nothing_will_be_asked() {
   // device (no answer can ever come from it). A plain run and `--no-commit` are refused
   // before touching anything (exit 2, the error exit); `-y` gets past the gate, shown
   // here on a root with no pyproject so the run fails on that instead, hermetically.
-  let dir = make_project();
+  let dir = make_project_without_docker();
   let root = dir.path();
   let before = read(root, "pyproject.toml");
   let exe = env!("CARGO_BIN_EXE_devkit-setup");
@@ -647,7 +657,7 @@ fn a_run_without_standard_input_is_refused_unless_nothing_will_be_asked() {
   // clean, and exit 0 with the drift reported after a managed file is deleted.
   super_run(root, false).unwrap();
   assert_eq!(run(root, &["--dry-run"]).0, Some(0));
-  fs::remove_file(root.join(".dockerignore")).unwrap();
+  fs::remove_file(root.join(".gitignore")).unwrap();
   let out = std::process::Command::new(exe)
     .arg("--root")
     .arg(root)
@@ -660,10 +670,10 @@ fn a_run_without_standard_input_is_refused_unless_nothing_will_be_asked() {
   let stdout = String::from_utf8_lossy(&out.stdout);
   assert_eq!(out.status.code(), Some(0), "{stdout}");
   assert!(
-    stdout.contains("Would change:") && stdout.contains(".dockerignore"),
+    stdout.contains("Would change:") && stdout.contains(".gitignore"),
     "drift is reported: {stdout}"
   );
-  assert!(!root.join(".dockerignore").exists(), "a dry run writes nothing");
+  assert!(!root.join(".gitignore").exists(), "a dry run writes nothing");
 }
 
 #[test]
@@ -705,11 +715,32 @@ fn the_unlisted_services_warning_can_be_silenced() {
 }
 
 #[test]
-fn an_unsupported_compose_shape_is_an_error_on_every_run_and_exits_1() {
+fn an_unsupported_compose_shape_is_an_error_on_every_run() {
   // A listed service is a declared intent to have the compose file managed, so a shape
-  // the engine cannot edit is an `error:`: the rest of the run still writes, and the exit
-  // code says the project is not clean.
+  // the engine cannot edit is an `error:`: the rest of the run still writes, and (see the
+  // next test) the exit code says the project is not clean.
   let dir = make_project();
+  let root = dir.path();
+  run(root, false).unwrap();
+  // An include-only aggregator is a supported layout: a warning, no error.
+  write(root, "docker/compose.yaml", "include:\n  - path: other.yaml\n");
+  let changes = run(root, true).unwrap();
+  assert!(changes.errors.is_empty(), "{:?}", changes.errors);
+  assert_eq!(changes.warnings.len(), 1, "{:?}", changes.warnings);
+  // A shape the user could reformat is the error, on this run and the next.
+  write(root, "docker/compose.yaml", "services: {imap-report-collector: {image: x}}\n");
+  for _ in 0..2 {
+    let changes = run(root, true).unwrap();
+    assert!(changes.is_empty(), "no drift, only an error: {changes:?}");
+    assert_eq!(changes.errors.len(), 1, "{:?}", changes.errors);
+  }
+}
+
+#[test]
+fn a_recorded_error_exits_1_and_a_clean_dry_run_0() {
+  // The exit code carries a finding the run recorded rather than wrote (an `error:`), here
+  // the stale-lock one a dry run records instead of stopping.
+  let dir = make_project_without_docker();
   let root = dir.path();
   let args = aeth_devkit_setup::cli::Args {
     root: root.to_path_buf(),
@@ -722,19 +753,11 @@ fn an_unsupported_compose_shape_is_an_error_on_every_run_and_exits_1() {
   };
   run(root, false).unwrap();
   assert_eq!(aeth_devkit_setup::cli::run(&args).unwrap(), std::process::ExitCode::SUCCESS);
-  // An include-only aggregator is a supported layout: a warning, no error.
-  write(root, "docker/compose.yaml", "include:\n  - path: other.yaml\n");
-  let changes = run(root, true).unwrap();
-  assert!(changes.errors.is_empty(), "{:?}", changes.errors);
-  assert_eq!(changes.warnings.len(), 1, "{:?}", changes.warnings);
-  // A shape the user could reformat is the error, on this run and the next.
-  write(root, "docker/compose.yaml", "services: {imap-report-collector: {image: x}}\n");
-  for _ in 0..2 {
-    let changes = run(root, true).unwrap();
-    assert!(changes.is_empty(), "no drift, only an error: {changes:?}");
-    assert_eq!(changes.errors.len(), 1, "{:?}", changes.errors);
-    assert_eq!(aeth_devkit_setup::cli::run(&args).unwrap(), std::process::ExitCode::from(1));
-  }
+  let lock = read(root, "uv.lock");
+  let running = format!("version = \"{}\"", aeth_devkit_setup::packages::RUNNING_DEVKIT);
+  assert!(lock.contains(&running), "{lock}");
+  write(root, "uv.lock", &lock.replacen(&running, "version = \"0.0.1\"", 1));
+  assert_eq!(aeth_devkit_setup::cli::run(&args).unwrap(), std::process::ExitCode::from(1));
 }
 
 #[test]
@@ -1328,10 +1351,10 @@ fn the_venv_path_bootstraps_the_templates_package_and_renders_the_same_files() {
 
 #[test]
 fn the_env_override_renders_without_a_venv_and_must_be_a_directory() {
-  let dir = make_project();
+  let dir = make_project_without_docker();
   let root = dir.path();
   run(root, false).unwrap();
-  fs::remove_file(root.join(".dockerignore")).unwrap();
+  fs::remove_file(root.join(".gitignore")).unwrap();
   let exe = env!("CARGO_BIN_EXE_devkit-setup");
   let out = std::process::Command::new(exe)
     .arg("--root")
@@ -1344,8 +1367,8 @@ fn the_env_override_renders_without_a_venv_and_must_be_a_directory() {
   let stdout = String::from_utf8_lossy(&out.stdout);
   let stderr = String::from_utf8_lossy(&out.stderr);
   assert_eq!(out.status.code(), Some(0), "{stdout}{stderr}");
-  assert!(stdout.contains("Would change:") && stdout.contains(".dockerignore"), "{stdout}");
-  assert!(!root.join(".dockerignore").exists(), "a dry run writes nothing");
+  assert!(stdout.contains("Would change:") && stdout.contains(".gitignore"), "{stdout}");
+  assert!(!root.join(".gitignore").exists(), "a dry run writes nothing");
   let out = std::process::Command::new(exe)
     .arg("--root")
     .arg(root)
@@ -1432,14 +1455,14 @@ fn a_committing_run_bootstraps_the_templates_package_once_and_replays_the_users_
 
 #[test]
 fn the_pyproject_setting_renders_without_a_flag_or_the_env_var() {
-  let dir = make_project();
+  let dir = make_project_without_docker();
   let root = dir.path();
   run(root, false).unwrap();
   // Absolute, so a join with the root yields it as is; forward slashes need no escaping.
   let tpl = templates().to_string_lossy().replace('\\', "/");
   let py = read(root, "pyproject.toml");
   write(root, "pyproject.toml", &format!("{py}\n[tool.devkit]\ntemplates-dir = \"{tpl}\"\n"));
-  fs::remove_file(root.join(".dockerignore")).unwrap();
+  fs::remove_file(root.join(".gitignore")).unwrap();
   let exe = env!("CARGO_BIN_EXE_devkit-setup");
   let out = std::process::Command::new(exe)
     .arg("--root")
@@ -1452,7 +1475,7 @@ fn the_pyproject_setting_renders_without_a_flag_or_the_env_var() {
   let stdout = String::from_utf8_lossy(&out.stdout);
   let stderr = String::from_utf8_lossy(&out.stderr);
   assert_eq!(out.status.code(), Some(0), "{stdout}{stderr}");
-  assert!(stdout.contains("Would change:") && stdout.contains(".dockerignore"), "{stdout}");
+  assert!(stdout.contains("Would change:") && stdout.contains(".gitignore"), "{stdout}");
   // The report lists a changed file as `<path>: <verb>`; notes may mention the file too.
   assert!(
     !stdout.lines().any(|l| l.starts_with("pyproject.toml")),
