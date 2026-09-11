@@ -212,6 +212,218 @@ impl Gates {
   }
 }
 
+/// One open block while rendering.
+#[derive(Debug)]
+enum Frame {
+  Explicit {
+    name: String,
+    keep: bool,
+    line: usize,
+  },
+  /// A structural block: no end line; it closes when `end` (exclusive line index) is reached.
+  Structural {
+    keep: bool,
+    end: usize,
+  },
+}
+
+impl Frame {
+  fn keep(&self) -> bool {
+    match self {
+      Frame::Explicit { keep, .. } | Frame::Structural { keep, .. } => *keep,
+    }
+  }
+}
+
+impl Gates {
+  /// Render `text`: resolve every block against the swept verdicts and strip every marker
+  /// (2.2, 2.3). Line endings come out as LF; the caller restores CRLF where a file has it.
+  pub fn apply(&self, text: &str, format: Format, name: &str) -> Result<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut frames: Vec<Frame> = Vec::new();
+    let at = |i: usize| format!("{name} line {}", i + 1);
+    for (i, line) in lines.iter().enumerate() {
+      // Structural units that end here close first; an explicit block still open inside one
+      // is an error rather than a silently extended unit.
+      if let Some(pos) = frames.iter().position(|f| matches!(f, Frame::Structural { end, .. } if *end == i))
+        && let Some(Frame::Explicit { name: n, line, .. }) = frames.get(pos + 1)
+      {
+        bail!(
+          "{}: block `{n}` opened at line {} must close before the structural unit ends",
+          at(i),
+          line + 1
+        );
+      }
+      while matches!(frames.last(), Some(Frame::Structural { end, .. }) if *end == i) {
+        frames.pop();
+      }
+      let suppressed = frames.iter().any(|f| !f.keep());
+      let Some(m) = find_marker(line, format).map_err(|e| anyhow!("{}: {e:#}", at(i)))? else {
+        if !suppressed {
+          out.push_str(line);
+          out.push('\n');
+        }
+        continue;
+      };
+      match parse_body(m.body).map_err(|e| anyhow!("{}: {e:#}", at(i)))? {
+        Body::PassThrough => {
+          if !suppressed {
+            out.push_str(line);
+            out.push('\n');
+          }
+        }
+        Body::If { expr, label, block } => {
+          let keep = self.verdict(&expr).map_err(|e| anyhow!("{}: {e:#}", at(i)))?;
+          if m.content.is_empty() {
+            if !block {
+              bail!("{}: `!if` on its own line needs a trailing colon", at(i));
+            }
+            if m.structural {
+              let start = (i + 1..lines.len())
+                .find(|&j| !lines[j].trim().is_empty() && find_marker(lines[j], format).ok().flatten().is_none())
+                .with_context(|| format!("{}: nothing follows the structural gate", at(i)))?;
+              let end = unit_end(format, &lines, start).map_err(|e| anyhow!("{}: {e:#}", at(i)))?;
+              frames.push(Frame::Structural { keep, end });
+            } else {
+              frames.push(Frame::Explicit {
+                name: label.unwrap_or(expr),
+                keep,
+                line: i,
+              });
+            }
+          } else {
+            if m.structural {
+              bail!("{}: a trailing gate cannot be structural", at(i));
+            }
+            if block {
+              bail!("{}: a trailing `!if` gates one line and takes no colon", at(i));
+            }
+            if !suppressed && keep {
+              out.push_str(m.content);
+              out.push('\n');
+            }
+          }
+        }
+        Body::End(target) => {
+          if !m.content.is_empty() && !suppressed {
+            out.push_str(m.content);
+            out.push('\n');
+          }
+          match target {
+            None => match frames.last() {
+              Some(Frame::Explicit { .. }) => {
+                frames.pop();
+              }
+              Some(Frame::Structural { .. }) => bail!("{}: `!end` cannot close a structural block", at(i)),
+              None => bail!("{}: `!end` with no open block", at(i)),
+            },
+            Some(n) => loop {
+              match frames.pop() {
+                Some(Frame::Explicit { name: open, .. }) if open == n => break,
+                Some(Frame::Explicit { .. }) => {}
+                Some(Frame::Structural { .. }) => bail!("{}: `!end {n}` would close a structural block", at(i)),
+                None => bail!("{}: no open block named `{n}`", at(i)),
+              }
+            },
+          }
+        }
+      }
+    }
+    if let Some(Frame::Explicit { name: n, line, .. }) = frames.iter().find(|f| matches!(f, Frame::Explicit { .. })) {
+      bail!("{name}: block `{n}` opened at line {} is not closed", line + 1);
+    }
+    Ok(out)
+  }
+}
+
+/// The exclusive end of the structural unit starting at `start` (2.3).
+fn unit_end(format: Format, lines: &[&str], start: usize) -> Result<usize> {
+  let n = lines.len();
+  let is_marker = |l: &str| find_marker(l, format).ok().flatten().is_some();
+  match format {
+    Format::Toml => {
+      let mut j = start + 1;
+      while j < n && !lines[j].trim_start().starts_with('[') {
+        j += 1;
+      }
+      Ok(before_decor(lines, start, j, |l| l.trim_start().starts_with('#')))
+    }
+    Format::Markdown => {
+      let level = heading_level(lines[start]).with_context(|| "a structural gate in markdown must precede a heading")?;
+      let mut fence: Option<String> = None;
+      let mut j = start + 1;
+      while j < n {
+        let token = fence_delimiter(lines[j]);
+        match (&fence, token) {
+          (None, Some(t)) => fence = Some(t),
+          (Some(open), Some(t)) if t.starts_with(open.as_str()) => fence = None,
+          _ => {}
+        }
+        if fence.is_none() && heading_level(lines[j]).is_some_and(|l| l <= level) {
+          break;
+        }
+        j += 1;
+      }
+      Ok(before_decor(lines, start, j, is_marker))
+    }
+    Format::Yaml => {
+      let indent = indent_of(lines[start]);
+      let mut j = start + 1;
+      while j < n && (lines[j].trim().is_empty() || indent_of(lines[j]) > indent) {
+        j += 1;
+      }
+      Ok(j)
+    }
+    Format::Dockerfile => {
+      let mut j = start;
+      while j < n && lines[j].trim_end().ends_with('\\') {
+        j += 1;
+      }
+      Ok((j + 1).min(n))
+    }
+    Format::Jsonc | Format::Plain => bail!("structural gates are not defined for {format:?} files"),
+  }
+}
+
+/// Where a unit ends when its successor is at `next` (or `next == lines.len()`, the end of
+/// the file): the decor lines (`is_decor`) directly above the successor are its own, and
+/// blank lines above those still belong to the unit. Without a successor nothing is decor,
+/// so a trailing marker stays inside the unit and a stray `!end` there is diagnosed.
+fn before_decor(lines: &[&str], start: usize, next: usize, is_decor: impl Fn(&str) -> bool) -> usize {
+  if next == lines.len() {
+    return next;
+  }
+  let mut k = next;
+  while k > start + 1 && (lines[k - 1].trim().is_empty() || is_decor(lines[k - 1])) {
+    k -= 1;
+  }
+  (k..next).find(|&x| is_decor(lines[x])).unwrap_or(next)
+}
+
+fn indent_of(line: &str) -> usize {
+  line.len() - line.trim_start().len()
+}
+
+/// The run of ``` or ~~~ opening or closing a fenced code block, if this line is one. A fence
+/// closes only on a run at least as long as the one that opened it.
+pub(crate) fn fence_delimiter(line: &str) -> Option<String> {
+  let t = line.trim_start();
+  for c in ['`', '~'] {
+    let n = t.chars().take_while(|&x| x == c).count();
+    if n >= 3 {
+      return Some(c.to_string().repeat(n));
+    }
+  }
+  None
+}
+
+/// `Some(n)` for an ATX heading line with `n` leading `#`s, `None` otherwise.
+pub(crate) fn heading_level(line: &str) -> Option<usize> {
+  let hashes = line.chars().take_while(|&c| c == '#').count();
+  (1..=6).contains(&hashes).then_some(hashes).filter(|&n| line[n..].starts_with(' '))
+}
+
 fn verdicts_for(exprs: &[(String, String)], doc: &DocumentMut, facts: &Facts) -> Result<HashMap<String, bool>> {
   let deps = crate::context::dependencies_of(doc);
   let own = doc
@@ -522,5 +734,128 @@ publish-url = "https://x/"
         ("pyproject.template.toml".to_string(), "a".to_string())
       ]
     );
+  }
+}
+
+#[cfg(test)]
+mod apply_tests {
+  use super::*;
+
+  /// Gates with fixed verdicts: `t` true, `f` false.
+  fn gates() -> Gates {
+    let mut verdicts = HashMap::new();
+    verdicts.insert("t".to_string(), true);
+    verdicts.insert("f".to_string(), false);
+    verdicts.insert("t or f".to_string(), true);
+    Gates { verdicts }
+  }
+
+  fn apply(text: &str, format: Format) -> String {
+    gates().apply(text, format, "x").unwrap()
+  }
+
+  fn err(text: &str, format: Format) -> String {
+    gates().apply(text, format, "x").unwrap_err().to_string()
+  }
+
+  #[test]
+  fn explicit_blocks_keep_or_drop_their_lines_and_markers_never_survive() {
+    let tpl = "a\n# !if t:\nb\n# !end\n  # !if f:\n  c\n  # !end\nd\n";
+    assert_eq!(apply(tpl, Format::Yaml), "a\nb\nd\n");
+    assert_eq!(apply("a\n# !if f:\nb\n# !end\n", Format::Yaml), "a\n");
+  }
+
+  #[test]
+  fn one_liners_gate_their_own_line() {
+    let tpl = "- a  # !if t\n- b  # !if f\n- c\n";
+    assert_eq!(apply(tpl, Format::Yaml), "- a\n- c\n");
+  }
+
+  #[test]
+  fn trailing_ends_keep_the_line_and_close_the_block() {
+    let tpl = "# !if t:\na\nb  # !end\nc\n";
+    assert_eq!(apply(tpl, Format::Yaml), "a\nb\nc\n");
+    let tpl = "# !if f as x:\na\nb  # !end x\nc\n";
+    assert_eq!(apply(tpl, Format::Yaml), "c\n");
+  }
+
+  #[test]
+  fn nesting_three_deep_with_a_named_end_unwinding_two() {
+    let tpl = "# !if t:\n1\n  # !if t as mid:\n  2\n    # !if t or f:\n    3\n  # !end mid\n4\n# !end\n5\n";
+    assert_eq!(apply(tpl, Format::Yaml), "1\n  2\n    3\n4\n5\n");
+    // The same shape with the middle block false drops 2 and 3 but not 4.
+    let tpl = "# !if t:\n1\n  # !if f as mid:\n  2\n    # !if t:\n    3\n  # !end mid\n4\n# !end\n";
+    assert_eq!(apply(tpl, Format::Yaml), "1\n4\n");
+    // A block is named by its expression when it has no label.
+    let tpl = "# !if t:\n1\n# !if f:\n2\n# !end f\n# !end t\n";
+    assert_eq!(apply(tpl, Format::Yaml), "1\n");
+  }
+
+  #[test]
+  fn structural_toml_unit_runs_to_the_next_header_minus_its_comment_block() {
+    let tpl = "[a]\nx = 1\n\n# S!if f:\n[b]\ny = 2\n\n# a comment above c\n# S!if t:\n[c]\nz = 3\n";
+    assert_eq!(apply(tpl, Format::Toml), "[a]\nx = 1\n\n# a comment above c\n[c]\nz = 3\n");
+    // A key-level gate in TOML is an explicit block or a one-liner, never structural.
+    let tpl = "[a]\nx = 1  # !if f\ny = 2\n";
+    assert_eq!(apply(tpl, Format::Toml), "[a]\ny = 2\n");
+  }
+
+  #[test]
+  fn structural_markdown_unit_is_the_section_and_fences_hide_headings() {
+    let tpl = "## Always\n\na\n\n<!-- S!if f: -->\n## Gated\n\n```bash\n# not a heading\n```\n\n### Sub\n\nb\n\n<!-- S!if t: -->\n## Kept\n\nc\n";
+    assert_eq!(apply(tpl, Format::Markdown), "## Always\n\na\n\n## Kept\n\nc\n");
+    let e = err("<!-- S!if t: -->\nnot a heading\n", Format::Markdown);
+    assert!(e.contains("heading"), "{e}");
+  }
+
+  #[test]
+  fn structural_yaml_unit_is_the_next_node_and_dockerfile_the_next_instruction() {
+    let tpl = "svc:\n  # S!if f:\n  environment:\n    - A=1\n    - B=2\n  networks:\n    - x\n";
+    assert_eq!(apply(tpl, Format::Yaml), "svc:\n  networks:\n    - x\n");
+    // A rule line between the marker and the node stays with the node.
+    let tpl = "svc:\n  # S!if t:\n  # !rule presence\n  cap_add:\n    - NET_ADMIN\n  x: 1\n";
+    assert_eq!(
+      apply(tpl, Format::Yaml),
+      "svc:\n  # !rule presence\n  cap_add:\n    - NET_ADMIN\n  x: 1\n"
+    );
+    let tpl = "FROM x\n# S!if f:\nRUN a \\\n  && b\nRUN c\n";
+    assert_eq!(apply(tpl, Format::Dockerfile), "FROM x\nRUN c\n");
+  }
+
+  #[test]
+  fn compose_annotations_pass_through_untouched() {
+    let tpl = "services:\n# !service-block:\n  {service}:\n    # !rule exact\n    a: 1\n# !end service-block\n";
+    assert_eq!(apply(tpl, Format::Yaml), tpl);
+  }
+
+  #[test]
+  fn malformed_structure_is_an_error_naming_the_line() {
+    for (tpl, needle) in [
+      ("# !if t:\na\n", "not closed"),
+      ("a\n# !end\n", "no open block"),
+      ("# !if t:\n# !end nope\n", "no open block named"),
+      ("# !if t\na\n# !end\n", "colon"),
+      ("a  # !if t:\n", "colon"),
+      ("[a]\n# S!if t:\n[b]\n# !end\n", "structural"),
+      // An explicit block opened inside a unit cannot outlive it. (A marker directly above the
+      // next header is that header's decor, so it opens outside the unit.)
+      (
+        "[a]\n# S!if t:\n[b]\n# !if t:\ny = 1\n[c]\nx = 1\n# !end\n",
+        "before the structural unit",
+      ),
+      ("# !bogus\n", "unknown marker"),
+      ("a  # S!if t:\n", "structural"),
+      ("# S!if t:\n", "nothing follows"),
+    ] {
+      let e = err(tpl, Format::Toml);
+      assert!(e.contains(needle), "{tpl:?}: {e}");
+    }
+    let e = err("# S!if t:\na\n", Format::Plain);
+    assert!(e.contains("not defined for"), "{e}");
+  }
+
+  #[test]
+  fn lines_keep_their_indentation_and_crlf_is_normalised_to_lf() {
+    assert_eq!(apply("  a\r\n  # !if t:\r\n    b\r\n  # !end\r\n", Format::Yaml), "  a\n    b\n");
   }
 }
