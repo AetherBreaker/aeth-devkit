@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use toml_edit::{DocumentMut, Item};
 
 use crate::context::normalize_dist_name;
@@ -158,6 +158,167 @@ fn split_label(s: &str) -> (String, Option<String>) {
   }
 }
 
+/// Facts a gate can ask about that are not in `pyproject.toml`.
+#[derive(Debug, Clone)]
+pub struct Facts {
+  /// A `Cargo.toml` at the project root.
+  pub rust: bool,
+  /// A Dockerfile or compose file on disk (`ProjectContext::docker_files`).
+  pub docker_files: bool,
+}
+
+/// The truth value of every gate expression in the templates of one run, evaluated once
+/// against the working copy's `pyproject.toml` (2.5).
+#[derive(Debug, Default)]
+pub struct Gates {
+  verdicts: HashMap<String, bool>,
+}
+
+impl Gates {
+  /// Sweep `templates` (`(name, text)` pairs; the name picks the comment syntax and names
+  /// the file in errors), evaluate each distinct expression against `doc`, and, when `head`
+  /// is given, against it too: a gate whose verdicts differ is the refusal (2.5). A missing
+  /// HEAD file is passed as an empty document.
+  pub fn build(templates: &[(String, String)], doc: &DocumentMut, head: Option<&DocumentMut>, facts: &Facts) -> Result<Gates> {
+    let mut exprs: Vec<(String, String)> = Vec::new();
+    for (name, text) in templates {
+      for e in expressions(text, Format::for_target(name)).map_err(|e| anyhow!("template {name}: {e:#}"))? {
+        if !exprs.iter().any(|(_, x)| x == &e) {
+          exprs.push((name.clone(), e));
+        }
+      }
+    }
+    let verdicts = verdicts_for(&exprs, doc, facts)?;
+    if let Some(head) = head {
+      let at_head = verdicts_for(&exprs, head, facts)?;
+      for (name, e) in &exprs {
+        if verdicts.get(e) != at_head.get(e) {
+          bail!(
+            "pyproject.toml is not committed: the gate `{e}` in {name} evaluates differently against HEAD; commit that change, then rerun setup-project"
+          );
+        }
+      }
+    }
+    Ok(Gates { verdicts })
+  }
+
+  /// The swept verdict for `expr`; an expression the sweep never saw is a bug.
+  pub fn verdict(&self, expr: &str) -> Result<bool> {
+    self
+      .verdicts
+      .get(expr)
+      .copied()
+      .with_context(|| format!("gate `{expr}` was not swept before rendering"))
+  }
+}
+
+fn verdicts_for(exprs: &[(String, String)], doc: &DocumentMut, facts: &Facts) -> Result<HashMap<String, bool>> {
+  let deps = crate::context::dependencies_of(doc);
+  let own = doc
+    .get("project")
+    .and_then(|p| p.get("name"))
+    .and_then(|n| n.as_str())
+    .map(normalize_dist_name)
+    .unwrap_or_default();
+  let publish_index = aeth_devkit_core::pyproject::publish_indexes(doc)
+    .map(|v| !v.is_empty())
+    .unwrap_or(false);
+  let flags = [
+    ("rust", facts.rust),
+    ("publish_index", publish_index),
+    ("docker_files", facts.docker_files),
+  ];
+  let keys = |path: &str| lookup(doc, path);
+  let dep = |name: &str| {
+    let n = normalize_dist_name(name);
+    deps.contains(&n) || own == n
+  };
+  let world = World {
+    flags: &flags,
+    keys: &keys,
+    dep: &dep,
+  };
+  let mut out = HashMap::new();
+  for (name, e) in exprs {
+    let v = gate_eval::evaluate(e, &world).map_err(|e| anyhow!("template {name}: {e:#}"))?;
+    out.insert(e.clone(), v);
+  }
+  Ok(out)
+}
+
+/// Every `!if` expression in `text`, in order, each once.
+pub fn expressions(text: &str, format: Format) -> Result<Vec<String>> {
+  let mut out: Vec<String> = Vec::new();
+  for (i, line) in text.lines().enumerate() {
+    let Some(m) = find_marker(line, format).with_context(|| format!("line {}", i + 1))? else {
+      continue;
+    };
+    if let Body::If { expr, .. } = parse_body(m.body).with_context(|| format!("line {}", i + 1))?
+      && !out.contains(&expr)
+    {
+      out.push(expr);
+    }
+  }
+  Ok(out)
+}
+
+/// Every file under `dir`, recursively, as `(path relative to dir with '/', text)`.
+pub fn collect_dir(dir: &std::path::Path) -> Result<Vec<(String, String)>> {
+  fn walk(base: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) -> Result<()> {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("listing {}", dir.display()))? {
+      let path = entry?.path();
+      if path.is_dir() {
+        walk(base, &path, out)?;
+      } else {
+        let rel = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+        let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        out.push((rel, text));
+      }
+    }
+    Ok(())
+  }
+  let mut out = Vec::new();
+  walk(dir, dir, &mut out)?;
+  Ok(out)
+}
+
+/// The value at a dotted path, `None` when any segment is missing (2.4).
+fn lookup(doc: &DocumentMut, path: &str) -> Value {
+  let mut item: &Item = doc.as_item();
+  for seg in path.split('.') {
+    match item.as_table_like().and_then(|t| t.get(seg)) {
+      Some(next) => item = next,
+      None => return Value::None,
+    }
+  }
+  to_value(item)
+}
+
+fn to_value(item: &Item) -> Value {
+  match item {
+    Item::None => Value::None,
+    Item::Value(v) => scalar(v),
+    Item::Table(t) => Value::Dict(t.iter().map(|(k, i)| (k.to_string(), to_value(i))).collect()),
+    Item::ArrayOfTables(a) => Value::List(
+      a.iter()
+        .map(|t| Value::Dict(t.iter().map(|(k, i)| (k.to_string(), to_value(i))).collect()))
+        .collect(),
+    ),
+  }
+}
+
+fn scalar(v: &toml_edit::Value) -> Value {
+  match v {
+    toml_edit::Value::String(s) => Value::Str(s.value().clone()),
+    toml_edit::Value::Integer(i) => Value::Int(*i.value()),
+    toml_edit::Value::Float(f) => Value::Float(*f.value()),
+    toml_edit::Value::Boolean(b) => Value::Bool(*b.value()),
+    toml_edit::Value::Datetime(d) => Value::Str(d.value().to_string()),
+    toml_edit::Value::Array(a) => Value::List(a.iter().map(scalar).collect()),
+    toml_edit::Value::InlineTable(t) => Value::Dict(t.iter().map(|(k, v)| (k.to_string(), scalar(v))).collect()),
+  }
+}
+
 #[cfg(test)]
 mod marker_tests {
   use super::*;
@@ -238,5 +399,128 @@ mod marker_tests {
     for bad in ["fi rust:", "if:", "if  :", "ends", "if rust as :", "if rust as bad label:"] {
       assert!(parse_body(bad).is_err(), "{bad}");
     }
+  }
+}
+
+#[cfg(test)]
+mod gates_tests {
+  use super::*;
+
+  const PYPROJECT: &str = r#"
+[project]
+name = "Demo-App"
+version = "1.2.3"
+dependencies = ["aeth-ext[sftp]>=8", "requests"]
+
+[dependency-groups]
+dev = ["mypy>=1"]
+
+[tool.docker]
+services = ["demo-app", "worker"]
+wireguard = true
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D1"]
+
+[[tool.uv.index]]
+name = "SFTPyPI"
+url = "https://x/+simple"
+publish-url = "https://x/"
+"#;
+
+  fn doc(s: &str) -> DocumentMut {
+    s.parse().unwrap()
+  }
+
+  fn facts() -> Facts {
+    Facts {
+      rust: false,
+      docker_files: true,
+    }
+  }
+
+  #[test]
+  fn the_sweep_collects_each_distinct_expression_once() {
+    let text = "a\n# !if rust:\nb\n# !end\n# S!if dep(\"mypy\"):\n[t]\nx = 1  # !if rust\n# !rule exact\n";
+    assert_eq!(
+      expressions(text, Format::Toml).unwrap(),
+      vec!["rust".to_string(), "dep(\"mypy\")".to_string()]
+    );
+    let md = "<!-- S!if dep(\"aeth-ext\"): -->\n## H\n";
+    assert_eq!(expressions(md, Format::Markdown).unwrap(), vec!["dep(\"aeth-ext\")".to_string()]);
+    assert!(expressions("# !bogus\n", Format::Yaml).is_err());
+  }
+
+  #[test]
+  fn keys_dep_and_flags_answer_from_the_document() {
+    let templates = vec![(
+      "t.yaml".to_string(),
+      "# !if keys(\"tool.docker.wireguard\"):\n# !end\n# !if dep(\"aeth-ext\") and dep(\"demo_app\") and dep(\"mypy\"):\n# !end\n# !if \"worker\" in keys(\"tool.docker.services\"):\n# !end\n# !if \"tests/**\" in keys(\"tool.ruff.lint.per-file-ignores\"):\n# !end\n# !if keys(\"project.version\") == \"1.2.3\":\n# !end\n# !if keys(\"tool.docker.nope\") is None:\n# !end\n# !if publish_index and docker_files and not rust:\n# !end\n# !if keys(\"tool.uv.index\")[0][\"name\"] == \"SFTPyPI\":\n# !end\n".to_string(),
+    )];
+    let g = Gates::build(&templates, &doc(PYPROJECT), None, &facts()).unwrap();
+    for e in [
+      "keys(\"tool.docker.wireguard\")",
+      "dep(\"aeth-ext\") and dep(\"demo_app\") and dep(\"mypy\")",
+      "\"worker\" in keys(\"tool.docker.services\")",
+      "\"tests/**\" in keys(\"tool.ruff.lint.per-file-ignores\")",
+      "keys(\"project.version\") == \"1.2.3\"",
+      "keys(\"tool.docker.nope\") is None",
+      "publish_index and docker_files and not rust",
+      "keys(\"tool.uv.index\")[0][\"name\"] == \"SFTPyPI\"",
+    ] {
+      assert!(g.verdict(e).unwrap(), "{e}");
+    }
+    assert!(g.verdict("never swept").is_err());
+  }
+
+  #[test]
+  fn a_gate_that_flips_between_head_and_the_working_copy_is_refused() {
+    let templates = vec![(
+      "t.yaml".to_string(),
+      "# !if keys(\"tool.docker.wireguard\"):\n# !end\n# !if dep(\"requests\"):\n# !end\n".to_string(),
+    )];
+    let head = doc(&PYPROJECT.replace("wireguard = true\n", ""));
+    let err = Gates::build(&templates, &doc(PYPROJECT), Some(&head), &facts())
+      .unwrap_err()
+      .to_string();
+    assert!(
+      err.contains("not committed") && err.contains("keys(\"tool.docker.wireguard\")") && err.contains("t.yaml"),
+      "{err}"
+    );
+    // A key that changed without flipping any gate does not refuse.
+    let head = doc(&PYPROJECT.replace("version = \"1.2.3\"", "version = \"1.2.4\""));
+    assert!(Gates::build(&templates, &doc(PYPROJECT), Some(&head), &facts()).is_ok());
+    // No pyproject at HEAD: an empty document, so a gate that is true now is refused.
+    let err = Gates::build(&templates, &doc(PYPROJECT), Some(&doc("")), &facts())
+      .unwrap_err()
+      .to_string();
+    assert!(err.contains("not committed"), "{err}");
+  }
+
+  #[test]
+  fn an_expression_error_names_the_template() {
+    let templates = vec![(
+      "AGENTS.template.md".to_string(),
+      "<!-- S!if dep(\"a\") or nope: -->\n## H\n".to_string(),
+    )];
+    let err = Gates::build(&templates, &doc(PYPROJECT), None, &facts()).unwrap_err().to_string();
+    assert!(err.contains("AGENTS.template.md") && err.contains("nope"), "{err}");
+  }
+
+  #[test]
+  fn collect_dir_reads_every_file_with_slash_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("docker")).unwrap();
+    std::fs::write(dir.path().join("pyproject.template.toml"), "a").unwrap();
+    std::fs::write(dir.path().join("docker").join("compose.template.yaml"), "b").unwrap();
+    let mut got = collect_dir(dir.path()).unwrap();
+    got.sort();
+    assert_eq!(
+      got,
+      vec![
+        ("docker/compose.template.yaml".to_string(), "b".to_string()),
+        ("pyproject.template.toml".to_string(), "a".to_string())
+      ]
+    );
   }
 }
