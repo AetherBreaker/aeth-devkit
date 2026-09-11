@@ -51,7 +51,7 @@ run is a byte-for-byte no-op.
   enables `.dockerignore` and the Docker step; Docker files on disk seed the `[tool.docker]`
   table with `services = []` and a warning to list the service, silenced by
   `[tool.docker].silence_unlisted_services_warning = true`, which nothing else reads), and the declared
-  dependencies (drives `if-dep` gating). A committing run refuses a `services` value that
+  dependencies (drives `dep("…")` gates). A committing run refuses a `services` value that
   differs from HEAD's: commit it, then rerun.
 - **Templates** - Read from the project's environment: the `devkit_templates` package
   (`AetherBreaker/devkit-templates`). A project that lacks it gets `devkit-templates` added
@@ -66,9 +66,9 @@ run is a byte-for-byte no-op.
   repository renders its own tree that way.
 - **pyproject merge** - Comment-preserving deep merge of the template into
   `pyproject.toml` — scalars replace, arrays union, dependency arrays match by normalized
-  package name so pins upgrade in place, `if-dep` / `if-docker` / `if-docker-services`
-  markers above a table header or a key-value line gate that table or key; a project never
-  gets its own package. Managed keys: the dev dependency group, `tool.coverage`,
+  package name so pins upgrade in place, gates above a table header (structural) or on a
+  key line (see **Template language**) keep a table or key out of projects the condition
+  excludes; a project never gets its own package. Managed keys: the dev dependency group, `tool.coverage`,
   `tool.docker`, `tool.mypy.cache_dir`, `tool.poe.include_script`,
   `tool.pyright` (incl. `executionEnvironments`), `tool.pytest`, `tool.ruff` — incl.
   `lint.isort.known-first-party = ["{package}"]` and the import headings — and `tool.tombi`.
@@ -173,6 +173,44 @@ run is a byte-for-byte no-op.
   `copilot-instructions.md`).
 - **Not yet implemented** - (see TODO.md) `--python-dir` override, vendored-gitignore
   refresh task.
+
+### Template language
+
+Templates are gated with markers in the file's own comment syntax: `# !…` in YAML, TOML,
+Dockerfiles, `.env` and the ignore files; `<!-- !… -->` in markdown; `// !…` in JSONC. The
+space before `!` is mandatory (`#!` is a shebang). Markers match at any indentation and never
+reach the rendered file. A marker whose word is not `if`, `end`, `service-block` or `rule` is a
+render error.
+
+```yaml
+# !if <expr>:                  opens a block; closed by an end
+# !if <expr> as <label>:       the same, named for a targeted end
+# S!if <expr>:                 a structural block: one unit of the file, no end line
+<content line>  # !if <expr>   a one-line block: gates that line only
+# !end                         closes the innermost open block
+# !end <name>                  closes the named block (its label, else its expression text) and everything inside it
+<content line>  # !end [name]  the same, trailing the block's last line
+```
+
+A structural block's unit is: in TOML, to the next table header (minus the comment block
+directly above it); in markdown, the heading and its section, fenced code excluded; in YAML,
+the next node (the next line and every line indented deeper); in a Dockerfile, the next
+instruction with its `\` continuations. Explicit blocks nest without limit; an explicit block
+inside a structural one must close before the unit ends.
+
+`<expr>` is a Python expression, evaluated for truthiness (with [Monty](https://github.com/pydantic/monty)).
+It sees `keys("tool.docker.wireguard")` (the value at that dotted path in the project's
+`pyproject.toml`; tables as dicts, arrays as lists, a missing path as `None`), `dep("aeth-ext")`
+(the project depends on the package, in any group, or is it), and the flags `rust` (a
+`Cargo.toml`), `publish_index` (an index with a publish URL) and `docker_files` (a Dockerfile
+or compose file on disk). Everything else is Python: `not`, `and`, `or`, comparisons, `in`,
+string methods, `any`, `all`. An unknown name or a failing expression is a render error,
+never false. Every distinct expression is evaluated once per run; a committing run also
+evaluates each against HEAD's `pyproject.toml` and refuses when any verdict differs.
+
+The compose template additionally carries `# !service-block:` … `# !end service-block` around
+the per-service block and `# !rule <kind>` above each key the compose step enforces in an
+existing file (`exact`, `presence`, `repo`, `volume-target`, `env-keys`, `exact-list`).
 
 ### `devkit lock`
 
