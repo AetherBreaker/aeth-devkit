@@ -41,6 +41,14 @@ design exists. Check items off in place; delete them once released.
       the venv. A plain run right after a clean dry run can still change `pyproject.toml`
       and `uv.lock` (seen 2026-09-10, devkit-poe-complete 1.0.0 to 1.1.0). Either query
       the index in the dry run and say what would move, or say the step was skipped.
+- [ ] Placeholder substitution should accept `"{...}"` wherever quoting the placeholder is
+      valid YAML, so a template file is lintable as it sits. devkit-container's
+      `compose.template.yaml` is the case: `{service}:` as a mapping key and bare `{git_repo}` /
+      `{git_tag}` / `{package}` values read as flow mappings to a YAML parser, so the linter
+      errors on every one. Quoting them in the template fixes the linter but leaves the quotes in
+      the rendered file, so `substitute` must match the quoted form too and drop the quotes when
+      the value does not need them (and escape it when it does).
+
 - [ ] Consider a `--python-dir` override for projects whose Python package is neither in
       `src/` nor `python/`.
 - [ ] **A testing-only render surface for templates** (raised 2026-09-11 by devkit-container's
@@ -80,6 +88,12 @@ design exists. Check items off in place; delete them once released.
       later wheel repos (all three indicators), the sister projects' `docker-pin` runs that
       consume them, and `rescind-release.sh` (a rollback must remove all three, in the reverse
       order, so a half-rescind is caught the same way).
+- [ ] `devkit lock` warns that devkit is outdated on the very invocation that pins the newer
+      version it is warning about. The nag in `crates/aeth-devkit/src/main.rs` runs after the
+      command against the running binary's `CARGO_PKG_VERSION`, which cannot know the run just
+      advanced the pin; suppress it when the run itself moved devkit to the version the nag would
+      name, and say what it pinned instead.
+
 - [ ] **TUI for the release watch** (shelved 2026-09-04; work committed, unpushed, on
       `feat/release-watch-repaint`). That branch dropped `gh run watch` for our own column view
       (`watch.rs`) repainted in the terminal's normal buffer (`repaint.rs`), which sidesteps the
