@@ -54,6 +54,10 @@ pub struct ProjectContext {
   /// in `[tool.devkit]`, the table the split spec reserves for devkit-level project
   /// settings; the template seeds nothing there, and a key devkit does not know is an error.
   pub release_workflow: bool,
+  /// `[tool.devkit].release-workflow-jobs`: the names of jobs the project writes into
+  /// `release.yml` itself; each is copied out of the existing file into every re-render
+  /// (hub design 3.7). Empty when absent.
+  pub release_workflow_jobs: Vec<String>,
   /// `[tool.devkit].templates-dir`: a directory to render instead of the environment's
   /// `devkit_templates` package, relative to the project root. The templates repository
   /// rendering its own tree; also any project that keeps a checkout beside it. Joined here,
@@ -67,7 +71,7 @@ pub struct ProjectContext {
 pub const DEFAULT_DEVKIT_INDEX: &str = "SFTPyPI";
 
 /// Every key `[tool.devkit]` may hold; anything else is refused (see `discover`).
-const DEVKIT_KEYS: &[&str] = &["release-workflow", "templates-dir"];
+const DEVKIT_KEYS: &[&str] = &["release-workflow", "release-workflow-jobs", "templates-dir"];
 
 impl ProjectContext {
   pub fn discover(root: &Path) -> Result<Self> {
@@ -180,6 +184,33 @@ impl ProjectContext {
         ),
       ),
     };
+    let release_workflow_jobs: Vec<String> = match devkit.and_then(|d| d.get("release-workflow-jobs")) {
+      None => vec![],
+      Some(item) => {
+        let shown = item.to_string();
+        let bad = || {
+          anyhow!(
+            "[tool.devkit].release-workflow-jobs must be a list of job names, got {}",
+            shown.trim()
+          )
+        };
+        let names = item
+          .as_array()
+          .ok_or_else(bad)?
+          .iter()
+          .map(|v| v.as_str().map(str::to_string).ok_or_else(bad))
+          .collect::<Result<Vec<_>>>()?;
+        for (i, n) in names.iter().enumerate() {
+          if n.is_empty() || n.contains(char::is_whitespace) || n.contains(':') {
+            bail!("[tool.devkit].release-workflow-jobs: {n:?} is not a job name");
+          }
+          if names[..i].contains(n) {
+            bail!("[tool.devkit].release-workflow-jobs lists `{n}` twice");
+          }
+        }
+        names
+      }
+    };
 
     Ok(Self {
       root,
@@ -198,6 +229,7 @@ impl ProjectContext {
       publish_index,
       devkit_index,
       release_workflow,
+      release_workflow_jobs,
       templates_dir,
     })
   }
@@ -529,5 +561,34 @@ devkit = 1
     .unwrap();
     let err = ProjectContext::discover(dir.path()).unwrap_err().to_string();
     assert!(err.contains("must be a table"), "{err}");
+  }
+
+  #[test]
+  fn release_workflow_jobs_is_a_list_of_job_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let py = dir.path().join("pyproject.toml");
+    std::fs::write(&py, "[project]\nname = \"p\"\n").unwrap();
+    assert!(ProjectContext::discover(dir.path()).unwrap().release_workflow_jobs.is_empty());
+    std::fs::write(
+      &py,
+      "[project]\nname = \"p\"\n\n[tool.devkit]\nrelease-workflow-jobs = [\"peers\", \"docs\"]\n",
+    )
+    .unwrap();
+    assert_eq!(
+      ProjectContext::discover(dir.path()).unwrap().release_workflow_jobs,
+      vec!["peers".to_string(), "docs".to_string()]
+    );
+    for (bad, needle) in [
+      ("release-workflow-jobs = \"peers\"", "list of job names"),
+      ("release-workflow-jobs = [1]", "list of job names"),
+      ("release-workflow-jobs = [\"\"]", "not a job name"),
+      ("release-workflow-jobs = [\"two words\"]", "not a job name"),
+      ("release-workflow-jobs = [\"a:\"]", "not a job name"),
+      ("release-workflow-jobs = [\"peers\", \"peers\"]", "twice"),
+    ] {
+      std::fs::write(&py, format!("[project]\nname = \"p\"\n\n[tool.devkit]\n{bad}\n")).unwrap();
+      let err = ProjectContext::discover(dir.path()).unwrap_err().to_string();
+      assert!(err.contains("release-workflow-jobs") && err.contains(needle), "{bad}: {err}");
+    }
   }
 }

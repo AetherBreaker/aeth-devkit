@@ -175,6 +175,7 @@ mod tests {
       publish_index: None,
       devkit_index: "SFTPyPI".into(),
       release_workflow: true,
+      release_workflow_jobs: vec![],
       templates_dir: None,
     };
     let gates = Gates::default();
