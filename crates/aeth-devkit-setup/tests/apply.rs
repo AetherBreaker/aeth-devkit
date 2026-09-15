@@ -1482,3 +1482,59 @@ fn the_pyproject_setting_renders_without_a_flag_or_the_env_var() {
     "the setting is the project's, left alone: {stdout}"
   );
 }
+
+#[test]
+fn a_named_job_is_kept_through_the_re_render_and_a_missing_one_is_only_noted() {
+  let dir = make_project_without_docker();
+  let root = dir.path();
+  let py = read(root, "pyproject.toml");
+  write(
+    root,
+    "pyproject.toml",
+    &format!("{py}\n[tool.devkit]\n  release-workflow-jobs = [\"peers\"]\n"),
+  );
+  // Not written yet: a note, not an error, and the template renders with the new header.
+  let changes = run(root, false).unwrap();
+  let wf = read(root, ".github/workflows/release.yml");
+  assert!(
+    wf.starts_with(
+      "# Installed and kept current by `devkit setup-project`; edits are replaced on the next run,\n# except the jobs named in `[tool.devkit].release-workflow-jobs`.\n"
+    ),
+    "{wf}"
+  );
+  assert!(
+    changes.notes.iter().any(|n| n.contains("no job `peers` yet")),
+    "{:?}",
+    changes.notes
+  );
+  assert!(
+    read(root, "pyproject.toml").contains("release-workflow-jobs"),
+    "the merge keeps the key"
+  );
+
+  // The job written by hand, comment and nested steps included, is not drift.
+  let job = "  # The hub's bundle.\n  peers:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n    steps:\n      - run: echo peers\n";
+  write(root, ".github/workflows/release.yml", &format!("{wf}\n{job}"));
+  let changes = run(root, false).unwrap();
+  assert!(changes.is_empty(), "the kept job is not drift: {}", changes.report(root));
+
+  // Drift outside the job is replaced; the job rides along and is reported.
+  write(
+    root,
+    ".github/workflows/release.yml",
+    &format!("{}\n{job}", wf.replace("ubuntu-latest", "ubuntu-22.04")),
+  );
+  let changes = run(root, false).unwrap();
+  let f = changes.files.iter().find(|f| f.path.ends_with("release.yml")).unwrap();
+  assert!(f.details.iter().any(|d| d == "kept job peers"), "{:?}", f.details);
+  assert_eq!(read(root, ".github/workflows/release.yml"), format!("{wf}\n{job}"));
+
+  // A name the template already uses is refused, naming it.
+  write(
+    root,
+    "pyproject.toml",
+    &format!("{py}\n[tool.devkit]\n  release-workflow-jobs = [\"publish\"]\n"),
+  );
+  let err = run(root, false).unwrap_err().to_string();
+  assert!(err.contains("`publish`"), "{err}");
+}

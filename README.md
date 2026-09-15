@@ -88,7 +88,11 @@ run is a byte-for-byte no-op.
   `.github/workflows/claude.yml`.
 - **Release workflow** - `.github/workflows/release.yml` is rendered from the pure-Python
   or the maturin-matrix template (`Cargo.toml` selects the latter) and is devkit-owned:
-  any drift is replaced and reported. The publish step targets the
+  any drift is replaced and reported. The jobs named in `[tool.devkit].release-workflow-jobs`
+  (a list of job names) are the exception: each is copied out of the existing file into the
+  rendered one, under `jobs` after the template's own, and reported as `kept job <name>`; a
+  named job the file does not hold yet is a `note:`, and a name the template itself uses is
+  an error. The publish step targets the
   sole `[[tool.uv.index]]` with a `publish-url` through repository secrets
   `UV_INDEX_<KEY>_USERNAME` / `_PASSWORD`, or PyPI via trusted publishing when no index
   publishes; several publish indexes are a config error. Before attaching or publishing,
