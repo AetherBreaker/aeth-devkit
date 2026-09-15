@@ -1,4 +1,4 @@
-//! The template language (spec section 2): `# !` markers, explicit and structural blocks,
+//! The template language (spec section 2): `# !` markers, explicit and structural blocks, windows,
 //! Python gate expressions, and the `Gates` verdict table every template is rendered through.
 
 use std::collections::HashMap;
@@ -95,6 +95,9 @@ pub(crate) enum Body {
   /// A compose annotation (`service-block:`, `end service-block`, `rule <kind>`): not the
   /// gate pass's business, emitted unchanged for the scaffold parser (2.6).
   PassThrough,
+  /// `window <name>:` (hub design 9.3): an always-kept explicit block whose marker pair
+  /// survives rendering, so the next run can find the project's lines inside it.
+  Window(String),
 }
 
 pub(crate) fn parse_body(body: &str) -> Result<Body> {
@@ -107,8 +110,18 @@ pub(crate) fn parse_body(body: &str) -> Result<Body> {
   if let Some(name) = body.strip_prefix("end ") {
     return Ok(Body::End(Some(name.trim().to_string())));
   }
+  if let Some(rest) = body.strip_prefix("window ") {
+    let Some(name) = rest.trim().strip_suffix(':') else {
+      bail!("`!window` needs a trailing colon");
+    };
+    let name = name.trim();
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+      bail!("window name `{name}` must be one word of letters, digits, `_` or `-`");
+    }
+    return Ok(Body::Window(name.to_string()));
+  }
   let Some(rest) = body.strip_prefix("if ") else {
-    bail!("unknown marker `!{body}`; expected if, end, service-block or rule");
+    bail!("unknown marker `!{body}`; expected if, end, window, service-block or rule");
   };
   let (rest, block) = match rest.strip_suffix(':') {
     Some(r) => (r, true),
@@ -236,29 +249,37 @@ enum Frame {
     keep: bool,
     end: usize,
   },
+  /// A window (hub design 9.3): always kept, both marker lines emitted, closed by name only.
+  Window {
+    name: String,
+    line: usize,
+  },
 }
 
 impl Frame {
   fn keep(&self) -> bool {
     match self {
       Frame::Explicit { keep, .. } | Frame::Structural { keep, .. } => *keep,
+      Frame::Window { .. } => true,
     }
   }
 }
 
 impl Gates {
-  /// Render `text`: resolve every block against the swept verdicts and strip every marker
-  /// (2.2, 2.3). Line endings come out as LF; the caller restores CRLF where a file has it.
+  /// Render `text`: resolve every block against the swept verdicts and strip every marker but
+  /// a window's pair (2.2, 2.3; hub design 9.3). Line endings come out as LF; the caller
+  /// restores CRLF where a file has it.
   pub fn apply(&self, text: &str, format: Format, name: &str) -> Result<String> {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = String::with_capacity(text.len());
     let mut frames: Vec<Frame> = Vec::new();
+    let mut windows: Vec<String> = Vec::new();
     let at = |i: usize| format!("{name} line {}", i + 1);
     for (i, line) in lines.iter().enumerate() {
-      // Structural units that end here close first; an explicit block still open inside one
-      // is an error rather than a silently extended unit.
+      // Structural units that end here close first; an explicit block or a window still
+      // open inside one is an error rather than a silently extended unit.
       if let Some(pos) = frames.iter().position(|f| matches!(f, Frame::Structural { end, .. } if *end == i))
-        && let Some(Frame::Explicit { name: n, line, .. }) = frames.get(pos + 1)
+        && let Some(Frame::Explicit { name: n, line, .. } | Frame::Window { name: n, line }) = frames.get(pos + 1)
       {
         bail!(
           "{}: block `{n}` opened at line {} must close before the structural unit ends",
@@ -316,7 +337,32 @@ impl Gates {
             }
           }
         }
+        Body::Window(w) => {
+          if !m.content.is_empty() || m.structural {
+            bail!("{}: `!window` stands on its own line and is never structural", at(i));
+          }
+          if let Some(Frame::Window { name: open, line }) = frames.iter().find(|f| matches!(f, Frame::Window { .. })) {
+            bail!("{}: windows do not nest; `{open}` opened at line {} is still open", at(i), line + 1);
+          }
+          if windows.contains(&w) {
+            bail!("{}: window `{w}` appears twice", at(i));
+          }
+          windows.push(w.clone());
+          if !suppressed {
+            out.push_str(line);
+            out.push('\n');
+          }
+          frames.push(Frame::Window { name: w, line: i });
+        }
         Body::End(target) => {
+          // A window's end is emitted whole, marker included, so it must stand alone: a
+          // trailing form would print its content twice.
+          let closes_window = target
+            .as_ref()
+            .is_some_and(|n| frames.iter().any(|f| matches!(f, Frame::Window { name, .. } if name == n)));
+          if closes_window && !m.content.is_empty() {
+            bail!("{}: a window's `!end` stands on its own line", at(i));
+          }
           if !m.content.is_empty() && !suppressed {
             out.push_str(m.content);
             out.push('\n');
@@ -326,6 +372,7 @@ impl Gates {
               Some(Frame::Explicit { .. }) => {
                 frames.pop();
               }
+              Some(Frame::Window { name: w, .. }) => bail!("{}: window `{w}` closes with `!end {w}`", at(i)),
               Some(Frame::Structural { .. }) => bail!("{}: `!end` cannot close a structural block", at(i)),
               None => bail!("{}: `!end` with no open block", at(i)),
             },
@@ -333,6 +380,16 @@ impl Gates {
               match frames.pop() {
                 Some(Frame::Explicit { name: open, .. }) if open == n => break,
                 Some(Frame::Explicit { .. }) => {}
+                Some(Frame::Window { name: open, .. }) if open == n => {
+                  if !suppressed {
+                    out.push_str(line);
+                    out.push('\n');
+                  }
+                  break;
+                }
+                Some(Frame::Window { name: open, line: l }) => {
+                  bail!("{}: window `{open}` opened at line {} must close before `!end {n}`", at(i), l + 1)
+                }
                 Some(Frame::Structural { .. }) => bail!("{}: `!end {n}` would close a structural block", at(i)),
                 None => bail!("{}: no open block named `{n}`", at(i)),
               }
@@ -341,7 +398,9 @@ impl Gates {
         }
       }
     }
-    if let Some(Frame::Explicit { name: n, line, .. }) = frames.iter().find(|f| matches!(f, Frame::Explicit { .. })) {
+    if let Some(Frame::Explicit { name: n, line, .. } | Frame::Window { name: n, line }) =
+      frames.iter().find(|f| !matches!(f, Frame::Structural { .. }))
+    {
       bail!("{name}: block `{n}` opened at line {} is not closed", line + 1);
     }
     Ok(out)
@@ -619,6 +678,10 @@ mod marker_tests {
     assert!(matches!(parse_body("service-block:").unwrap(), Body::PassThrough));
     assert!(matches!(parse_body("end service-block").unwrap(), Body::PassThrough));
     assert!(matches!(parse_body("rule presence").unwrap(), Body::PassThrough));
+    assert!(matches!(parse_body("window builder:").unwrap(), Body::Window(n) if n == "builder"));
+    for bad in ["window", "window builder", "window :", "window two words:", "window a/b:"] {
+      assert!(parse_body(bad).is_err(), "{bad}");
+    }
     for bad in ["fi rust:", "if:", "if  :", "ends", "if rust as :", "if rust as bad label:"] {
       assert!(parse_body(bad).is_err(), "{bad}");
     }
@@ -868,5 +931,39 @@ mod apply_tests {
   #[test]
   fn lines_keep_their_indentation_and_crlf_is_normalised_to_lf() {
     assert_eq!(apply("  a\r\n  # !if t:\r\n    b\r\n  # !end\r\n", Format::Yaml), "  a\n    b\n");
+  }
+
+  #[test]
+  fn windows_keep_their_markers_and_close_by_name() {
+    // The pair survives at its own indentation; a window in a false block goes with it.
+    let tpl = "FROM x\n# !window builder:\n# !end builder\n# !if t:\n  # !window final:\n  # !end final\n# !end\n# !if f:\n# !window gone:\nRUN never\n# !end gone\n# !end\nRUN c\n";
+    assert_eq!(
+      apply(tpl, Format::Dockerfile),
+      "FROM x\n# !window builder:\n# !end builder\n  # !window final:\n  # !end final\nRUN c\n"
+    );
+    // Template lines inside a window render like any other line.
+    assert_eq!(
+      apply("# !window w:\nRUN a  # !if t\nRUN b  # !if f\n# !end w\n", Format::Dockerfile),
+      "# !window w:\nRUN a\n# !end w\n"
+    );
+    for (tpl, needle) in [
+      ("# !window w:\n# !end\n", "closes with `!end w`"),
+      ("# !window w:\nRUN a\n", "not closed"),
+      ("# !window w:\n# !window v:\n# !end v\n# !end w\n", "do not nest"),
+      ("# !window w:\n# !end w\n# !window w:\n# !end w\n", "twice"),
+      ("RUN a  # !window w:\n", "own line"),
+      ("# S!window w:\nRUN a\n# !end w\n", "own line"),
+      ("# !window w:\nRUN a  # !end w\n", "own line"),
+      ("# !window w\n", "colon"),
+      ("# !if t as b:\n# !window w:\n# !end b\n", "must close before `!end b`"),
+    ] {
+      let e = err(tpl, Format::Dockerfile);
+      assert!(e.contains(needle), "{tpl:?}: {e}");
+    }
+    // A window cannot outlive the structural unit it opened in, like an explicit block.
+    let e = err("[a]\n# S!if t:\n[b]\n# !window w:\ny = 1\n[c]\nx = 1\n# !end w\n", Format::Toml);
+    assert!(e.contains("before the structural unit"), "{e}");
+    // The sweep ignores windows: they carry no expression.
+    assert!(expressions("# !window w:\n# !end w\n", Format::Dockerfile).unwrap().is_empty());
   }
 }
