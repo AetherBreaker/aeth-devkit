@@ -351,7 +351,10 @@ no push), `--no-push`, `-c/--compose-file`, `--root`.
   endings. Uncommitted edits ride on top through the same 3-way merge as the compose file; a
   Dockerfile that was never committed is refused rather than replaced. Only
   `[tool.docker].services` decides whether the step runs, so a project without services is
-  pinned as before.
+  pinned as before. The
+  project's `# !window` regions are copied into the rendered template before the comparison, as
+  `setup-project` does: their lines are never drift and survive the refresh.
+
 - **Commit & push** - Commits exactly the compose file (`chore: pin <package> to <ver>`),
   pathspec-limited so other staged work stays out; pushes the current branch. A dirty
   compose file gets the pin committed against HEAD's copy through a scratch index and the

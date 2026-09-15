@@ -316,6 +316,58 @@ fn a_drifted_dockerfile_is_replaced_and_committed_before_the_pin() {
 }
 
 #[test]
+fn the_refresh_keeps_the_projects_window_lines_and_a_filled_window_alone_is_no_drift() {
+  // The template's windows (hub design 9.3) are the project's: a refresh renders around them.
+  let tpl = "FROM new {python_dir}
+# !window final:
+# !end final
+WORKDIR /app
+";
+  let filled = "FROM old
+# !window final:
+RUN apt-get install -y iptables
+# !end final
+WORKDIR /app
+";
+  let (_d, root) = docker_fixture(filled, Some("1.4.0"));
+  let (_site, venv) = installed("1.4.0", tpl);
+  let r = happy_runner();
+  let idx = StubIndexClient {
+    versions: vec!["2.0.0".into()],
+  };
+  let mut a = args(&root);
+  a.no_push = true;
+  run(&a, &deps(&r, &idx, &venv)).unwrap();
+  assert_eq!(
+    std::fs::read_to_string(root.join("docker/Dockerfile")).unwrap(),
+    "FROM new src
+# !window final:
+RUN apt-get install -y iptables
+# !end final
+WORKDIR /app
+"
+  );
+  assert_eq!(subjects(&root)[1], "chore(docker): refresh Dockerfile from devkit-container 1.4.0");
+  // Only the window differs from the template: that is not drift, nothing is refreshed.
+  let r = happy_runner();
+  r.script(
+    "gh",
+    &["api"],
+    0,
+    "v3.0.0
+v2.0.0
+",
+  );
+  let idx = StubIndexClient {
+    versions: vec!["3.0.0".into()],
+  };
+  run(&a, &deps(&r, &idx, &venv)).unwrap();
+  let log = subjects(&root);
+  assert_eq!(log[0], "chore: pin my-package to 3.0.0", "{log:?}");
+  assert_eq!(log[1], "chore: pin my-package to 2.0.0", "{log:?}");
+}
+
+#[test]
 fn a_stale_venv_is_synced_before_the_dockerfile_is_compared() {
   let (_d, root) = docker_fixture("FROM new src\n", Some("1.4.0"));
   let (_site, venv) = installed("1.3.0", "FROM new {python_dir}\n");

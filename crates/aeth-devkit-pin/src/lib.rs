@@ -330,7 +330,15 @@ fn dockerfile_drift(root: &Path, doc: &DocumentMut, deps: &Deps, dry_run: bool) 
     Some(h) => String::from_utf8(h.clone()).context("docker/Dockerfile at HEAD is not UTF-8")?,
     None => worktree.unwrap_or_default(),
   };
-  if normalize_newlines(&base_text) == normalize_newlines(&rendered) {
+  // The project's windows (hub design 9.3) go in before the comparison, as setup-project's
+  // Dockerfile step does: lines a project wrote there are never drift, and a refresh renders
+  // the template around them instead of dropping them.
+  let spliced = aeth_devkit_setup::docker::windows::splice(&normalize_newlines(&rendered), &normalize_newlines(&base_text))?;
+  for note in &spliced.notes {
+    println!("{note}");
+  }
+  let rendered = spliced.text;
+  if normalize_newlines(&base_text) == rendered {
     println!("Dockerfile: matches devkit-container {locked}.");
     return Ok(None);
   }
