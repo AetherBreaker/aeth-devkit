@@ -1208,7 +1208,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Files:** none new.
 
-- [ ] **Step 1: The CI's checks, locally**
+- [x] **Step 1: The CI's checks, locally**
 
 ```bash
 cd "/d/SFT Software Projects/SFT Workspace/aeth_devkit"
@@ -1221,7 +1221,7 @@ git diff --exit-code -- python/aeth_devkit/_tasks_generated.py
 
 Expected: every command exits 0. (The Python suite and the task table are untouched by this plan; running them is the pre-merge full suite of AGENTS.md.)
 
-- [ ] **Step 2: The shipped template's windows, by inspection**
+- [x] **Step 2: The shipped template's windows, by inspection**
 
 The fixture of Task 2 mirrors `devkit-container`'s real `template.Dockerfile`; confirm the two agree on the windows' names and places, since the real one is only rendered end to end by Task 7:
 
@@ -1231,7 +1231,7 @@ grep -n "!window\|!end builder\|!end final\|WORKDIR /app\|---- Final"   "/d/SFT 
 
 Expected: in both files, `# !window builder:` / `# !end builder` sit before `# ---- Final stage ----`, and `# !window final:` / `# !end final` sit directly before the final stage's `WORKDIR /app`.
 
-- [ ] **Step 3: Push, open the PR, watch CI**
+- [x] **Step 3: Push, open the PR, watch CI**
 
 ```bash
 cd "/d/SFT Software Projects/SFT Workspace/aeth_devkit"
