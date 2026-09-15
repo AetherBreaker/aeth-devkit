@@ -90,7 +90,7 @@ Implementation details under the owner's 2026-09-15 ruling; listed so the owner 
 - Create: `aeth_devkit/docs/superpowers/specs/2026-09-14-hub-fetched-peer-config-design.md`, `aeth_devkit/docs/superpowers/plans/2026-09-15-devkit-dockerfile-windows-and-kept-jobs.md`
 - Create: `devkit-templates/docs/superpowers/specs/2026-09-14-hub-fetched-peer-config-design.md`, `devkit-templates/docs/superpowers/plans/2026-09-15-devkit-dockerfile-windows-and-kept-jobs.md`
 
-- [ ] **Step 1: Branch `aeth_devkit` from `main`**
+- [x] **Step 1: Branch `aeth_devkit` from `main`**
 
 ```bash
 cd "/d/SFT Software Projects/SFT Workspace/aeth_devkit"
@@ -99,7 +99,7 @@ git checkout main && git pull --ff-only
 git checkout -b feat/dockerfile-windows-and-kept-jobs
 ```
 
-- [ ] **Step 2: Copy the spec and this plan into `aeth_devkit` and commit**
+- [x] **Step 2: Copy the spec and this plan into `aeth_devkit` and commit**
 
 ```bash
 cd "/d/SFT Software Projects/SFT Workspace/aeth_devkit"
@@ -112,7 +112,7 @@ git commit -m "docs(superpowers): the hub design and its devkit plan, copied for
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
-- [ ] **Step 3: Branch `devkit-templates` from `main` and copy the two documents**
+- [x] **Step 3: Branch `devkit-templates` from `main` and copy the two documents**
 
 ```bash
 cd "/d/SFT Software Projects/SFT Workspace/devkit-templates"
@@ -129,7 +129,7 @@ git commit -m "docs(superpowers): the hub design and its devkit plan, copied for
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
-- [ ] **Step 4: Tick this task in the `aeth_devkit` copy and commit the tick**
+- [x] **Step 4: Tick this task in the `aeth_devkit` copy and commit the tick**
 
 ```bash
 cd "/d/SFT Software Projects/SFT Workspace/aeth_devkit"
