@@ -1,0 +1,44 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../devkit-claude-hooks"
+		},
+		{
+			"path": "../devkit-container"
+		},
+		{
+			"path": "../devkit-poe-complete"
+		},
+		{
+			"path": "../devkit-templates"
+		},
+		{
+			"path": "../devkit-vscode"
+		}
+	],
+	"settings": {
+		"terminal.integrated.env.windows": {
+			"PYTHONPYCACHEPREFIX": "${workspaceFolder}\\.cache\\pycache"
+		},
+		"terminal.integrated.env.linux": {
+			"PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache"
+		},
+		"terminal.integrated.env.osx": {
+			"PYTHONPYCACHEPREFIX": "${workspaceFolder}/.cache/pycache"
+		},
+		"chat.useAgentsMdFile": true,
+		"github.copilot.chat.commitMessageGeneration.instructions": [
+			{
+				"file": "AGENTS.md"
+			}
+		],
+		"github.copilot.chat.reviewSelection.instructions": [
+			{
+				"text": "Do not review files under tests/; only review production code."
+			}
+		]
+	}
+}
