@@ -110,8 +110,9 @@ run is a byte-for-byte no-op.
   `.claude/settings.local.json` call the venv's `devkit-hook`, and the run ends with
   `devkit-complete install` for the shells on `PATH`, reporting what changed.
 - **Docker** - Runs whenever `[tool.docker].services` lists at least one compose service.
-  `docker/Dockerfile` is created when missing; when present and different — ignoring CRLF/LF, and
-  written back in the file's own line endings — a unified diff is printed and
+  `docker/Dockerfile` is created when missing; when present and different — ignoring CRLF/LF,
+  the project's `# !window` regions (see **Template language**), and written back in the
+  file's own line endings — a unified diff is printed and
   the file is replaced only on `replace` (`replace all` answers every remaining Docker
   question; anything else keeps it). The compose file (docker-pin's discovery; created as
   `docker/compose.yaml` when absent) is edited in place, format-preserving, one diff per
@@ -179,8 +180,8 @@ run is a byte-for-byte no-op.
 Templates are gated with markers in the file's own comment syntax: `# !…` in YAML, TOML,
 Dockerfiles, `.env` and the ignore files; `<!-- !… -->` in markdown; `// !…` in JSONC. The
 space before `!` is mandatory (`#!` is a shebang). Markers match at any indentation and never
-reach the rendered file. A marker whose word is not `if`, `end`, `service-block` or `rule` is a
-render error.
+reach the rendered file. A marker whose word is not `if`, `end`, `window`, `service-block` or
+`rule` is a render error.
 
 ```yaml
 # !if <expr>:                  opens a block; closed by an end
@@ -190,6 +191,8 @@ render error.
 # !end                         closes the innermost open block
 # !end <name>                  closes the named block (its label, else its expression text) and everything inside it
 <content line>  # !end [name]  the same, trailing the block's last line
+# !window <name>:              a window: an always-kept block whose two marker lines survive rendering
+# !end <name>                  closes it; a window's end is never trailing and never bare
 ```
 
 A structural block's unit is: in TOML, to the next table header (minus the comment block
@@ -197,6 +200,15 @@ directly above it); in markdown, the heading and its section, fenced code exclud
 the next node (the next line and every line indented deeper); in a Dockerfile, the next
 instruction with its `\` continuations. Explicit blocks nest without limit; an explicit block
 inside a structural one must close before the unit ends.
+
+A window belongs to the project. Every render copies the lines the project's existing file
+holds between the same window's markers into the rendered file unchanged and replaces
+everything outside; a fresh file renders with empty windows, and a file from before the
+windows existed gets them empty. Windows do not nest. A window in the project's file that the
+template does not have is left out of the render with its lines: the template's omission is a
+choice, so the diff shows the removal and a `note:` names the window. Today only the
+Dockerfile template has windows (`builder`, after the builder stage's last instruction;
+`final`, before `WORKDIR /app`).
 
 `<expr>` is a Python expression, evaluated for truthiness (with [Monty](https://github.com/pydantic/monty)).
 It sees `keys("tool.docker.wireguard")` (the value at that dotted path in the project's
