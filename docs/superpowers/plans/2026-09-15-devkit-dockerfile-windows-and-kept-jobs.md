@@ -426,7 +426,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Consumes: `crate::gate::{find_marker, parse_body, Body::{Window, End}, Format::Dockerfile}` from Task 1.
 - Produces: `pub struct Window { pub name: String, pub open: usize, pub close: usize }`; `pub fn scan(lines: &[&str], what: &str) -> Result<Vec<Window>>`; `pub fn splice(rendered: &str, project: &str) -> Result<Spliced>` with `pub struct Spliced { pub text: String, pub details: Vec<String>, pub notes: Vec<String> }` (the spliced LF text, the change-log details, the advisories for windows the template lacks).
 
-- [ ] **Step 1: Write the failing unit tests**
+- [x] **Step 1: Write the failing unit tests**
 
 Create `crates/aeth-devkit-setup/src/docker/windows.rs` with only the module doc and the tests for now:
 
@@ -498,12 +498,12 @@ mod tests {
 
 Add `pub mod windows;` to `src/docker/mod.rs` after `pub mod static_files;`.
 
-- [ ] **Step 2: Run the tests to see them fail**
+- [x] **Step 2: Run the tests to see them fail**
 
 Run: `cargo test -p aeth-devkit-setup docker::windows::`
 Expected: compile errors, `cannot find function scan`, `cannot find type Window`.
 
-- [ ] **Step 3: Implement the module**
+- [x] **Step 3: Implement the module**
 
 Insert between the module doc and the tests:
 
@@ -605,12 +605,12 @@ pub fn splice(rendered: &str, project: &str) -> Result<Spliced> {
 }
 ```
 
-- [ ] **Step 4: Run the unit tests**
+- [x] **Step 4: Run the unit tests**
 
 Run: `cargo test -p aeth-devkit-setup docker::windows::`
 Expected: 2 passed.
 
-- [ ] **Step 5: Give the fixture Dockerfile the two windows**
+- [x] **Step 5: Give the fixture Dockerfile the two windows**
 
 In `crates/aeth-devkit-setup/tests/fixtures/docker/template.Dockerfile`, after the last builder-stage instruction (the `RUN --mount=type=cache,target=/root/.cache/uv \ … uv sync --frozen --no-dev --no-editable $extras` block) and before `# ---- Final stage ----`, insert:
 
@@ -632,7 +632,7 @@ In the final stage, directly before `WORKDIR /app` (the one after the `useradd` 
 
 so the file reads `… --create-home nonroot\n\n# Project additions to the final stage; …\n# !window final:\n# !end final\n\nWORKDIR /app`. This mirrors `devkit-container`'s real template (spec 9.3), minus the wireguard block the fixture never had.
 
-- [ ] **Step 6: Write the failing integration test**
+- [x] **Step 6: Write the failing integration test**
 
 Append to `crates/aeth-devkit-setup/tests/docker.rs`:
 
@@ -711,12 +711,12 @@ fn window_lines_survive_a_re_render_and_a_window_the_template_lacks_is_an_error(
 }
 ```
 
-- [ ] **Step 7: Run it to see it fail**
+- [x] **Step 7: Run it to see it fail**
 
 Run: `cargo test -p aeth-devkit-setup --test docker window_lines_survive`
 Expected: FAIL at the second run: the filled file is reported as drift (windows not yet spliced).
 
-- [ ] **Step 8: Splice in `static_files::apply`**
+- [x] **Step 8: Splice in `static_files::apply`**
 
 Replace the loop body of `apply` in `src/docker/static_files.rs` from `let Some(original) = original else {` through the `match decision.text(&proposal) { … }` block with:
 
@@ -766,12 +766,12 @@ Replace the loop body of `apply` in `src/docker/static_files.rs` from `let Some(
 
 Update the module doc's first sentence: "Whole-file replacement of `docker/Dockerfile`, rendered from the template inside the installed `devkit_container` package around the project's windows, shown as a diff and applied only on consent."
 
-- [ ] **Step 9: Run the integration test and the module's tests**
+- [x] **Step 9: Run the integration test and the module's tests**
 
 Run: `cargo test -p aeth-devkit-setup --test docker && cargo test -p aeth-devkit-setup docker::`
 Expected: all pass, `window_lines_survive_a_re_render_and_a_window_the_template_lacks_is_an_error` included.
 
-- [ ] **Step 10: Document the marker and the windows in `README.md`**
+- [x] **Step 10: Document the marker and the windows in `README.md`**
 
 In the **Template language** section: change "A marker whose word is not `if`, `end`, `service-block` or `rule` is a render error." to "A marker whose word is not `if`, `end`, `window`, `service-block` or `rule` is a render error." Add to the code block, after the last `!end` line:
 
@@ -786,7 +786,7 @@ After the paragraph on structural units, add:
 
 In the **Docker** bullet, after "`docker/Dockerfile` is created when missing; when present and different — ignoring CRLF/LF, and", insert "the project's `# !window` regions (see **Template language**), and" so it reads "…ignoring CRLF/LF, the project's `# !window` regions (see **Template language**), and written back in the file's own line endings…".
 
-- [ ] **Step 11: Lint, tick, commit**
+- [x] **Step 11: Lint, tick, commit**
 
 ```bash
 cd "/d/SFT Software Projects/SFT Workspace/aeth_devkit"

@@ -629,3 +629,89 @@ fn stray_entrypoint_files_are_reported_not_deleted() {
   );
   assert!(root.join("docker/entrypoint.sh").is_file());
 }
+
+#[test]
+fn window_lines_survive_a_re_render_and_a_window_the_template_lacks_is_an_error() {
+  let dir = project(&["demo-app"], "https://github.com/O/Demo.git");
+  let root = dir.path();
+  run(root, Mode::Ask, &[], false);
+  let fresh = read(root, "docker/Dockerfile");
+  assert!(
+    fresh.contains("# !window builder:\n# !end builder\n"),
+    "empty windows on a fresh render:\n{fresh}"
+  );
+  assert!(fresh.contains("# !window final:\n# !end final\n\nWORKDIR /app"), "{fresh}");
+
+  // Lines in both windows are not drift.
+  let filled = fresh
+    .replace(
+      "# !window builder:\n# !end builder\n",
+      "# !window builder:\nRUN echo builder\n# !end builder\n",
+    )
+    .replace(
+      "# !window final:\n# !end final\n",
+      "# !window final:\nRUN apt-get install -y iptables\nCOPY rules.v4 /etc/iptables/rules.v4\n# !end final\n",
+    );
+  write(root, "docker/Dockerfile", &filled);
+  let (changes, prompt, _) = run(root, Mode::Ask, &[], false);
+  assert!(changes.is_empty() && prompt.asked.borrow().is_empty(), "{}", changes.report(root));
+
+  // Drift outside the windows is replaced around them, and the kept lines are reported.
+  write(root, "docker/Dockerfile", &filled.replace("PYTHONOPTIMIZE=1", "PYTHONOPTIMIZE=2"));
+  let (changes, prompt, _) = run(root, Mode::Ask, &["replace"], false);
+  assert_eq!(prompt.asked.borrow().len(), 1);
+  assert_eq!(read(root, "docker/Dockerfile"), filled);
+  let df = changes.files.iter().find(|f| f.path.ends_with("Dockerfile")).unwrap();
+  assert!(df.details.iter().any(|d| d == "kept 2 line(s) in window final"), "{:?}", df.details);
+  assert!(
+    df.details.iter().any(|d| d == "kept 1 line(s) in window builder"),
+    "{:?}",
+    df.details
+  );
+
+  // A file rendered before the windows existed has no markers: they arrive empty.
+  let old = fresh
+    .replace("# Project additions to the builder stage; setup-project renders the template around this window.\n# !window builder:\n# !end builder\n\n", "")
+    .replace("# Project additions to the final stage; setup-project renders the template around this window.\n# !window final:\n# !end final\n\n", "");
+  assert_ne!(old, fresh);
+  write(root, "docker/Dockerfile", &old);
+  run(root, Mode::Ask, &["replace"], false);
+  assert_eq!(read(root, "docker/Dockerfile"), fresh);
+
+  // A window the template does not have goes with its lines: shown as drift, replaced only
+  // on consent, and named in a note either way; never an error.
+  let stray = fresh.replace(
+    "# !end final\n\nWORKDIR /app",
+    "# !end final\n\n# !window extra:\nRUN echo mine\n# !end extra\n\nWORKDIR /app",
+  );
+  write(root, "docker/Dockerfile", &stray);
+  let (changes, prompt, _) = run(root, Mode::Ask, &[""], false);
+  assert_eq!(prompt.asked.borrow().len(), 1, "the removal is a diff to consent to");
+  assert!(changes.errors.is_empty(), "{:?}", changes.errors);
+  assert!(
+    changes
+      .notes
+      .iter()
+      .any(|n| n.contains("window `extra`") && n.contains("1 line(s)")),
+    "{:?}",
+    changes.notes
+  );
+  assert_eq!(read(root, "docker/Dockerfile"), stray, "kept on an empty answer");
+  let (changes, _, _) = run(root, Mode::Ask, &["replace"], false);
+  assert_eq!(read(root, "docker/Dockerfile"), fresh);
+  assert!(changes.notes.iter().any(|n| n.contains("window `extra`")), "{:?}", changes.notes);
+
+  // A window the project's file opens and never closes cannot be read: an `error:`, file kept.
+  write(root, "docker/Dockerfile", &fresh.replace("# !end final\n", ""));
+  let (changes, prompt, _) = run(root, Mode::Ask, &[], false);
+  assert!(prompt.asked.borrow().is_empty());
+  assert!(
+    changes
+      .errors
+      .iter()
+      .any(|e| e.contains("window `final`") && e.contains("not closed")),
+    "{:?}",
+    changes.errors
+  );
+  assert!(changes.managed.iter().any(|p| p.ends_with("Dockerfile")), "still managed");
+}

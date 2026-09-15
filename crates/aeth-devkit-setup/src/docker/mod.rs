@@ -6,6 +6,7 @@ pub mod compose_rules;
 pub mod hunks;
 pub mod scaffold;
 pub mod static_files;
+pub mod windows;
 
 use std::cell::Cell;
 

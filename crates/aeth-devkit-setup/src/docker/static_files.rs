@@ -1,5 +1,6 @@
 //! Whole-file replacement of `docker/Dockerfile`, rendered from the template inside the
-//! installed `devkit_container` package, shown as a diff and applied only on consent.
+//! installed `devkit_container` package around the project's windows, shown as a diff and
+//! applied only on consent.
 //! Leftovers of the old shell entrypoint are reported, never deleted.
 
 use anyhow::{Context as _, Result};
@@ -74,13 +75,27 @@ pub fn apply(ctx: &ProjectContext, venv: &dyn Venv, consent: &Consent, gates: &G
       changes.record_optional(&path, None, &rendered, vec!["created from template".into()])?;
       continue;
     };
-    if normalize_newlines(&original) == normalize_newlines(&rendered) {
+    // The project's windows (hub design 9.3) go in before the comparison, so lines a
+    // project wrote there are never drift; a window the template lacks drops out with its
+    // lines, visibly (the diff) and named (a note). A file whose windows cannot be read is
+    // drift the step cannot edit: an `error:` like an unmodelled compose shape, file whole.
+    let spliced = match super::windows::splice(&normalize_newlines(&rendered), &normalize_newlines(&original)) {
+      Ok(spliced) => spliced,
+      Err(e) => {
+        changes.errors.push(format!("{e:#}"));
+        changes.record_optional(&path, Some(&original), &original, vec![])?;
+        continue;
+      }
+    };
+    changes.notes.extend(spliced.notes);
+    let (rendered, kept) = (spliced.text, spliced.details);
+    if normalize_newlines(&original) == rendered {
       // Managed, unchanged. CRLF-only drift is not drift: .gitattributes owns line endings.
       changes.record_optional(&path, Some(&original), &original, vec![])?;
       continue;
     }
     // Written in the file's own line endings (the template is LF).
-    let rendered = if original.contains("\r\n") && !rendered.contains("\r\n") {
+    let rendered = if original.contains("\r\n") {
       rendered.replace('\n', "\r\n")
     } else {
       rendered
@@ -88,9 +103,10 @@ pub fn apply(ctx: &ProjectContext, venv: &dyn Venv, consent: &Consent, gates: &G
     println!("{}", unified_diff(&rel, &original, &rendered));
     let proposal = Proposal::new(&rel, format!("Replace {rel}?"), &original, &rendered);
     let decision = consent.decide(&proposal, true)?;
-    let detail = decision.detail("replaced with the devkit template");
+    let mut details = vec![decision.detail("replaced with the devkit template")];
+    details.extend(kept);
     match decision.text(&proposal) {
-      Some(text) => changes.record_optional(&path, Some(&original), &text, vec![detail])?,
+      Some(text) => changes.record_optional(&path, Some(&original), &text, details)?,
       None => {
         changes.record_optional(&path, Some(&original), &original, vec![])?;
         println!("Kept {rel}.");

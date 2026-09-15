@@ -55,6 +55,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
   extras=$(/app/.venv/bin/devkit-container app-extra) \
   && uv sync --frozen --no-dev --no-editable $extras
 
+# Project additions to the builder stage; setup-project renders the template around this window.
+# !window builder:
+# !end builder
+
 # ---- Final stage ----
 FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
 
@@ -62,6 +66,10 @@ FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
 # writes only to its mounted persisted dirs (or temp dirs).
 RUN groupadd --system --gid 999 nonroot \
   && useradd --system --gid 999 --uid 999 --create-home nonroot
+
+# Project additions to the final stage; setup-project renders the template around this window.
+# !window final:
+# !end final
 
 WORKDIR /app
 
