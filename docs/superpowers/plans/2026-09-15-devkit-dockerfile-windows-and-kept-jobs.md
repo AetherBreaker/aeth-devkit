@@ -150,7 +150,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Interfaces:**
 - Produces: `pub(crate) enum Body { …, Window(String) }` (the name); `Gates::apply` emits a window's two marker lines verbatim and everything between them as usual. `find_marker` and `parse_body` stay `pub(crate)` and unchanged in signature; Task 2 calls them.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `marker_tests::marker_bodies_parse`, before the `for bad in […]` loop, add:
 
@@ -199,12 +199,12 @@ In `apply_tests`, after `lines_keep_their_indentation_and_crlf_is_normalised_to_
   }
 ```
 
-- [ ] **Step 2: Run the tests to see them fail**
+- [x] **Step 2: Run the tests to see them fail**
 
 Run: `cd "/d/SFT Software Projects/SFT Workspace/aeth_devkit" && cargo test -p aeth-devkit-setup gate::`
 Expected: compile error, `no variant named Window` (the parse test), or the new apply test failing with `unknown marker`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `gate.rs`, add the variant to `Body` (after `PassThrough`):
 
@@ -397,12 +397,12 @@ Replace the body of `Gates::apply` with this (the `If` and `PassThrough` arms ar
 
 Update the module doc's first line and the `apply` doc comment: "resolve every block against the swept verdicts and strip every marker but a window's pair (2.2, 2.3; hub design 9.3)".
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p aeth-devkit-setup gate::`
 Expected: every `gate::` test passes, the two new ones included.
 
-- [ ] **Step 5: Lint, tick, commit**
+- [x] **Step 5: Lint, tick, commit**
 
 ```bash
 cd "/d/SFT Software Projects/SFT Workspace/aeth_devkit"
