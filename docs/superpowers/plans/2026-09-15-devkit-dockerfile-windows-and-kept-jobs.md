@@ -811,7 +811,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Interfaces:**
 - Produces: `pub release_workflow_jobs: Vec<String>` on `ProjectContext` (empty when the key is absent).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `context.rs`'s test module, after `release_workflow_is_on_unless_tool_devkit_turns_it_off`, add:
 
@@ -846,12 +846,12 @@ In `context.rs`'s test module, after `release_workflow_is_on_unless_tool_devkit_
   }
 ```
 
-- [ ] **Step 2: Run it to see it fail**
+- [x] **Step 2: Run it to see it fail**
 
 Run: `cargo test -p aeth-devkit-setup context::`
 Expected: compile error, `no field release_workflow_jobs`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `ProjectContext`, after the `release_workflow` field's doc and declaration, add:
 
@@ -903,12 +903,12 @@ In each of the eight test literals (`scaffold.rs` `ctx`, `static_files.rs` `rend
 grep -rn "release_workflow: true," crates/aeth-devkit-setup/src
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p aeth-devkit-setup`
 Expected: everything compiles and passes (the literals are the only other compile sites; `tests/*.rs` build contexts through `discover`).
 
-- [ ] **Step 5: Lint, tick, commit**
+- [x] **Step 5: Lint, tick, commit**
 
 ```bash
 cd "/d/SFT Software Projects/SFT Workspace/aeth_devkit"

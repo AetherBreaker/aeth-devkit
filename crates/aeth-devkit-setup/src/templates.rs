@@ -178,6 +178,7 @@ mod hook_bin_tests {
       publish_index: None,
       devkit_index: "SFTPyPI".into(),
       release_workflow: true,
+      release_workflow_jobs: vec![],
       templates_dir: None,
     }
   }
@@ -225,6 +226,7 @@ mod override_dir_tests {
       publish_index: None,
       devkit_index: "SFTPyPI".into(),
       release_workflow: true,
+      release_workflow_jobs: vec![],
       templates_dir,
     }
   }
@@ -281,6 +283,7 @@ mod publish_index_tests {
       publish_index: publish_index.map(str::to_string),
       devkit_index: "SFTPyPI".into(),
       release_workflow: true,
+      release_workflow_jobs: vec![],
       templates_dir: None,
     }
   }
@@ -316,6 +319,7 @@ mod docker_placeholder_tests {
       publish_index: None,
       devkit_index: "SFTPyPI".into(),
       release_workflow: true,
+      release_workflow_jobs: vec![],
       templates_dir: None,
       name: "proj".into(),
       version: Some("1.2.3".into()),
