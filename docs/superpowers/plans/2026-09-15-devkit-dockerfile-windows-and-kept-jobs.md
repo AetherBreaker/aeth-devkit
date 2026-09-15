@@ -1258,7 +1258,7 @@ gh pr checks --watch
 
 Expected: every job green. The `Templates` job renders `devkit-templates` `main` (old header) through this tree, which is fine: the header is a comment.
 
-- [ ] **Step 4: Merge (owner's call), then release 15.1.0 (owner's go-ahead first)**
+- [x] **Step 4: Merge (owner's call), then release 15.1.0 (owner's go-ahead first)**
 
 The owner merges on GitHub, or says to. Then:
 
@@ -1276,7 +1276,7 @@ uv run poe release minor "Dockerfile windows and kept release jobs"
 
 Expected: the command bumps to 15.1.0, tags, and waits for the release workflow to attach and publish; it exits 0.
 
-- [ ] **Step 5: Tick and commit**
+- [x] **Step 5: Tick and commit**
 
 ```bash
 cd "/d/SFT Software Projects/SFT Workspace/aeth_devkit"
