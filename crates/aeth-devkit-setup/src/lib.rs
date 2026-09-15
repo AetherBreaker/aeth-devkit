@@ -12,6 +12,7 @@ pub mod gate_eval;
 pub mod git;
 pub mod interrupt;
 pub mod json_merge;
+pub mod kept_jobs;
 pub mod lines;
 pub mod md_block;
 pub mod packages;
@@ -228,15 +229,22 @@ pub fn run_with(ctx: &ProjectContext, templates_override: Option<&Path>, dry_run
     } else {
       "github/workflows/release.yml"
     };
-    let rendered = templates::load(templates_dir, template_name, ctx, templates::Escape::None, &gates)?;
+    let mut rendered = templates::load(templates_dir, template_name, ctx, templates::Escape::None, &gates)?;
     let original = read_optional(&path)?;
     let devkit_owned = original.as_deref().is_some_and(|o| o.starts_with(DEVKIT_WORKFLOW_HEADER));
     let first_install = !devkit_owned;
-    let details = if original.is_none() {
+    let mut details = if original.is_none() {
       vec![]
     } else {
       vec!["replaced with the devkit release workflow".into()]
     };
+    // The project's own jobs ride along (hub design 3.7); a name the file lacks yet is a note.
+    if !ctx.release_workflow_jobs.is_empty() {
+      let kept = kept_jobs::splice(&rendered, original.as_deref().unwrap_or(""), &ctx.release_workflow_jobs)?;
+      rendered = kept.text;
+      details.extend(kept.details);
+      changes.notes.extend(kept.notes);
+    }
     changes.record_optional(&path, original.as_deref(), &rendered, details)?;
     if first_install {
       changes.notes.push(match &ctx.publish_index {

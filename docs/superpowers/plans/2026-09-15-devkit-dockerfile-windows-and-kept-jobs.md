@@ -932,7 +932,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Consumes: `ctx.release_workflow_jobs` from Task 3; `aeth_devkit_core::compose::tree::{split_lines, top_level, child, child_indent, re_indent, apply_edits, Edit::Insert}` (existing).
 - Produces: `pub struct Kept { pub text: String, pub details: Vec<String>, pub notes: Vec<String> }`; `pub fn splice(rendered: &str, existing: &str, names: &[String]) -> Result<Kept>`.
 
-- [ ] **Step 1: Write the failing unit tests**
+- [x] **Step 1: Write the failing unit tests**
 
 Create `crates/aeth-devkit-setup/src/kept_jobs.rs` with the module doc and tests:
 
@@ -994,12 +994,12 @@ mod tests {
 
 Add `pub mod kept_jobs;` to `lib.rs`'s module list between `pub mod json_merge;` and `pub mod lines;`.
 
-- [ ] **Step 2: Run the tests to see them fail**
+- [x] **Step 2: Run the tests to see them fail**
 
 Run: `cargo test -p aeth-devkit-setup kept_jobs::`
 Expected: compile error, `cannot find function splice`.
 
-- [ ] **Step 3: Implement the module**
+- [x] **Step 3: Implement the module**
 
 Insert between the module doc and the tests:
 
@@ -1063,12 +1063,12 @@ pub fn splice(rendered: &str, existing: &str, names: &[String]) -> Result<Kept> 
 }
 ```
 
-- [ ] **Step 4: Run the unit tests**
+- [x] **Step 4: Run the unit tests**
 
 Run: `cargo test -p aeth-devkit-setup kept_jobs::`
 Expected: 2 passed.
 
-- [ ] **Step 5: Change the fixture headers**
+- [x] **Step 5: Change the fixture headers**
 
 In both `crates/aeth-devkit-setup/tests/fixtures/templates/github/workflows/release.template.yml` and `release.rust.template.yml`, replace line 1
 
@@ -1091,7 +1091,7 @@ grep -rn "replaced on the next run" crates/ python/ tests/ README.md
 
 Expected: the two fixture files only (plus nothing in `src/`; `DEVKIT_WORKFLOW_HEADER` is the prefix).
 
-- [ ] **Step 6: Write the failing integration test**
+- [x] **Step 6: Write the failing integration test**
 
 Append to `crates/aeth-devkit-setup/tests/apply.rs`:
 
@@ -1146,12 +1146,12 @@ fn a_named_job_is_kept_through_the_re_render_and_a_missing_one_is_only_noted() {
 }
 ```
 
-- [ ] **Step 7: Run it to see it fail**
+- [x] **Step 7: Run it to see it fail**
 
 Run: `cargo test -p aeth-devkit-setup --test apply a_named_job_is_kept`
 Expected: FAIL at the header assertion or at "the kept job is not drift" (the job is replaced away).
 
-- [ ] **Step 8: Splice in `lib.rs` step 10b**
+- [x] **Step 8: Splice in `lib.rs` step 10b**
 
 Replace, inside `if ctx.release_workflow { … }`, the lines from `let rendered = templates::load(…)?;` through `changes.record_optional(&path, original.as_deref(), &rendered, details)?;` with:
 
@@ -1177,18 +1177,18 @@ Replace, inside `if ctx.release_workflow { … }`, the lines from `let rendered 
 
 Extend the step's comment: after "so drift is replaced and reported." add "The jobs named in `[tool.devkit].release-workflow-jobs` are the exception, copied out of the existing file (`kept_jobs`)."
 
-- [ ] **Step 9: Run the integration tests**
+- [x] **Step 9: Run the integration tests**
 
 Run: `cargo test -p aeth-devkit-setup --test apply`
 Expected: all pass, the new test and `release_workflow_is_installed_and_replaced_on_drift` (which now sees the two-line header) included.
 
-- [ ] **Step 10: Document the key in `README.md`**
+- [x] **Step 10: Document the key in `README.md`**
 
 In the **Release workflow** bullet, after "any drift is replaced and reported.", insert:
 
 > The jobs named in `[tool.devkit].release-workflow-jobs` (a list of job names) are the exception: each is copied out of the existing file into the rendered one, under `jobs` after the template's own, and reported as `kept job <name>`; a named job the file does not hold yet is a `note:`, and a name the template itself uses is an error.
 
-- [ ] **Step 11: Lint, tick, commit**
+- [x] **Step 11: Lint, tick, commit**
 
 ```bash
 cd "/d/SFT Software Projects/SFT Workspace/aeth_devkit"
