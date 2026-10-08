@@ -43,6 +43,14 @@ design exists. Check items off in place; delete them once released.
       the index in the dry run and say what would move, or say the step was skipped.
 - [ ] Consider a `--python-dir` override for projects whose Python package is neither in
       `src/` nor `python/`.
+- [ ] Support setuptools-rust as the build backend of a Rust project. It is the one backend that
+      puts native `[[tool.setuptools-rust.bins]]` executables and `[project.scripts]` in the same
+      wheel (maturin's `bin` bindings refuse scripts, and its pyo3 bindings drop `[[bin]]` targets,
+      `targets` filter or not; checked against maturin 1.15.0, 2026-10-08), which a
+      devkit-container app with Rust one-shot tools beside it needs. Today a Cargo tree always
+      gets `release.rust.yml` (`aeth-devkit-setup/src/lib.rs:228`), which builds with
+      `maturin-action`; pick the workflow by `build-system.build-backend` instead. Raised by
+      pos-tunnel's relay.
 - [ ] **A testing-only render surface for templates** (raised 2026-09-11 by devkit-container's
       render check). Today each satellite gets a bespoke route into the parser as its need
       arises: `--templates-dir` reads the templates package from a working tree, and nothing
