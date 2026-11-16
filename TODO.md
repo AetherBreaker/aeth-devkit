@@ -142,3 +142,11 @@ The one shell script left; it becomes its own crate under `crates/` and the `dev
 binary dispatches, like the others did.
 
 - [ ] `rescind-release.sh`
+
+## Poe tasks
+
+- [ ] `clean` (`python/aeth_devkit/_tasks_source.py`) fails when a match vanishes before
+      its turn: poe's `rm` saw `.venv\Lib\site-packages\__pycache__` as no directory and its
+      `unlink` raised `FileNotFoundError` (timeclock-system, 2026-11-16; likely two sessions'
+      Stop hooks cleaning one checkout at once). Its `./**/__pycache__` glob also reaches
+      into `.venv`. Skip `.venv` and tolerate paths already gone.
