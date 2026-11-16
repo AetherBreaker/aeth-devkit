@@ -149,4 +149,6 @@ binary dispatches, like the others did.
       its turn: poe's `rm` saw `.venv\Lib\site-packages\__pycache__` as no directory and its
       `unlink` raised `FileNotFoundError` (timeclock-system, 2026-11-16; likely two sessions'
       Stop hooks cleaning one checkout at once). Its `./**/__pycache__` glob also reaches
-      into `.venv`. Skip `.venv` and tolerate paths already gone.
+      into `.venv` and into other sessions' worktrees under `.claude/worktrees/`, where a
+      cache file their Python holds open fails with `PermissionError` (same day). Skip `.venv`
+      and nested worktrees, and tolerate paths already gone or locked.
