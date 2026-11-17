@@ -103,7 +103,7 @@ fn already_current_pin_and_clean_lock_commits_nothing() {
     versions: vec!["6.0.2".into()],
   };
   let runner = RecordingRunner::new(0);
-  run(&args(root), &index, &runner).unwrap();
+  assert_eq!(run(&args(root), &index, &runner).unwrap(), ExitCode::SUCCESS);
   assert_eq!(last_subject(root), "init");
   let calls = runner.calls.borrow();
   assert_eq!(calls.len(), 1, "uv sync still runs");
@@ -124,7 +124,7 @@ fn missing_pin_is_skipped_but_sync_runs() {
   let runner = RecordingRunner::new(0);
   let mut a = args(root);
   a.package = vec!["not-there".into()];
-  run(&a, &index, &runner).unwrap();
+  assert_eq!(run(&a, &index, &runner).unwrap(), ExitCode::SUCCESS);
   assert!(read(root, "pyproject.toml").contains("aeth-devkit>=6.0.2"));
   assert_eq!(runner.calls.borrow().len(), 1);
 }
@@ -152,7 +152,7 @@ fn dry_run_changes_nothing() {
   let runner = RecordingRunner::new(0);
   let mut a = args(root);
   a.dry_run = true;
-  run(&a, &index, &runner).unwrap();
+  assert_eq!(run(&a, &index, &runner).unwrap(), ExitCode::SUCCESS);
   assert!(read(root, "pyproject.toml").contains("aeth-devkit>=6.0.2"));
   assert!(runner.calls.borrow().is_empty());
   assert_eq!(last_subject(root), "init");
@@ -168,7 +168,7 @@ fn no_commit_leaves_changes_in_tree() {
   let runner = RecordingRunner::new(0);
   let mut a = args(root);
   a.no_commit = true;
-  run(&a, &index, &runner).unwrap();
+  assert_eq!(run(&a, &index, &runner).unwrap(), ExitCode::SUCCESS);
   assert!(read(root, "pyproject.toml").contains("aeth-devkit>=7.0.0"));
   assert_eq!(last_subject(root), "init");
   assert!(git::is_dirty(root, &["pyproject.toml"]).unwrap());
