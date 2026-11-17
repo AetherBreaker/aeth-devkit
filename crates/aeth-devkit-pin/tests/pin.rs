@@ -2,7 +2,7 @@
 //! network side (gh, remote git) scripted through `RecordingRunner` and `StubIndexClient`.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitCode};
 
 use aeth_devkit_core::git::init_test_repo;
 use aeth_devkit_core::index::StubIndexClient;
@@ -73,7 +73,7 @@ fn pins_latest_commits_and_pushes() {
   let idx = StubIndexClient {
     versions: vec!["1.0.0".into(), "2.0.0".into()],
   };
-  run(&args(&root), &deps(&r, &idx, &NO_VENV)).unwrap();
+  assert_eq!(run(&args(&root), &deps(&r, &idx, &NO_VENV)).unwrap(), ExitCode::SUCCESS);
   let text = std::fs::read_to_string(root.join("compose.yaml")).unwrap();
   assert!(text.contains("PACKAGE_VERSION: 2.0.0"), "{text}");
   // Committed (tree clean) and pushed.
@@ -100,7 +100,7 @@ fn already_pinned_is_a_quiet_noop() {
   let idx = StubIndexClient {
     versions: vec!["1.0.0".into()],
   };
-  run(&args(&root), &deps(&r, &idx, &NO_VENV)).unwrap();
+  assert_eq!(run(&args(&root), &deps(&r, &idx, &NO_VENV)).unwrap(), ExitCode::SUCCESS);
   assert!(!pushed(&r));
   assert_eq!(std::fs::read_to_string(root.join("compose.yaml")).unwrap(), COMPOSE);
 }
@@ -114,7 +114,7 @@ fn dry_run_touches_nothing() {
   };
   let mut a = args(&root);
   a.dry_run = true;
-  run(&a, &deps(&r, &idx, &NO_VENV)).unwrap();
+  assert_eq!(run(&a, &deps(&r, &idx, &NO_VENV)).unwrap(), ExitCode::SUCCESS);
   assert_eq!(std::fs::read_to_string(root.join("compose.yaml")).unwrap(), COMPOSE);
   assert!(!pushed(&r));
 }
@@ -142,7 +142,7 @@ fn dirty_compose_commits_pin_on_head_and_keeps_user_edits() {
   let idx = StubIndexClient {
     versions: vec!["2.0.0".into()],
   };
-  run(&args(&root), &deps(&r, &idx, &NO_VENV)).unwrap();
+  assert_eq!(run(&args(&root), &deps(&r, &idx, &NO_VENV)).unwrap(), ExitCode::SUCCESS);
   // HEAD has the pin but not the user's edit; the worktree has both.
   let head = Command::new("git")
     .current_dir(&root)
@@ -168,7 +168,7 @@ fn dirty_crlf_checkout_merges_cleanly_and_stays_crlf() {
   let idx = StubIndexClient {
     versions: vec!["2.0.0".into()],
   };
-  run(&args(&root), &deps(&r, &idx, &NO_VENV)).unwrap();
+  assert_eq!(run(&args(&root), &deps(&r, &idx, &NO_VENV)).unwrap(), ExitCode::SUCCESS);
   let head = Command::new("git")
     .current_dir(&root)
     .args(["show", "HEAD:compose.yaml"])
@@ -212,7 +212,7 @@ fn no_commit_edits_worktree_only() {
   };
   let mut a = args(&root);
   a.no_commit = true;
-  run(&a, &deps(&r, &idx, &NO_VENV)).unwrap();
+  assert_eq!(run(&a, &deps(&r, &idx, &NO_VENV)).unwrap(), ExitCode::SUCCESS);
   assert!(std::fs::read_to_string(root.join("compose.yaml")).unwrap().contains("2.0.0"));
   let log = Command::new("git").current_dir(&root).args(["log", "--oneline"]).output().unwrap();
   assert_eq!(String::from_utf8_lossy(&log.stdout).lines().count(), 1, "no new commit");
@@ -228,7 +228,7 @@ fn no_push_commits_locally_only() {
   };
   let mut a = args(&root);
   a.no_push = true;
-  run(&a, &deps(&r, &idx, &NO_VENV)).unwrap();
+  assert_eq!(run(&a, &deps(&r, &idx, &NO_VENV)).unwrap(), ExitCode::SUCCESS);
   let log = Command::new("git").current_dir(&root).args(["log", "--oneline"]).output().unwrap();
   assert_eq!(String::from_utf8_lossy(&log.stdout).lines().count(), 2, "pin commit exists");
   assert!(!pushed(&r));
@@ -244,7 +244,7 @@ fn explicit_version_flows_through() {
   };
   let mut a = args(&root);
   a.version = Some("1.5.0".into());
-  run(&a, &deps(&r, &idx, &NO_VENV)).unwrap();
+  assert_eq!(run(&a, &deps(&r, &idx, &NO_VENV)).unwrap(), ExitCode::SUCCESS);
   assert!(
     std::fs::read_to_string(root.join("compose.yaml"))
       .unwrap()
@@ -307,7 +307,7 @@ fn a_drifted_dockerfile_is_replaced_and_committed_before_the_pin() {
   };
   let mut a = args(&root);
   a.no_push = true;
-  run(&a, &deps(&r, &idx, &venv)).unwrap();
+  assert_eq!(run(&a, &deps(&r, &idx, &venv)).unwrap(), ExitCode::SUCCESS);
   assert_eq!(std::fs::read_to_string(root.join("docker/Dockerfile")).unwrap(), "FROM new src\n");
   let log = subjects(&root);
   assert_eq!(log[0], "chore: pin my-package to 2.0.0", "{log:?}");
@@ -337,7 +337,7 @@ WORKDIR /app
   };
   let mut a = args(&root);
   a.no_push = true;
-  run(&a, &deps(&r, &idx, &venv)).unwrap();
+  assert_eq!(run(&a, &deps(&r, &idx, &venv)).unwrap(), ExitCode::SUCCESS);
   assert_eq!(
     std::fs::read_to_string(root.join("docker/Dockerfile")).unwrap(),
     "FROM new src
@@ -361,7 +361,7 @@ v2.0.0
   let idx = StubIndexClient {
     versions: vec!["3.0.0".into()],
   };
-  run(&a, &deps(&r, &idx, &venv)).unwrap();
+  assert_eq!(run(&a, &deps(&r, &idx, &venv)).unwrap(), ExitCode::SUCCESS);
   let log = subjects(&root);
   assert_eq!(log[0], "chore: pin my-package to 3.0.0", "{log:?}");
   assert_eq!(log[1], "chore: pin my-package to 2.0.0", "{log:?}");
@@ -395,7 +395,7 @@ fn without_the_package_in_the_lock_the_refresh_is_skipped() {
   };
   let mut a = args(&root);
   a.no_push = true;
-  run(&a, &deps(&r, &idx, &venv)).unwrap();
+  assert_eq!(run(&a, &deps(&r, &idx, &venv)).unwrap(), ExitCode::SUCCESS);
   assert_eq!(std::fs::read_to_string(root.join("docker/Dockerfile")).unwrap(), "FROM old\n");
   assert!(r.calls_for("uv").is_empty());
   assert_eq!(subjects(&root)[0], "chore: pin my-package to 2.0.0");
@@ -410,7 +410,7 @@ fn an_already_pinned_project_still_gets_the_refresh_committed_and_pushed() {
   let idx = StubIndexClient {
     versions: vec!["1.0.0".into()],
   };
-  run(&args(&root), &deps(&r, &idx, &venv)).unwrap();
+  assert_eq!(run(&args(&root), &deps(&r, &idx, &venv)).unwrap(), ExitCode::SUCCESS);
   let log = subjects(&root);
   assert_eq!(log[0], "chore(docker): refresh Dockerfile from devkit-container 1.4.0", "{log:?}");
   assert!(!log.iter().any(|s| s.starts_with("chore: pin")), "{log:?}");
@@ -429,7 +429,7 @@ fn no_commit_keeps_an_uncommitted_dockerfile_edit_on_top_of_the_refresh() {
   };
   let mut a = args(&root);
   a.no_commit = true;
-  run(&a, &deps(&r, &idx, &venv)).unwrap();
+  assert_eq!(run(&a, &deps(&r, &idx, &venv)).unwrap(), ExitCode::SUCCESS);
   assert_eq!(
     std::fs::read_to_string(root.join("docker/Dockerfile")).unwrap(),
     "FROM new src\nRUN keep-me\nRUN user-edit\n"
@@ -497,7 +497,7 @@ fn a_project_without_services_is_pinned_without_the_setup_context() {
   };
   let mut a = args(&root);
   a.no_push = true;
-  run(&a, &deps(&r, &idx, &NO_VENV)).unwrap();
+  assert_eq!(run(&a, &deps(&r, &idx, &NO_VENV)).unwrap(), ExitCode::SUCCESS);
   assert_eq!(subjects(&root)[0], "chore: pin my-package to 2.0.0");
 }
 
@@ -511,7 +511,7 @@ fn a_crlf_dockerfile_is_refreshed_in_its_own_endings() {
   };
   let mut a = args(&root);
   a.no_push = true;
-  run(&a, &deps(&r, &idx, &venv)).unwrap();
+  assert_eq!(run(&a, &deps(&r, &idx, &venv)).unwrap(), ExitCode::SUCCESS);
   assert_eq!(
     std::fs::read_to_string(root.join("docker/Dockerfile")).unwrap(),
     "FROM new src\r\nRUN keep-me\r\n"
